@@ -1,3 +1,21 @@
+# Artex-on-ChatGPT
+
+개인 PC에서 ChatGPT 계정으로 사용할 수 있는 버전을 준비하는 저장소입니다.
+한국어를 지원하는 [artex-global](https://github.com/jiwoochris/artex-global)의
+`fdfb7a17b7da5e2de716c0e98475ec77a41c64c6` (2026-10-14)을 기반으로 시작합니다.
+
+**현재는 원본 소스 가져오기와 저장소 설정만 완료했습니다. ChatGPT 로그인은 아직 구현되지 않았습니다.**
+ARTEX 실행 코드와 Norma v0.4.3 의존성은 원본 그대로입니다.
+개인 분석·연구 자료는 `reference/`에 모아 Git 추적과 Docker 빌드 컨텍스트에서 제외합니다.
+
+원본의 [한국어 안내](README.ko.md), [가져온 소스·변경 범위](UPSTREAM.md)를 참고하세요.
+루트 [AGPL-3.0 라이선스](LICENSE)와 포함된 웹 코드의 [별도 라이선스 고지](web/LICENSE)를 보존합니다.
+
+아래 설치·실행 안내는 원본 Global Edition 기준입니다. 배포 이미지와 자동 업데이트 대상도
+아직 원본 설정이므로, 이 포팅판의 배포·업데이트 안내로 사용하지 마세요.
+
+---
+
 <div align="center">
 
 # ARTEX — Global Edition
