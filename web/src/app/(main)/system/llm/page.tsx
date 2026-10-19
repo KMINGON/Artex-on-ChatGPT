@@ -28,9 +28,18 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
+import type {
+  ChatGPTAccount,
+  ChatGPTModel,
+  LLMAuthMode,
+  LLMPoolMember,
+  LLMPoolStatus,
+  LLMProfile,
+  LLMRetryOverride,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { ChatGPTAccountCard } from "./_components/chatgpt-account-card";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
 // 思考开关(thinking.type)与思考强度(reasoning_effort)是两个【互相独立】的字段，
@@ -248,11 +257,13 @@ function PoolSheet({
 
 function ProfileSheet({
   profile,
+  accounts,
   open,
   onOpenChange,
   onSaved,
 }: {
   profile: LLMProfile | null; // null = 新建
+  accounts: ChatGPTAccount[];
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onSaved: (id: string) => void;
@@ -261,6 +272,8 @@ function ProfileSheet({
   const isNew = !profile;
   const [name, setName] = React.useState("");
   const [format, setFormat] = React.useState<"anthropic" | "openai" | "openai-responses">("anthropic");
+  const [authMode, setAuthMode] = React.useState<LLMAuthMode>("api_key");
+  const [accountId, setAccountId] = React.useState("");
   const [model, setModel] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("");
   const [proxy, setProxy] = React.useState("");
@@ -280,9 +293,13 @@ function ProfileSheet({
   const [retry, setRetry] = React.useState<LLMRetryOverride>(ZERO_OVERRIDE); // 本配置的重试覆盖;全 0=跟随全局
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  const [models, setModels] = React.useState<string[]>([]);
+  const [models, setModels] = React.useState<ChatGPTModel[]>([]);
   const [loadingModels, setLoadingModels] = React.useState(false);
   const [modelsOpen, setModelsOpen] = React.useState(false);
+  const modelRequest = React.useRef(0);
+  const isChatGPT = authMode === "chatgpt_plan";
+  const selectedAccount = accounts.find((account) => account.id === accountId);
+  const accountReady = Boolean(selectedAccount?.connected && selectedAccount.plan_enabled);
 
   // 思考开关 / 上限字段名 / 思考强度三组选项的标签走 i18n，故在组件内按当前语言构造。
   const THINKING_TYPES: { value: string; label: string }[] = [
@@ -308,6 +325,8 @@ function ProfileSheet({
   React.useEffect(() => {
     if (!open) return;
     setName(profile?.name ?? "");
+    setAuthMode(profile?.auth_mode ?? "api_key");
+    setAccountId(profile?.chatgpt_account_id ?? "");
     setFormat(profile?.format === "openai" || profile?.format === "openai-responses" ? profile.format : "anthropic");
     setModel(profile?.model ?? "");
     setBaseUrl(profile?.base_url ?? "");
@@ -328,16 +347,33 @@ function ProfileSheet({
     setKeyHint(profile?.api_key_hint ?? "");
     setModels([]);
     setModelsOpen(false);
+    setLoadingModels(false);
+    modelRequest.current++;
   }, [open, profile]);
+
+  React.useEffect(() => {
+    if (!open) modelRequest.current++;
+  }, [open]);
 
   const profileId = profile ? Number(profile.id) : undefined;
 
   async function loadModels() {
     if (loadingModels) return;
+    if (isChatGPT && !accountReady) {
+      toast.error("사용 가능한 ChatGPT 계정을 먼저 연결하고 선택해 주세요.");
+      return;
+    }
+    const request = ++modelRequest.current;
     setLoadingModels(true);
     setModels([]);
     try {
-      const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId);
+      const r = isChatGPT
+        ? { ok: true, models: await api.chatgptModels(accountId), error: undefined }
+        : await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId).then((result) => ({
+            ...result,
+            models: result.models?.map((id) => ({ id, name: id })),
+          }));
+      if (request !== modelRequest.current) return;
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models);
         setModelsOpen(true);
@@ -346,9 +382,10 @@ function ProfileSheet({
         toast.error(t("profile.toast.loadModelsFailed", { error: r.error ?? t("profile.toast.noModels") }));
       }
     } catch (e) {
-      toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
+      if (request === modelRequest.current)
+        toast.error(t("profile.toast.loadModelsError", { msg: (e as Error).message }));
     } finally {
-      setLoadingModels(false);
+      if (request === modelRequest.current) setLoadingModels(false);
     }
   }
 
@@ -359,16 +396,18 @@ function ProfileSheet({
       // 用配置实际会跑的思考参数来测，这样不支持该字段的模型在这里就失败，
       // 而不是等到跑任务时才炸。传 profile id：Key 输入框留空时用已存的 Key。
       const r = await api.testLLM(
-        format,
+        isChatGPT ? "openai-responses" : format,
         model,
-        baseUrl,
-        apiKey,
+        isChatGPT ? "" : baseUrl,
+        isChatGPT ? "" : apiKey,
         proxy,
-        toStore(thinkingType),
+        isChatGPT ? "" : toStore(thinkingType),
         toStore(effort),
         profileId,
-        streaming,
-        sessionHeaderKey.trim(),
+        isChatGPT || streaming,
+        isChatGPT ? "" : sessionHeaderKey.trim(),
+        authMode,
+        isChatGPT ? accountId : undefined,
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
@@ -384,6 +423,10 @@ function ProfileSheet({
   }
 
   async function save() {
+    if (isChatGPT && !accountReady) {
+      toast.error("사용 가능한 ChatGPT 계정을 먼저 연결하고 선택해 주세요.");
+      return;
+    }
     if (!name.trim() || !model.trim()) {
       toast.error(t("profile.toast.nameModelRequired"));
       return;
@@ -394,24 +437,26 @@ function ProfileSheet({
       const { id } = await api.saveLLMProfile({
         ...(profile ? { id: Number(profile.id) } : {}),
         name: name.trim(),
-        format,
+        format: isChatGPT ? "openai-responses" : format,
+        auth_mode: authMode,
+        chatgpt_account_id: isChatGPT ? accountId : "",
         model: model.trim(),
-        base_url: baseUrl.trim(),
+        base_url: isChatGPT ? "" : baseUrl.trim(),
         proxy: proxy.trim(),
-        api_key: apiKey,
+        api_key: isChatGPT ? "" : apiKey,
         rate_per_second: Number(rps) || 0,
         rate_per_minute: Number(rpm) || 0,
         context_window_k: Number(cw) || 0,
-        thinking_type: toStore(thinkingType),
+        thinking_type: isChatGPT ? "" : toStore(thinkingType),
         reasoning_effort: toStore(effort),
-        priority: Number(priority) || 0,
-        pool_exclude: poolExclude,
-        streaming,
-        max_tokens: Math.max(0, Number(maxTokens) || 0),
+        priority: isChatGPT ? 0 : Number(priority) || 0,
+        pool_exclude: isChatGPT || poolExclude,
+        streaming: isChatGPT || streaming,
+        max_tokens: isChatGPT ? 0 : Math.max(0, Number(maxTokens) || 0),
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
-        max_tokens_field: format === "openai" ? toStore(maxTokensField) : "",
-        session_header_key: sessionHeaderKey.trim(),
+        max_tokens_field: !isChatGPT && format === "openai" ? toStore(maxTokensField) : "",
+        session_header_key: isChatGPT ? "" : sessionHeaderKey.trim(),
         retry,
       });
       if (isNew) toast.success(t("profile.toast.created", { name: name.trim() }));
@@ -444,6 +489,75 @@ function ProfileSheet({
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+          <div className="grid gap-2">
+            <Label htmlFor="p-auth-mode">모델 연결 방식</Label>
+            <Select
+              value={authMode}
+              onValueChange={(value) => {
+                setAuthMode(value as LLMAuthMode);
+                if (value === "chatgpt_plan") {
+                  setFormat("openai-responses");
+                  setAccountId(accounts.find((account) => account.connected && account.plan_enabled)?.id ?? "");
+                }
+                setModel("");
+                setModels([]);
+                setModelsOpen(false);
+                setLoadingModels(false);
+                modelRequest.current++;
+              }}
+            >
+              <SelectTrigger id="p-auth-mode">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="api_key">API 키</SelectItem>
+                <SelectItem value="chatgpt_plan">ChatGPT 구독 계정</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {isChatGPT && (
+            <div className="grid gap-2 rounded-lg border p-3">
+              <Label htmlFor="p-chatgpt-account">ChatGPT 계정</Label>
+              <Select
+                value={accountId || NONE}
+                onValueChange={(value) => {
+                  setAccountId(toStore(value));
+                  setModel("");
+                  setModels([]);
+                  setModelsOpen(false);
+                  setLoadingModels(false);
+                  modelRequest.current++;
+                }}
+              >
+                <SelectTrigger id="p-chatgpt-account">
+                  <SelectValue placeholder="연결할 계정 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>계정을 선택해 주세요</SelectItem>
+                  {accounts.map((account) => (
+                    <SelectItem
+                      key={account.id}
+                      value={account.id}
+                      disabled={!account.connected || !account.plan_enabled}
+                    >
+                      {account.email || account.id}
+                      {account.connected && account.plan_enabled ? "" : " (연결 확인 필요)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!accountReady && (
+                <p className="text-destructive text-xs">설정을 닫고 ChatGPT 계정 연결에서 로그인해 주세요.</p>
+              )}
+              <p className="text-muted-foreground text-xs">
+                스트리밍으로만 응답하며 temperature와 서버 출력 토큰 상한은 지원하지 않습니다. ChatGPT 요금제의 사용
+                한도가 적용되며 API 키 설정으로 자동 전환하지 않습니다.
+              </p>
+              <p className="text-muted-foreground text-xs">
+                요약·판정의 로컬 시간·수신량 제한도 서버의 생성 토큰 수나 사용량 상한을 보장하지 않습니다.
+              </p>
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="p-name">{t("profile.name.label")}</Label>
@@ -454,19 +568,24 @@ function ProfileSheet({
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
-            <div className="grid gap-2">
-              <Label>{t("profile.format.label")}</Label>
-              <Select value={format} onValueChange={(v) => setFormat(v as "anthropic" | "openai" | "openai-responses")}>
-                <SelectTrigger>
-                  <SelectValue placeholder={t("profile.format.placeholder")} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="anthropic">Anthropic</SelectItem>
-                  <SelectItem value="openai">OpenAI (Chat Completions)</SelectItem>
-                  <SelectItem value="openai-responses">OpenAI (Responses API)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {!isChatGPT && (
+              <div className="grid gap-2">
+                <Label>{t("profile.format.label")}</Label>
+                <Select
+                  value={format}
+                  onValueChange={(v) => setFormat(v as "anthropic" | "openai" | "openai-responses")}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t("profile.format.placeholder")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="anthropic">Anthropic</SelectItem>
+                    <SelectItem value="openai">OpenAI (Chat Completions)</SelectItem>
+                    <SelectItem value="openai-responses">OpenAI (Responses API)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           <div className="grid gap-2">
@@ -475,7 +594,8 @@ function ProfileSheet({
               <Input
                 id="p-model"
                 className="font-mono"
-                placeholder="claude-opus-4-8"
+                placeholder={isChatGPT ? "계정의 모델 목록에서 선택하세요" : "claude-opus-4-8"}
+                readOnly={isChatGPT}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
               />
@@ -488,7 +608,7 @@ function ProfileSheet({
                     variant="outline"
                     size="icon"
                     className="shrink-0"
-                    disabled={loadingModels}
+                    disabled={loadingModels || (isChatGPT && !accountReady)}
                     onClick={loadModels}
                     title={t("profile.model.loadTitle")}
                   >
@@ -499,15 +619,19 @@ function ProfileSheet({
                   <PopoverContent className="max-h-72 w-72 gap-0 overflow-y-auto overscroll-contain p-1" align="end">
                     {models.map((m) => (
                       <button
-                        key={m}
+                        key={m.id}
                         type="button"
                         className="w-full shrink-0 rounded-md px-2 py-1.5 text-left font-mono text-xs hover:bg-accent hover:text-accent-foreground"
                         onClick={() => {
-                          setModel(m);
+                          setModel(m.id);
+                          if (isChatGPT && m.context_window && m.context_window >= 1000) {
+                            setCw(String(Math.floor(m.context_window / 1000)));
+                          }
                           setModelsOpen(false);
                         }}
                       >
-                        {m}
+                        {m.name || m.id}
+                        {m.name && m.name !== m.id && <span className="block text-muted-foreground">{m.id}</span>}
                       </button>
                     ))}
                   </PopoverContent>
@@ -516,16 +640,18 @@ function ProfileSheet({
             </div>
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="p-base-url">{t("profile.baseUrl.label")}</Label>
-            <Input
-              id="p-base-url"
-              className="font-mono"
-              placeholder="https://api.openai.com/v1"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-            />
-          </div>
+          {!isChatGPT && (
+            <div className="grid gap-2">
+              <Label htmlFor="p-base-url">{t("profile.baseUrl.label")}</Label>
+              <Input
+                id="p-base-url"
+                className="font-mono"
+                placeholder="https://api.openai.com/v1"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+              />
+            </div>
+          )}
 
           <div className="grid gap-2">
             <Label htmlFor="p-proxy">{t("profile.proxy.label")}</Label>
@@ -539,30 +665,34 @@ function ProfileSheet({
             <p className="text-muted-foreground text-xs">{t("profile.proxy.hint")}</p>
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="p-session-header">{t("profile.sessionHeader.label")}</Label>
-            <Input
-              id="p-session-header"
-              className="font-mono"
-              placeholder={t("profile.sessionHeader.placeholder")}
-              value={sessionHeaderKey}
-              onChange={(e) => setSessionHeaderKey(e.target.value)}
-            />
-            <p className="text-muted-foreground text-xs">
-              {t.rich("profile.sessionHeader.hint", { b: (c) => <b>{c}</b> })}
-            </p>
-          </div>
+          {!isChatGPT && (
+            <div className="grid gap-2">
+              <Label htmlFor="p-session-header">{t("profile.sessionHeader.label")}</Label>
+              <Input
+                id="p-session-header"
+                className="font-mono"
+                placeholder={t("profile.sessionHeader.placeholder")}
+                value={sessionHeaderKey}
+                onChange={(e) => setSessionHeaderKey(e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                {t.rich("profile.sessionHeader.hint", { b: (c) => <b>{c}</b> })}
+              </p>
+            </div>
+          )}
 
-          <div className="grid gap-2">
-            <Label htmlFor="p-api-key">API Key</Label>
-            <Input
-              id="p-api-key"
-              type="password"
-              placeholder={keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-            />
-          </div>
+          {!isChatGPT && (
+            <div className="grid gap-2">
+              <Label htmlFor="p-api-key">API Key</Label>
+              <Input
+                id="p-api-key"
+                type="password"
+                placeholder={keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </div>
+          )}
 
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="grid gap-2">
@@ -588,100 +718,106 @@ function ProfileSheet({
           </div>
           <p className="-mt-2 text-muted-foreground text-xs">{t("profile.rateHint")}</p>
 
-          <div className="grid gap-3 rounded-lg border p-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="grid gap-0.5">
-                <Label htmlFor="p-priority" className="text-sm">
-                  {t("profile.priority.label")}
-                </Label>
-                <p className="text-muted-foreground text-xs">{t("profile.priority.hint")}</p>
+          {!isChatGPT && (
+            <div className="grid gap-3 rounded-lg border p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="grid gap-0.5">
+                  <Label htmlFor="p-priority" className="text-sm">
+                    {t("profile.priority.label")}
+                  </Label>
+                  <p className="text-muted-foreground text-xs">{t("profile.priority.hint")}</p>
+                </div>
+                <Input
+                  id="p-priority"
+                  type="number"
+                  className="w-24 shrink-0"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                />
               </div>
-              <Input
-                id="p-priority"
-                type="number"
-                className="w-24 shrink-0"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4 border-t pt-3">
-              <div className="grid gap-0.5">
-                <Label className="text-sm">{t("profile.exclude.label")}</Label>
-                <p className="text-muted-foreground text-xs">{t("profile.exclude.hint")}</p>
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">{t("profile.exclude.label")}</Label>
+                  <p className="text-muted-foreground text-xs">{t("profile.exclude.hint")}</p>
+                </div>
+                <Switch checked={poolExclude} onCheckedChange={setPoolExclude} aria-label={t("profile.exclude.aria")} />
               </div>
-              <Switch checked={poolExclude} onCheckedChange={setPoolExclude} aria-label={t("profile.exclude.aria")} />
-            </div>
-            <div className="flex items-center justify-between gap-4 border-t pt-3">
-              <div className="grid gap-0.5">
-                <Label className="text-sm">{t("profile.streaming.label")}</Label>
-                <p className="text-muted-foreground text-xs">{t("profile.streaming.hint")}</p>
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">{t("profile.streaming.label")}</Label>
+                  <p className="text-muted-foreground text-xs">{t("profile.streaming.hint")}</p>
+                </div>
+                <Switch checked={streaming} onCheckedChange={setStreaming} aria-label={t("profile.streaming.aria")} />
               </div>
-              <Switch checked={streaming} onCheckedChange={setStreaming} aria-label={t("profile.streaming.aria")} />
             </div>
-          </div>
+          )}
+
+          {!isChatGPT && (
+            <div className="grid gap-3 rounded-lg border p-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="grid gap-0.5">
+                  <Label htmlFor="p-max-tokens" className="text-sm">
+                    {t("profile.maxTokens.label")}
+                  </Label>
+                  <p className="text-muted-foreground text-xs">{t("profile.maxTokens.hint")}</p>
+                </div>
+                <Input
+                  id="p-max-tokens"
+                  type="number"
+                  min={0}
+                  className="w-28 shrink-0"
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(e.target.value)}
+                  placeholder="0"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-4 border-t pt-3">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">{t("profile.maxTokensField.label")}</Label>
+                  <p className="text-muted-foreground text-xs">{t(`profile.maxTokensFieldHint.${format}`)}</p>
+                </div>
+                <Select
+                  value={format === "openai" ? maxTokensField : NONE}
+                  onValueChange={setMaxTokensField}
+                  disabled={format !== "openai"}
+                >
+                  <SelectTrigger className="w-56 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MAX_TOKENS_FIELDS.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-3 rounded-lg border p-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="grid gap-0.5">
-                <Label htmlFor="p-max-tokens" className="text-sm">
-                  {t("profile.maxTokens.label")}
-                </Label>
-                <p className="text-muted-foreground text-xs">{t("profile.maxTokens.hint")}</p>
+            {!isChatGPT && (
+              <div className="flex items-center justify-between gap-4">
+                <div className="grid gap-0.5">
+                  <Label className="text-sm">{t("profile.thinkingType.label")}</Label>
+                  <p className="text-muted-foreground text-xs">{t("profile.thinkingType.hint")}</p>
+                </div>
+                <Select value={thinkingType} onValueChange={setThinkingType}>
+                  <SelectTrigger className="w-32 shrink-0">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {THINKING_TYPES.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <Input
-                id="p-max-tokens"
-                type="number"
-                min={0}
-                className="w-28 shrink-0"
-                value={maxTokens}
-                onChange={(e) => setMaxTokens(e.target.value)}
-                placeholder="0"
-              />
-            </div>
-            <div className="flex items-center justify-between gap-4 border-t pt-3">
-              <div className="grid gap-0.5">
-                <Label className="text-sm">{t("profile.maxTokensField.label")}</Label>
-                <p className="text-muted-foreground text-xs">{t(`profile.maxTokensFieldHint.${format}`)}</p>
-              </div>
-              <Select
-                value={format === "openai" ? maxTokensField : NONE}
-                onValueChange={setMaxTokensField}
-                disabled={format !== "openai"}
-              >
-                <SelectTrigger className="w-56 shrink-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MAX_TOKENS_FIELDS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="grid gap-3 rounded-lg border p-3">
-            <div className="flex items-center justify-between gap-4">
-              <div className="grid gap-0.5">
-                <Label className="text-sm">{t("profile.thinkingType.label")}</Label>
-                <p className="text-muted-foreground text-xs">{t("profile.thinkingType.hint")}</p>
-              </div>
-              <Select value={thinkingType} onValueChange={setThinkingType}>
-                <SelectTrigger className="w-32 shrink-0">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {THINKING_TYPES.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex items-center justify-between gap-4 border-t pt-3">
+            )}
+            <div className={cn("flex items-center justify-between gap-4", !isChatGPT && "border-t pt-3")}>
               <div className="grid gap-0.5">
                 <Label className="text-sm">{t("profile.effort.label")}</Label>
                 <p className="text-muted-foreground text-xs">{t("profile.effort.hint")}</p>
@@ -705,11 +841,15 @@ function ProfileSheet({
         </div>
 
         <div className="flex gap-2 border-t px-4 py-3">
-          <Button variant="outline" onClick={testConnection} disabled={testing}>
+          <Button
+            variant="outline"
+            onClick={testConnection}
+            disabled={testing || (isChatGPT && (!accountReady || !model))}
+          >
             {testing ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
             {testing ? t("profile.testing") : t("profile.testConnection")}
           </Button>
-          <Button onClick={save} disabled={saving} className="flex-1">
+          <Button onClick={save} disabled={saving || (isChatGPT && (!accountReady || !model))} className="flex-1">
             {saving && <Loader2Icon className="animate-spin" />}
             {!saving && (isNew ? <PlusIcon /> : <SaveIcon />)}
             {isNew ? t("profile.create") : t("profile.save")}
@@ -725,6 +865,7 @@ function ProfileSheet({
 export default function LLMPage() {
   const t = useTranslations("llmPage");
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
+  const [accounts, setAccounts] = React.useState<ChatGPTAccount[]>([]);
   const [pool, setPool] = React.useState<LLMPoolStatus | null>(null);
   const [poolOpen, setPoolOpen] = React.useState(false);
   // 抽屉的开关和内容分开存：关闭时 editing 保持不变，否则关闭动画期间标题会从
@@ -739,7 +880,14 @@ export default function LLMPage() {
   // 一个配置在卡片上显示的「是否正常」。没填 Key 的配置根本发不出请求，比熔断更该先说。
   const healthOf = React.useCallback(
     (p: LLMProfile, m?: LLMPoolMember): Health => {
-      if (!p.api_key_hint) {
+      if (p.auth_mode === "chatgpt_plan" && !p.connected) {
+        return {
+          label: "ChatGPT 연결 필요",
+          cls: "border-muted-foreground/40 text-muted-foreground",
+          hint: "ChatGPT 계정 연결 상태를 확인해 주세요.",
+        };
+      }
+      if (p.auth_mode !== "chatgpt_plan" && !(p.connected ?? p.api_key_hint)) {
         return {
           label: t("health.noKey.label"),
           cls: "border-muted-foreground/40 text-muted-foreground",
@@ -763,7 +911,10 @@ export default function LLMPage() {
           hint: m.last_error,
         };
       }
-      return { label: t("health.ok"), cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400" };
+      return {
+        label: p.auth_mode === "chatgpt_plan" ? "ChatGPT 연결됨" : t("health.ok"),
+        cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400",
+      };
     },
     [t],
   );
@@ -844,6 +995,8 @@ export default function LLMPage() {
         </div>
       </div>
 
+      <ChatGPTAccountCard onAccounts={setAccounts} onChanged={load} />
+
       <Tabs defaultValue="profiles" className="flex-1">
         <TabsList>
           <TabsTrigger value="profiles">{t("page.tab.profiles")}</TabsTrigger>
@@ -884,7 +1037,7 @@ export default function LLMPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium text-sm">{p.name}</span>
                           <Badge variant="outline" className="uppercase">
-                            {p.format}
+                            {p.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : p.format}
                           </Badge>
                           <Badge variant="outline" className={cn("ml-auto", h.cls)} title={h.hint}>
                             {h.label}
@@ -895,7 +1048,14 @@ export default function LLMPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-muted-foreground text-xs">
-                      {p.api_key_hint && <span>{p.api_key_hint}</span>}
+                      {p.auth_mode === "chatgpt_plan" ? (
+                        <span>
+                          {accounts.find((account) => account.id === p.chatgpt_account_id)?.email ||
+                            p.chatgpt_account_id}
+                        </span>
+                      ) : (
+                        p.api_key_hint && <span>{p.api_key_hint}</span>
+                      )}
                       <span>
                         {p.rate_per_second}/s · {p.rate_per_minute}/min
                       </span>
@@ -922,7 +1082,7 @@ export default function LLMPage() {
                         size="sm"
                         variant="outline"
                         className="flex-1"
-                        disabled={p.is_default}
+                        disabled={p.is_default || (p.auth_mode === "chatgpt_plan" && !p.connected)}
                         onClick={(e) => {
                           e.stopPropagation();
                           void activate(p.id, p.name);
@@ -959,7 +1119,13 @@ export default function LLMPage() {
         </TabsContent>
       </Tabs>
 
-      <ProfileSheet profile={editing} open={editOpen} onOpenChange={setEditOpen} onSaved={() => void load()} />
+      <ProfileSheet
+        profile={editing}
+        accounts={accounts}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={() => void load()}
+      />
       <PoolSheet open={poolOpen} onOpenChange={setPoolOpen} pool={pool} onReload={loadPool} />
     </div>
   );

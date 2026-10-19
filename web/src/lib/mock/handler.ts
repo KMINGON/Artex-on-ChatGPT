@@ -14,6 +14,7 @@ import type {
   ArchiveBatchItem,
   Asset,
   BatchControlItem,
+  ChatGPTAccount,
   Company,
   CompanyScopeRule,
   Conversation,
@@ -22,6 +23,7 @@ import type {
   FindingTraffic,
   FindingTrafficBinding,
   IntentAsset,
+  LLMProfile,
   ScopeRow,
   Task,
   TaskArchive,
@@ -49,6 +51,10 @@ const mockLLMRecords = structuredClone(D.llmRecords);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
 const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
+const mockLLMProfiles = structuredClone(D.llmProfiles);
+const mockChatGPTAccounts: ChatGPTAccount[] = [
+  { id: "demo-chatgpt", email: "demo@example.test", connected: true, plan_enabled: true },
+];
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
 
@@ -826,18 +832,28 @@ function mockScopeRows(
 }
 
 function mockProfileResolution(profileID: number | undefined, source: TaskLLMResolution["source"]): TaskLLMResolution {
-  const profile = D.llmProfiles.find((item) => Number(item.id) === profileID);
+  const profile = mockLLMProfiles.find((item) => Number(item.id) === profileID);
   if (!profile) {
     return { name: "", format: "", model: "", source, available: false, reason: "LLM configuration not found" };
   }
+  const available =
+    profile.auth_mode === "chatgpt_plan"
+      ? mockChatGPTAccounts.some(
+          (account) => account.id === profile.chatgpt_account_id && account.connected && account.plan_enabled,
+        )
+      : Boolean(profile.api_key_hint);
+  const unavailableReason =
+    profile.auth_mode === "chatgpt_plan"
+      ? "ChatGPT 계정 연결을 확인해 주세요."
+      : "No API key is set in the LLM configuration";
   return {
     profile_id: Number(profile.id),
     name: profile.name,
     format: profile.format,
     model: profile.model,
     source,
-    available: Boolean(profile.api_key_hint),
-    reason: profile.api_key_hint ? undefined : "No API key is set in the LLM configuration",
+    available,
+    reason: available ? undefined : unavailableReason,
   };
 }
 
@@ -862,7 +878,7 @@ function mockRoleResolution(task: Task, agentKey: "mainagent" | "planner" | "wor
     }
     return mockProfileResolution(task.active_llm_profile_id, "task_chain");
   }
-  const globalProfile = D.llmProfiles.find((item) => item.is_default);
+  const globalProfile = mockLLMProfiles.find((item) => item.is_default);
   if (globalProfile) return mockProfileResolution(Number(globalProfile.id), "global_profile");
   return {
     name: "Global Settings",
@@ -2294,6 +2310,18 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── LLM ──
+  if (path === "/chatgpt/status") return { accounts: structuredClone(mockChatGPTAccounts), pending: false };
+  if (path === "/chatgpt/login") throw new Error("데모 모드에서는 실제 ChatGPT 계정을 연결하지 않습니다.");
+  if (path === "/chatgpt/logout") {
+    const account = mockChatGPTAccounts.find((item) => item.id === b.account_id);
+    if (account) account.connected = false;
+    return { ok: true };
+  }
+  if (path === "/chatgpt/models") {
+    const account = mockChatGPTAccounts.find((item) => item.id === q.get("account_id"));
+    if (!account?.connected || !account.plan_enabled) throw new Error("연결된 ChatGPT 계정이 필요합니다.");
+    return { models: [{ id: "demo-chatgpt-model", name: "데모 모델 (실제 호출 없음)" }] };
+  }
   if (path === "/llm/records" && m === "GET") return { records: mockLLMRecords, total: mockLLMRecords.length };
   if (path === "/llm/records" && m === "DELETE") return { deleted: 0 };
   if (path === "/llm/records/tasks") {
@@ -2310,14 +2338,53 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/llm" && m === "POST") return { ok: true };
   if (path === "/llm/test")
     return { ok: true, latency_ms: 128, model: String(b.model ?? "claude-opus-4-8"), reply: "OK" };
-  if (path === "/llm/profiles" && m === "GET") return { profiles: D.llmProfiles };
-  if (path === "/llm/profiles" && m === "POST") return { id: Number(b.id) || 3 };
-  if (path === "/llm/profiles/active") return { ok: true };
+  if (path === "/llm/profiles" && m === "GET")
+    return {
+      profiles: mockLLMProfiles.map((profile) => ({
+        ...profile,
+        connected:
+          profile.auth_mode === "chatgpt_plan"
+            ? mockChatGPTAccounts.some(
+                (account) => account.id === profile.chatgpt_account_id && account.connected && account.plan_enabled,
+              )
+            : Boolean(profile.api_key_hint),
+      })),
+    };
+  if (path === "/llm/profiles" && m === "POST") {
+    const id = String(Number(b.id) || Math.max(0, ...mockLLMProfiles.map((profile) => Number(profile.id))) + 1);
+    const index = mockLLMProfiles.findIndex((profile) => profile.id === id);
+    const existing = mockLLMProfiles[index];
+    const { api_key: key, ...fields } = b;
+    const apiKeyHint = key ? "…demo" : existing?.api_key_hint;
+    const saved: LLMProfile = {
+      ...existing,
+      ...fields,
+      id,
+      name: String(b.name ?? ""),
+      model: String(b.model ?? ""),
+      format: b.format === "openai" || b.format === "openai-responses" ? b.format : "anthropic",
+      auth_mode: b.auth_mode === "chatgpt_plan" ? "chatgpt_plan" : "api_key",
+      api_key_hint: b.auth_mode === "chatgpt_plan" ? undefined : apiKeyHint,
+      is_default: existing?.is_default ?? false,
+      rate_per_second: Number(b.rate_per_second) || 0,
+      rate_per_minute: Number(b.rate_per_minute) || 0,
+    };
+    if (index < 0) mockLLMProfiles.push(saved);
+    else mockLLMProfiles[index] = saved;
+    return { id: Number(id) };
+  }
+  if (path === "/llm/profiles/active") {
+    for (const profile of mockLLMProfiles) profile.is_default = Number(profile.id) === Number(b.id);
+    return { ok: true };
+  }
   if (path === "/llm/pool" && m === "GET") return D.llmPool;
   if (path === "/llm/pool/reset")
     return { ...D.llmPool, chain: D.llmPool.chain.map((c) => ({ ...c, state: "ok", fails: 0, cooldown_secs: 0 })) };
-  if (seg[0] === "llm" && seg[1] === "profiles" && seg.length === 3 && m === "DELETE")
+  if (seg[0] === "llm" && seg[1] === "profiles" && seg.length === 3 && m === "DELETE") {
+    const index = mockLLMProfiles.findIndex((profile) => profile.id === seg[2]);
+    if (index >= 0) mockLLMProfiles.splice(index, 1);
     return { deleted: Number(seg[2]) };
+  }
 
   // ── agents ──
   if (path === "/agents" && m === "GET") return { agents: D.agents };

@@ -94,5 +94,5 @@ suricata -r enrich.pcap -S artex.rules -l out && \
 
 Detection contributions are welcome. New rules should keep every indicator grounded in an observable fact,
 state limitations in a comment, pass `suricata -T` cleanly, and avoid any content that reads as attack
-guidance. See [`../../CONTRIBUTING.en.md`](../../CONTRIBUTING.en.md) and the Sigma layer in
+guidance. See [`../../CONTRIBUTING.en.md`](https://github.com/jiwoochris/artex-global/blob/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6/CONTRIBUTING.en.md) and the Sigma layer in
 [`../sigma/`](../sigma/) / [`../README.md`](../README.md).

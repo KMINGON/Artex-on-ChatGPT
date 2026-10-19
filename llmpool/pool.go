@@ -229,6 +229,10 @@ func statusOf(err error) int {
 // pollute the run's termination diagnosis. Never on 400 either: a malformed or
 // over-long request fails identically everywhere.
 func shouldFailover(ctx context.Context, err error) bool {
+	var policy interface{ NoFallback() bool }
+	if errors.As(err, &policy) && policy.NoFallback() {
+		return false
+	}
 	if err == nil {
 		return false
 	}

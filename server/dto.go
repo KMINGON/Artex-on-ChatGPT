@@ -586,19 +586,22 @@ func agentDTOs(in []*db.Agent) []AgentDTO {
 // ---- LLMProfile (frontend "LLMProfile") — string id ----
 
 type LLMProfileDTO struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Format          string  `json:"format"`
-	BaseURL         string  `json:"base_url,omitempty"`
-	Proxy           string  `json:"proxy,omitempty"`
-	Model           string  `json:"model"`
-	APIKeyHint      string  `json:"api_key_hint,omitempty"`
-	RatePerSecond   float64 `json:"rate_per_second"`
-	RatePerMinute   float64 `json:"rate_per_minute"`
-	ContextWindowK  int     `json:"context_window_k"`
-	ThinkingType    string  `json:"thinking_type"`
-	ReasoningEffort string  `json:"reasoning_effort"`
-	IsDefault       bool    `json:"is_default"`
+	AuthMode         string  `json:"auth_mode"`
+	ChatGPTAccountID string  `json:"chatgpt_account_id,omitempty"`
+	Connected        bool    `json:"connected"`
+	ID               string  `json:"id"`
+	Name             string  `json:"name"`
+	Format           string  `json:"format"`
+	BaseURL          string  `json:"base_url,omitempty"`
+	Proxy            string  `json:"proxy,omitempty"`
+	Model            string  `json:"model"`
+	APIKeyHint       string  `json:"api_key_hint,omitempty"`
+	RatePerSecond    float64 `json:"rate_per_second"`
+	RatePerMinute    float64 `json:"rate_per_minute"`
+	ContextWindowK   int     `json:"context_window_k"`
+	ThinkingType     string  `json:"thinking_type"`
+	ReasoningEffort  string  `json:"reasoning_effort"`
+	IsDefault        bool    `json:"is_default"`
 	// 轮询(故障转移)参数：priority 越大越先被选中(激活配置恒为链首)；
 	// pool_exclude=true 则不作为故障转移目标，但仍可被 agent/任务显式绑定。
 	Priority    int  `json:"priority"`
@@ -621,6 +624,7 @@ type LLMProfileDTO struct {
 
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 	return LLMProfileDTO{
+		AuthMode: p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: p.APIKeySet || p.APIKeyHint != "" || p.APIKey != "",
 		ID:               i64s(p.ID),
 		Name:             p.Name,
 		Format:           p.Format,

@@ -10,6 +10,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,20 +21,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/chatgptauth"
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
-	acperm "github.com/Autumn-27/norma/permission"
 	"github.com/Autumn-27/norma/transcript"
 )
 
 // Config describes the LLM backend resolved from the environment.
 type Config struct {
-	Format  llm.Format
-	BaseURL string
-	APIKey  string
-	Model   string
+	AuthMode         string
+	ChatGPTAccountID string
+	ChatGPTAuth      *chatgptauth.Manager
+	Format           llm.Format
+	BaseURL          string
+	APIKey           string
+	Model            string
 	// Proxy routes all LLM requests through the given proxy URL (http/https/socks5,
 	// optionally with user:pass@ credentials). Empty means direct — it does NOT
 	// fall back to the standard *_PROXY environment variables.
@@ -254,6 +258,29 @@ func (c Config) Provider() string {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
+	if c.AuthMode == "chatgpt_plan" {
+		client, err := ChatGPTHTTPClient(c.Proxy)
+		if err != nil {
+			return unavailableChatGPTProvider{}, nil
+		}
+		p, err := chatgptllm.New(chatgptllm.Config{
+			Model: c.Model, HTTPClient: client, ReasoningEffort: c.ReasoningEffort,
+			MaxRetries: c.Retry.ConnectAttempts, RetryInterval: c.Retry.ConnectInterval,
+			Authorize: func(ctx context.Context) (context.Context, context.CancelFunc, string, error) {
+				if c.ChatGPTAuth == nil {
+					return ctx, func() {}, "", chatgptauth.ErrLoginRequired
+				}
+				return c.ChatGPTAuth.Authorize(ctx, c.ChatGPTAccountID)
+			},
+		})
+		if err != nil {
+			return unavailableChatGPTProvider{}, nil
+		}
+		if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
+			p = llm.RateLimited(p, llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute})
+		}
+		return p, nil
+	}
 	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
 	if err != nil {
 		return nil, err
@@ -328,7 +355,9 @@ func IsQuotaExhaustedMessage(message string) bool {
 // 402 lets a task router fail over immediately while retaining the original
 // response body for provider-specific classification and audit logs.
 type quotaAwareTransport struct {
-	base http.RoundTripper
+	base           http.RoundTripper
+	preserveStatus bool
+	disableCapture bool // subscription wire bodies contain private opaque replay state
 	// sessionHeaderKey, when non-empty, is the HTTP header name each request
 	// carries; its value is the session id read from the request context. Empty
 	// disables it. See Config.SessionHeaderKey.
@@ -349,8 +378,13 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// raw wire bodies can be persisted. This is the only layer that still sees
 	// them: norma builds the request body internally and decodes the SSE response
 	// before either reaches the recorder.
-	capt := llmrec.CaptureFrom(req.Context())
-	capt.SetRequest(requestBodySnapshot(req))
+	var capt *llmrec.Capture
+	if !t.disableCapture {
+		capt = llmrec.CaptureFrom(req.Context())
+		if capt != nil {
+			capt.SetRequest(requestBodySnapshot(req))
+		}
+	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {
@@ -361,7 +395,7 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// capture before being replaced.
 	resp.Body = capt.TeeResponse(resp.StatusCode, resp.Body)
 
-	if resp.StatusCode != http.StatusTooManyRequests {
+	if t.preserveStatus || resp.StatusCode != http.StatusTooManyRequests {
 		return resp, nil
 	}
 	body, readErr := io.ReadAll(resp.Body)
@@ -419,6 +453,20 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
 }
 
+// ChatGPTHTTPClient keeps the subscription endpoint's original error status.
+// It shares explicit proxy handling, but never records opaque wire bodies.
+func ChatGPTHTTPClient(proxy string) (*http.Client, error) {
+	client, err := quotaAwareHTTPClient(proxy, "")
+	if err != nil {
+		return nil, err
+	}
+	transport := client.Transport.(quotaAwareTransport)
+	transport.preserveStatus = true
+	transport.disableCapture = true
+	client.Transport = transport
+	return client, nil
+}
+
 // logTestConnection prints the raw HTTP status code(s) and response body of a
 // connection test to the server log, so "点击测试" leaves a diagnosable trail of
 // exactly what the gateway returned — 401 bodies, quota text, empty frames — not
@@ -435,6 +483,24 @@ func logTestConnection(c Config, capt *llmrec.Capture) {
 		log.Printf("[llm-test] %s / %s @ %s — 尝试 %d/%d HTTP %d\n响应体: %s",
 			c.Provider(), c.Model, c.BaseURL, i+1, len(attempts), a.Status, clipBody(a.Body))
 	}
+}
+
+// Subscription transports deliberately disable raw capture. Report only safe
+// result fields; an empty capture does not mean that no HTTP request was sent.
+func logChatGPTTestConnection(err error) {
+	status, code, param, requestID := 0, "test_failed", "", ""
+	var responseErr *chatgptllm.Error
+	switch {
+	case err == nil:
+		status, code = http.StatusOK, "ok"
+	case errors.As(err, &responseErr):
+		status, code, param, requestID = responseErr.StatusCode, responseErr.Code, responseErr.Param, responseErr.RequestID
+	case errors.Is(err, context.DeadlineExceeded):
+		code = "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		code = "canceled"
+	}
+	log.Printf("[llm-test] ChatGPT result status=%d code=%q param=%q request_id=%q", status, code, param, requestID)
 }
 
 // clipBody trims a wire body for logging. 4K is plenty to show an error JSON or
@@ -454,7 +520,12 @@ func clipBody(s string) string {
 // TestConnection makes a minimal real completion to verify the provider/model/
 // endpoint/key actually work. Returns the round-trip latency and the model's
 // reply text.
-func TestConnection(ctx context.Context, c Config) (time.Duration, string, error) {
+func TestConnection(ctx context.Context, c Config) (lat time.Duration, reply string, err error) {
+	if c.AuthMode == "chatgpt_plan" {
+		defer func() { logChatGPTTestConnection(err) }()
+	}
+	// A connection test sends one request; retries belong to normal task runs.
+	c.Retry.ConnectAttempts, c.Retry.EmptyAttempts = -1, -1
 	prov, err := c.NewProvider()
 	if err != nil {
 		return 0, "", err
@@ -464,8 +535,11 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 抓取原始 wire 报文:连接测试最需要看到的就是网关到底回了什么(状态码+响应体),
 	// 而 norma 把响应解码成 StreamEvent 后这些就没了。quotaAwareTransport 会在
 	// context 里找到这个 Capture 并填入每次 HTTP 尝试的状态码与 body。
-	ctx, capt := llmrec.NewCapture(ctx)
-	defer logTestConnection(c, capt)
+	if c.AuthMode != "chatgpt_plan" {
+		var capt *llmrec.Capture
+		ctx, capt = llmrec.NewCapture(ctx)
+		defer logTestConnection(c, capt)
+	}
 	// 连接测试是一条单发路径,不经过 agentcore 的会话循环,因此没人往 context 上挂
 	// session id。对配了 SessionHeaderKey 的端点(如 opencode zen 强制要求
 	// x-opencode-session 头,缺了直接 400 MissingSessionID),这会导致"对话正常、
@@ -477,16 +551,29 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 思考(实测对一句 "ping" 也能烧 ~2900 token)。若只给 32,模型会一直卡在"思考阶段"
 	// 就撞到输出上限(finish=length)、被截断,连接测试虽仍算通(err=nil)但显示成
 	// "已中断/length/resume" 一团糟。给足预算让它把 OK 干净吐完(finish=stop)。
-	// EscalateMaxTokens 保持 false:不因截断而抬额重试,避免 resume 循环空烧。
-	reply, err := agentcore.Run(ctx, agentcore.Options{
-		Provider:       prov,
-		SystemPrompt:   []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
-		PermissionMode: acperm.ModeBypass,
-		MaxTurns:       1,
-		MaxTokens:      8192,
-		NonStreaming:   !c.Stream, // 用该 profile 的真实收发模式做连接测试
-	}, "ping")
-	lat := time.Since(start)
+	// Call the provider directly: a default agent session installs executable
+	// local tools and may spend its sole turn on a tool instead of a reply.
+	req := llm.CompletionRequest{
+		System:    []string{"Reply with exactly OK, without explanation."},
+		Messages:  []llm.Message{llm.UserText("ping")},
+		MaxTokens: 8192,
+	}
+	if c.Stream {
+		acc := llm.NewAccumulator()
+		for ev, streamErr := range prov.Stream(ctx, req) {
+			if streamErr != nil {
+				err = streamErr
+				break
+			}
+			acc.Add(ev)
+		}
+		reply = acc.Message().Text()
+	} else {
+		var msg llm.Message
+		msg, _, _, err = prov.Complete(ctx, req)
+		reply = msg.Text()
+	}
+	lat = time.Since(start)
 	if err != nil {
 		return lat, "", err
 	}
@@ -495,7 +582,7 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 测试却报成功——正是本项要消除的落差。没有可见正文一律判失败。
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
-		return lat, "", fmt.Errorf("模型无回复内容（请求已通，但未返回任何文本）")
+		return lat, "", fmt.Errorf("요청은 완료됐지만 모델이 표시할 텍스트를 반환하지 않았습니다")
 	}
 	return lat, reply, nil
 }

@@ -1384,3 +1384,7 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
     ON notification_deliveries(batch_id) WHERE batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
+
+-- Local ChatGPT registrations reference protected credentials outside PostgreSQL.
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT 'api_key';
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS chatgpt_account_id TEXT NOT NULL DEFAULT '';

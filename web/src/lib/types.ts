@@ -1026,6 +1026,28 @@ export interface NotificationDelivery {
 }
 
 // ---- LLM config ----
+export type LLMAuthMode = "api_key" | "chatgpt_plan";
+
+export interface ChatGPTAccount {
+  id: string;
+  email: string;
+  connected: boolean;
+  plan_enabled: boolean;
+  expires_at?: string;
+}
+
+export interface ChatGPTStatus {
+  accounts: ChatGPTAccount[];
+  pending: boolean;
+  error?: string;
+}
+
+export interface ChatGPTModel {
+  id: string;
+  name: string;
+  context_window?: number;
+}
+
 export interface LLMProfile {
   id: string;
   name: string;
@@ -1034,6 +1056,9 @@ export interface LLMProfile {
   proxy?: string;
   model: string;
   api_key_hint?: string;
+  auth_mode?: LLMAuthMode;
+  chatgpt_account_id?: string;
+  connected?: boolean;
   rate_per_second: number;
   rate_per_minute: number;
   context_window_k?: number;

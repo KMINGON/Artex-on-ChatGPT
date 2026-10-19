@@ -353,9 +353,19 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 
 // serializeRequest builds a JSON representation of the completion request.
 func (r *Recorder) serializeRequest(req llm.CompletionRequest) string {
+	messages := append([]llm.Message(nil), req.Messages...)
+	for i := range messages {
+		messages[i].ProviderData = nil // opaque replay state is not debug/display content
+		messages[i].Content = append([]llm.ContentBlock(nil), messages[i].Content...)
+		for j := range messages[i].Content {
+			if messages[i].Content[j].Type == llm.BlockThinking {
+				messages[i].Content[j].Signature = ""
+			}
+		}
+	}
 	m := map[string]any{
 		"system":     req.System,
-		"messages":   req.Messages,
+		"messages":   messages,
 		"max_tokens": req.MaxTokens,
 	}
 	// 记录本次调用实际发出的思考参数。type 采用「有效值」：每请求覆盖 req.Thinking

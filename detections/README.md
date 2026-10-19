@@ -269,4 +269,4 @@ destination table to your environment before deploying.
 Detection and hardening contributions are welcome. New rules should keep every indicator grounded in an
 observable fact, state limitations in the `description`, pass the SigmaHQ validator baseline cleanly
 (`sigma check --validation-config tests/sigma_lint/validators.yml`), and avoid any content that reads as
-attack guidance. See [`../CONTRIBUTING.en.md`](../CONTRIBUTING.en.md).
+attack guidance. See [`../CONTRIBUTING.en.md`](https://github.com/jiwoochris/artex-global/blob/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6/CONTRIBUTING.en.md).

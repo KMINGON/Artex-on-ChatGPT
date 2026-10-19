@@ -10,7 +10,7 @@ An autonomous AI attack tool turns a penetration test — once a manual process 
 
 ## 1. How an autonomous AI attack differs from a traditional scanner
 
-A traditional vulnerability scanner (for example a fixed-signature tool) fires a predefined checklist in order and stops. An autonomous agent like ARTEX is structured differently. As described in the [system architecture](../README.md#system-architecture), the following elements combine to **run multi-stage attack chains to completion without human intervention**:
+A traditional vulnerability scanner (for example a fixed-signature tool) fires a predefined checklist in order and stops. An autonomous agent like ARTEX is structured differently. As described in the [system architecture](https://github.com/jiwoochris/artex-global/blob/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6/README.md#system-architecture), the following elements combine to **run multi-stage attack chains to completion without human intervention**:
 
 - **Role-separated multi-agents.** The work is split across `goals` (which decomposes objectives), a `planner` (the only producer of intents, which decides the next direction), multiple `worker`s (each of which executes one intent with real tools), and a `mainagent` (the human-in-the-loop point). The planner is the sole intent generator, and the workers carry those intents out in parallel.
 - **State accumulated in a dual graph.** "What exists" (the asset graph) and "how far it has been tested" (the exploration graph) are built separately and joined by anchors. As a result the attack **deepens incrementally**, revisits the same asset from new angles, and builds each next step on prior observations.

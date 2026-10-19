@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/chatgptauth"
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
@@ -109,9 +110,13 @@ const (
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
-	m      *Manager
-	engine *Engine
-	ctx    context.Context
+	chatGPTOnce sync.Once
+	chatGPT     *chatgptauth.Manager
+	chatGPTErr  error
+	chatGPTDir  string
+	m           *Manager
+	engine      *Engine
+	ctx         context.Context
 
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
@@ -444,7 +449,8 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if cfg.APIKey == "" {
+	s.configureChatGPT(&cfg, p)
+	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 		return cfg, false
 	}
 	s.cfgMu.Lock()
@@ -472,6 +478,9 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
 		for _, p := range profs {
 			if p.Name == "default" {
+				if p.AuthMode == "chatgpt_plan" {
+					return fmt.Errorf("ChatGPT 설정은 시스템 → LLM 설정에서 수정해 주세요")
+				}
 				id, priority, poolExclude, streaming = p.ID, p.Priority, p.PoolExclude, p.Streaming
 				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
 				sessionHeaderKey = p.SessionHeaderKey
@@ -615,7 +624,8 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
 	cfg.SessionHeaderKey = p.SessionHeaderKey
 	s.applyProfileRetry(&cfg, p)
-	if cfg.APIKey == "" {
+	s.configureChatGPT(&cfg, p)
+	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 		return cfg, false
 	}
 	return cfg, true
@@ -844,6 +854,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked) // 批量重跑本任务全部 blocked 意图
 	mux.HandleFunc("POST /api/active", s.setActive)
 
+	mux.HandleFunc("GET /api/chatgpt/status", s.chatGPTStatus)
+	mux.HandleFunc("POST /api/chatgpt/login", s.chatGPTLogin)
+	mux.HandleFunc("POST /api/chatgpt/logout", s.chatGPTLogout)
+	mux.HandleFunc("GET /api/chatgpt/models", s.chatGPTModels)
 	mux.HandleFunc("GET /api/llm", s.getLLM)
 	mux.HandleFunc("POST /api/llm", s.setLLM)
 	mux.HandleFunc("POST /api/llm/test", s.testLLM)
@@ -1480,6 +1494,8 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		BaseURL          string `json:"base_url"`
 		Proxy            string `json:"proxy"`
 		APIKey           string `json:"api_key"`
+		AuthMode         string `json:"auth_mode"`
+		ChatGPTAccountID string `json:"chatgpt_account_id"`
 		ThinkingType     string `json:"thinking_type"`
 		ReasoningEffort  string `json:"reasoning_effort"`
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
@@ -1507,9 +1523,12 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// API Key 解析优先级：表单输入 > 指定 profile 存的 key > 全局配置的 key。
 	// 已存 profile 的 key 不回传浏览器，所以测试已存配置时表单为空，需从 DB 取。
 	// 会话头名同理：表单未带时用已存 profile 的值兜底。
-	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "") {
+	if req.ProfileID != nil {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			if cfg.APIKey == "" {
+			if req.AuthMode == "" {
+				req.AuthMode, req.ChatGPTAccountID = p.AuthMode, p.ChatGPTAccountID
+			}
+			if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 				cfg.APIKey = p.APIKey
 			}
 			if cfg.SessionHeaderKey == "" {
@@ -1517,18 +1536,25 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if cfg.APIKey == "" {
+	if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 		s.cfgMu.Lock()
 		cfg.APIKey = s.llmCfg.APIKey
 		s.cfgMu.Unlock()
 	}
-	if cfg.APIKey == "" {
+	if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": trMsg(errLLMTestNoAPIKey)})
 		return
 	}
 	// 重试参数【不】带进连接测试:测试有 30s 硬超时,把配置的重试次数/长间隔叠上去
 	// 只会让一个本来能用的端点测成"超时失败"。测试看的是"这个端点通不通",重试节奏
 	// 是跑起来之后的事。
+	if req.AuthMode == "chatgpt_plan" {
+		if req.ChatGPTAccountID == "" {
+			writeJSON(w, 200, map[string]any{"ok": false, "error": "ChatGPT 계정을 선택해 주세요"})
+			return
+		}
+		s.configureChatGPT(&cfg, &db.LLMProfile{AuthMode: req.AuthMode, ChatGPTAccountID: req.ChatGPTAccountID})
+	}
 	lat, reply, err := agent.TestConnection(r.Context(), cfg)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})

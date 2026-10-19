@@ -249,7 +249,17 @@ func (b *contextBuilder) compactSnapshot(ctx context.Context, base []llm.Message
 	}
 	// Serialize only the portion being summarized. The retained suffix stays
 	// in norma's structured message representation, including signed thinking.
-	data, err := json.Marshal(base[:start])
+	summaryMessages := append([]llm.Message(nil), base[:start]...)
+	for i := range summaryMessages {
+		summaryMessages[i].ProviderData = nil // replay state must never become prompt text
+		summaryMessages[i].Content = append([]llm.ContentBlock(nil), summaryMessages[i].Content...)
+		for j := range summaryMessages[i].Content {
+			if summaryMessages[i].Content[j].Type == llm.BlockThinking {
+				summaryMessages[i].Content[j].Signature = ""
+			}
+		}
+	}
+	data, err := json.Marshal(summaryMessages)
 	if err != nil {
 		return nil, err
 	}

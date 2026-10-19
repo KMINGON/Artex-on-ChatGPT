@@ -41,7 +41,14 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		Model:     p.Model,
 		Source:    source,
 	}
-	if p.APIKey == "" {
+	if p.AuthMode == "chatgpt_plan" {
+		profiles := s.chatGPTProfileDTOs([]*db.LLMProfile{p})
+		if !profiles[0].Connected {
+			result.Reason = "ChatGPT 계정을 다시 연결해 주세요"
+			return result
+		}
+	}
+	if p.AuthMode != "chatgpt_plan" && p.APIKey == "" {
 		result.Reason = reasonLLMProfileNoAPIKey
 		return result
 	}
@@ -71,7 +78,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 		}
 		if p != nil {
 			resolved := s.resolutionFromProfile(p, "agent_binding")
-			if resolved.Available {
+			if resolved.Available || p.AuthMode == "chatgpt_plan" {
 				return resolved, nil
 			}
 		}
@@ -93,7 +100,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 	}
 	if p != nil {
 		resolved := s.resolutionFromProfile(p, "global_profile")
-		if resolved.Available {
+		if resolved.Available || p.AuthMode == "chatgpt_plan" {
 			return resolved, nil
 		}
 	}

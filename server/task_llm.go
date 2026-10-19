@@ -82,6 +82,10 @@ func isTaskLLMChainExhausted(err error) bool {
 // network failure, or 5xx does not rotate providers; the response must explicitly
 // identify quota, credits, billing balance, or payment exhaustion.
 func isQuotaExhaustedError(err error) bool {
+	var policy interface{ NoFallback() bool }
+	if errors.As(err, &policy) && policy.NoFallback() {
+		return false
+	}
 	return err != nil && agent.IsQuotaExhaustedMessage(err.Error())
 }
 
@@ -430,6 +434,12 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 //   - 4xx 确定性拒绝(400/401/403/404/422):到哪个 provider 都一样会失败
 func isRetryableStreamError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// ChatGPT's adapter owns bounded admission retries. Replaying its Complete
+	// error here could repeat a stream that already consumed subscription usage.
+	var policy interface{ NoFallback() bool }
+	if errors.As(err, &policy) && policy.NoFallback() {
 		return false
 	}
 	if isQuotaExhaustedError(err) {

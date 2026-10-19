@@ -20,6 +20,8 @@ import type {
   BatchCategoryItem,
   BatchControlItem,
   ChatAttachment,
+  ChatGPTModel,
+  ChatGPTStatus,
   CommandRecord,
   Company,
   CompanyScopeMutation,
@@ -54,6 +56,7 @@ import type {
   InterceptRule,
   JudgeConfig,
   JudgeUsage,
+  LLMAuthMode,
   LLMPoolStatus,
   LLMProfile,
   LLMRecordDetail,
@@ -923,6 +926,13 @@ export const api = {
   gc: (ttl = 86400) => post<{ removed: number }>(`/gc?ttl=${ttl}`, {}),
 
   // ---- LLM ----
+  chatgptStatus: () => get<ChatGPTStatus>("/chatgpt/status"),
+  chatgptLogin: (account_id?: string) => post<{ url: string; expires_at: string }>("/chatgpt/login", { account_id }),
+  chatgptLogout: (account_id: string) => post<{ ok: boolean; warning?: string }>("/chatgpt/logout", { account_id }),
+  chatgptModels: (account_id: string) =>
+    get<{ models: ChatGPTModel[] }>(`/chatgpt/models?account_id=${encodeURIComponent(account_id)}`).then((r) =>
+      arr(r.models),
+    ),
   getLLM: () =>
     get<{
       configured: boolean;
@@ -958,6 +968,8 @@ export const api = {
     profile_id?: number,
     streaming = true, // 用该配置真实的收发模式来测，别让"流式能通、非流式不通"漏到会话里
     session_header_key = "", // 非空=测试请求也带该自定义会话头（值为一次性 session id）
+    auth_mode: LLMAuthMode = "api_key",
+    chatgpt_account_id?: string,
   ) =>
     // reply = 模型实际回复(已截断);一个字都不回的配置后端直接判失败
     post<{ ok: boolean; error?: string; latency_ms?: number; model?: string; reply?: string }>("/llm/test", {
@@ -971,6 +983,8 @@ export const api = {
       profile_id,
       streaming,
       session_header_key,
+      auth_mode,
+      chatgpt_account_id,
     }),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
@@ -981,6 +995,8 @@ export const api = {
     base_url?: string;
     proxy?: string;
     api_key?: string; // blank on update keeps the existing key
+    auth_mode?: LLMAuthMode;
+    chatgpt_account_id?: string;
     rate_per_second?: number;
     rate_per_minute?: number;
     context_window_k?: number;

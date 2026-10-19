@@ -78,6 +78,10 @@ func (s *Server) poolMember(p *db.LLMProfile, rank int) *llmpool.Member {
 // Returns nil when failover is off or the chain has fewer than two usable members
 // — callers then use the bare provider, which is byte-for-byte the old behavior.
 func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Config) *llmpool.Pool {
+	// A subscription connection must never silently switch to API billing.
+	if headCfg.AuthMode == "chatgpt_plan" {
+		return nil
+	}
 	if s.m == nil || s.m.pg == nil || !s.m.LLMPoolEnabled() {
 		return nil
 	}

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
@@ -21,6 +22,13 @@ import (
 // judgeWorkerLane is the usage-ledger "worker" label for intercept fallback-judge
 // calls, so judge spend can be queried apart from the worker/planner/main lanes.
 const judgeWorkerLane = "judge"
+
+// This bounds received output, not upstream token generation or reasoning cost.
+const judgeMaxResponseBytes = 16 << 10
+
+const judgeResponseContract = `本次裁决输出必须是有效 UTF-8 的单个 JSON 对象，恰好包含 decision 和 comment 两个字符串字段；不得重复字段、添加未知字段、代码围栏、前后说明或第二个对象。整个响应最多 16384 字节。继续遵守上述裁决策略及 comment 三段格式；这里只限定输出格式，不改变允许、转人工、拒绝的判定规则。`
+
+var errJudgeOutputRejected = errors.New("판정 응답이 불완전하거나 출력 제한을 벗어나 실행을 차단했습니다")
 
 // chatGuard returns a guard wired with the manager's interceptor, used for chat
 // conversations. Called once per applyLLM so a new LLM config always gets a fresh guard.
@@ -58,16 +66,24 @@ func (s *Server) wireInterceptReviewer() {
 		// Tag this call's usage as the "judge" lane so the config page can report
 		// how much the fallback approval has spent, separate from model profiles.
 		ctx = llmrec.WithWorker(ctx, judgeWorkerLane)
-		text, err := reviewCompletion(ctx, prov, prompt, input)
-		if err != nil {
-			return intercept.Decision{ProfileID: profileID}, err
-		}
-		v := intercept.ParseVerdict(text)
-		if v.Action == "" {
-			return intercept.Decision{ProfileID: profileID}, errors.New(errJudgeVerdictMalformed)
-		}
-		return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID}, nil
+		return reviewDecision(ctx, prov, profileID, prompt, input)
 	})
+}
+
+func reviewDecision(ctx context.Context, prov llm.Provider, profileID int64, prompt string, input intercept.ReviewInput) (intercept.Decision, error) {
+	text, err := reviewCompletion(ctx, prov, prompt, input)
+	if errors.Is(err, errJudgeOutputRejected) {
+		return intercept.Decision{Action: "deny", Message: err.Error(), ProfileID: profileID, ModelFallback: true}, nil
+	}
+	if err != nil {
+		return intercept.Decision{ProfileID: profileID}, err
+	}
+	v := intercept.ParseVerdict(text)
+	if !utf8.ValidString(text) || !json.Valid([]byte(text)) || v.Action == "" {
+		// An error would take the configured model-failure path, which may allow.
+		return intercept.Decision{Action: "deny", Message: errJudgeVerdictMalformed, ProfileID: profileID, ModelFallback: true}, nil
+	}
+	return intercept.Decision{Action: v.Action, Message: v.Reason, ProfileID: profileID}, nil
 }
 
 func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, input intercept.ReviewInput) (string, error) {
@@ -75,13 +91,15 @@ func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, inp
 	if err != nil {
 		return "", err
 	}
+	prompt = intercept.EffectiveJudgePrompt(prompt) + "\n\n" + judgeResponseContract
 	return streamCollectText(ctx, prov, prompt, string(user))
 }
 
-// streamCollectText runs a single non-streaming-style completion (thinking off,
-// low temperature, bounded output) and returns the concatenated text. The
-// budget includes the explanation and complete closing JSON delimiters.
+// API providers may honor these sampling/token hints; SIWC does not. Local
+// output validation and a received-byte cap apply independently of those hints.
 func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	temp := 0.0
 	req := llm.CompletionRequest{
 		System:      []string{system},
@@ -91,13 +109,38 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 		Thinking:    "disabled",
 	}
 	var sb strings.Builder
+	received := 0
+	finished := false
 	for ev, err := range prov.Stream(ctx, req) {
 		if err != nil {
+			var rejected interface{ OutputRejected() bool }
+			if received > 0 || (errors.As(err, &rejected) && rejected.OutputRejected()) {
+				return "", errJudgeOutputRejected
+			}
 			return "", err
 		}
-		if ev.Type == llm.SETextDelta {
-			sb.WriteString(ev.Text)
+		if len(ev.Text) > judgeMaxResponseBytes-received {
+			return "", errJudgeOutputRejected
 		}
+		received += len(ev.Text)
+		switch ev.Type {
+		case llm.SETextDelta:
+			sb.WriteString(ev.Text)
+		case llm.SEToolUseStart, llm.SEToolInputJSON:
+			return "", errJudgeOutputRejected
+		case llm.SEMessageDelta:
+			if ev.StopReason != "" {
+				if ev.StopReason != "end_turn" {
+					return "", errJudgeOutputRejected
+				}
+				finished = true
+			}
+		case llm.SEMessageStop:
+			finished = true
+		}
+	}
+	if !finished || ctx.Err() != nil {
+		return "", errJudgeOutputRejected
 	}
 	return sb.String(), nil
 }

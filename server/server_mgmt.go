@@ -1854,7 +1854,7 @@ func (s *Server) pgListProfiles(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"profiles": llmProfileDTOs(ps)})
+	writeJSON(w, 200, map[string]any{"profiles": s.chatGPTProfileDTOs(ps)})
 }
 
 func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
@@ -1877,6 +1877,41 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := body.LLMProfile
+	if p.ID != 0 && p.AuthMode == "" {
+		if previous, err := pg.ProfileByID(p.ID); err == nil && previous != nil {
+			p.AuthMode, p.ChatGPTAccountID = previous.AuthMode, previous.ChatGPTAccountID
+		}
+	}
+	if p.AuthMode == "chatgpt_plan" {
+		m, err := s.chatGPTManager()
+		if err != nil {
+			writeErr(w, 503, "ChatGPT 연결 저장소를 열 수 없습니다")
+			return
+		}
+		found := false
+		for _, a := range m.Snapshot().Accounts {
+			if a.ID == p.ChatGPTAccountID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeErr(w, 400, "먼저 ChatGPT 계정을 연결해 주세요")
+			return
+		}
+		p.Format = "openai-responses"
+		if strings.TrimSpace(p.Model) == "" {
+			writeErr(w, 400, "ChatGPT 모델을 선택해 주세요")
+			return
+		}
+		if _, err := agent.ChatGPTHTTPClient(p.Proxy); err != nil {
+			writeErr(w, 400, "프록시 주소가 올바르지 않습니다")
+			return
+		}
+	} else if p.AuthMode != "" && p.AuthMode != "api_key" {
+		writeErr(w, 400, "지원하지 않는 인증 방식입니다")
+		return
+	}
 	p.APIKey = body.APIKey
 	p.Streaming = body.Streaming == nil || *body.Streaming
 	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
