@@ -281,9 +281,6 @@ const (
 	settingOutputLanguage = "output_language"
 	// defaultWebSearchBackend is used when web search is on but no backend was picked.
 	defaultWebSearchBackend = "ddgs"
-	// deepSeekWebSearchBackend borrows the active LLM profile instead of its own
-	// key, so it only works on an anthropic-format profile pointed at DeepSeek.
-	deepSeekWebSearchBackend = "deepseek"
 	// defaultWorkers is the concurrent work-agent count when the setting is unset.
 	defaultWorkers = 3
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
@@ -574,26 +571,10 @@ func (m *Manager) WebSearchOpts() agent.WebSearchOpts {
 	if on && backend == "tavily" && strings.TrimSpace(tavilyKey) == "" {
 		on = false
 	}
-	o := agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
-	if backend == deepSeekWebSearchBackend {
-		o.DeepSeekBaseURL, o.DeepSeekAPIKey, o.DeepSeekModel = m.deepSeekSearchCreds()
+	if backend != "ddgs" && backend != "brave-free" && backend != "tavily" {
+		on = false
 	}
-	return o
-}
-
-// deepSeekSearchCreds resolves the credentials the "deepseek" search backend
-// borrows from the active LLM profile (it has no key of its own). Whether that
-// profile can actually drive server-side search — DeepSeek exposes it only on
-// the Anthropic-format endpoint — is deliberately NOT validated here: the UI
-// states the requirement and the user decides. A profile that can't serve it
-// simply fails at search time (or at the settings page's 测试 button), which is
-// the same feedback every other backend gives for a bad key.
-func (m *Manager) deepSeekSearchCreds() (baseURL, apiKey, model string) {
-	p, err := m.pg.ActiveProfile()
-	if err != nil || p == nil {
-		return "", "", ""
-	}
-	return p.BaseURL, p.APIKey, p.Model
+	return agent.WebSearchOpts{Enabled: on, Backend: backend, BraveKey: braveKey, TavilyKey: tavilyKey, Proxy: proxy}
 }
 
 // SetWebSearch persists and applies the web-search settings. braveKey, tavilyKey, and
@@ -604,6 +585,9 @@ func (m *Manager) SetWebSearch(on bool, backend string, braveKey, tavilyKey, pro
 	backend = strings.TrimSpace(backend)
 	if backend == "" {
 		backend = defaultWebSearchBackend
+	}
+	if backend != "ddgs" && backend != "brave-free" && backend != "tavily" {
+		return fmt.Errorf("이 검색 제공자는 지원하지 않습니다. DDGS, Brave 또는 Tavily를 다시 선택해 주세요")
 	}
 	if err := m.pg.SetBool(settingWebSearchOn, on); err != nil {
 		return err

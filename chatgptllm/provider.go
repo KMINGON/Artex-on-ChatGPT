@@ -1,5 +1,5 @@
-// Package chatgptllm adapts ChatGPT plan usage to Norma without replacing its
-// tool executor. Credentials are obtained for each request and never stored here.
+// Package chatgptllm adapts OpenAI Responses to Norma for API keys and ChatGPT
+// plan usage, preserving the same tool executor and response replay contract.
 package chatgptllm
 
 import (
@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"iter"
 	"net/http"
@@ -29,70 +28,54 @@ type Config struct {
 	Model           string
 	HTTPClient      *http.Client
 	Authorize       Authorize
+	APIKey          string // Mutually exclusive with Authorize.
 	ReasoningEffort string
-	// Zero uses two retries; negative disables retries. Only failed HTTP admission
-	// or transport establishment is retried, never an opened response stream.
+	// Zero uses two plan retries or three API retries; negative disables retries.
+	// One budget covers HTTP
+	// admission and known transient SSE failures before any output is exposed.
 	MaxRetries    int
 	RetryInterval time.Duration
 }
 
-// Error retains diagnostics without putting response bodies or credentials in
-// its printable form. Every ChatGPT error stops automatic billing-path fallback.
-type Error struct {
-	StatusCode int
-	Code       string
-	Param      string
-	RequestID  string
-	Body       []byte
-	Message    string
-	cause      error
+type provider struct {
+	cfg        Config
+	fixedRetry bool // API's explicitly configured delay historically stayed fixed.
 }
-
-func (e *Error) Error() string {
-	if e.StatusCode != 0 {
-		return fmt.Sprintf("ChatGPT 요청 실패 (status %d): %s", e.StatusCode, e.Message)
-	}
-	return "ChatGPT 요청 실패: " + e.Message
-}
-func (e *Error) Unwrap() error    { return e.cause }
-func (e *Error) NoFallback() bool { return true }
-
-// OutputRejected distinguishes an unusable model response from a connection
-// failure, even when no safe text delta could be exposed to the caller.
-func (e *Error) OutputRejected() bool {
-	switch e.Code {
-	case "invalid_completion", "invalid_tool_call", "invalid_stream", "interrupted_stream",
-		"unsupported_output", "unsupported_event", "incomplete_response", "empty_response",
-		"response_too_large", "auxiliary_output_limit", "auxiliary_timeout":
-		return true
-	default:
-		return false
-	}
-}
-
-func failure(code, message string, cause error) *Error {
-	return &Error{Code: code, Message: message, cause: cause}
-}
-
-type provider struct{ cfg Config }
 
 func New(cfg Config) (llm.Provider, error) {
 	cfg.Model = strings.TrimSpace(cfg.Model)
-	if cfg.Model == "" || cfg.Authorize == nil {
-		return nil, failure("invalid_config", "모델과 ChatGPT 연결이 필요합니다", nil)
+	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
+	if cfg.Model == "" || (cfg.Authorize == nil) == (cfg.APIKey == "") {
+		e := failure("invalid_config", "모델과 하나의 OpenAI API 키 또는 ChatGPT 연결이 필요합니다", nil)
+		e.APIKeyMode = cfg.APIKey != ""
+		return nil, e
+	}
+	if cfg.APIKey != "" {
+		key := cfg.APIKey
+		cfg.Authorize = func(ctx context.Context) (context.Context, context.CancelFunc, string, error) {
+			return ctx, func() {}, key, nil
+		}
 	}
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 2
+		if cfg.APIKey != "" {
+			cfg.MaxRetries = 3
+		}
 	}
-	if cfg.MaxRetries > 5 {
-		cfg.MaxRetries = 5
+	limit := 5
+	if cfg.APIKey != "" {
+		limit = 20
 	}
+	cfg.MaxRetries = min(cfg.MaxRetries, limit)
+	fixedRetry := cfg.APIKey != "" && cfg.RetryInterval > 0
 	if cfg.RetryInterval <= 0 {
 		cfg.RetryInterval = 500 * time.Millisecond
 	}
-	cfg.RetryInterval = min(cfg.RetryInterval, 30*time.Second)
+	if cfg.APIKey == "" {
+		cfg.RetryInterval = min(cfg.RetryInterval, 30*time.Second)
+	}
 	cfg.HTTPClient = fixedClient(cfg.HTTPClient)
-	return &provider{cfg: cfg}, nil
+	return &provider{cfg: cfg, fixedRetry: fixedRetry}, nil
 }
 
 func fixedClient(client *http.Client) *http.Client {
@@ -110,59 +93,98 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 		ctx := parent
 		budget := outputBudget{}
 		cancel := func() {}
-		if auxiliaryRequest(req) {
+		if p.cfg.APIKey == "" && auxiliaryRequest(req) {
 			ctx, cancel = context.WithTimeout(ctx, auxiliaryTimeout)
 			budget.limit = auxiliaryByteLimit(req)
 		}
 		defer cancel()
-		requestError := func(err error) error {
-			if budget.limit > 0 && parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				return failure("auxiliary_timeout", "판정·요약 응답이 90초 제한을 초과했습니다", ctx.Err())
-			}
-			if ctx.Err() != nil {
-				return failure("canceled", "요청이 취소되었습니다", ctx.Err())
-			}
-			return err
-		}
 		body, names, err := encodeRequest(p.cfg, req)
+		shape := requestShape(body, req)
 		if err != nil {
-			yield(llm.StreamEvent{}, err)
+			yield(llm.StreamEvent{}, p.annotate(err, "encoding", shape, 0, false))
 			return
 		}
-		resp, release, err := p.open(ctx, body)
-		if err != nil {
-			yield(llm.StreamEvent{}, requestError(err))
-			return
-		}
-		defer release()
-		defer resp.Body.Close()
-		var budgetErr error
-		err = consume(resp, names, func(ev llm.StreamEvent, err error) bool {
-			if !budget.accept(ev) {
-				budgetErr = failure("auxiliary_output_limit", "판정·요약 출력이 로컬 길이 제한을 초과했습니다", nil)
-				cancel()
-				return false
+		for attempt := 0; ; attempt++ {
+			resp, release, err := p.open(ctx, body)
+			attempts := attempt
+			var admissionErr *Error
+			if resp != nil || (errors.As(err, &admissionErr) && admissionErr.Attempts > 0) {
+				attempts++
 			}
-			return yield(ev, err)
-		})
-		if budgetErr != nil {
-			if e, ok := budgetErr.(*Error); ok {
-				e.StatusCode, e.RequestID = resp.StatusCode, resp.Header.Get("X-Request-Id")
+			emitted, stopped := false, false
+			stage := "admission"
+			if err == nil {
+				stage = "stream"
+				var budgetErr error
+				err = consumeWithOptions(resp, names, p.cfg.APIKey != "" && !auxiliaryRequest(req), func(ev llm.StreamEvent, err error) bool {
+					if !budget.accept(ev) {
+						budgetErr = failure("auxiliary_output_limit", "판정·요약 출력이 로컬 길이 제한을 초과했습니다", nil)
+						return false
+					}
+					if ev.Text != "" || ev.Type == llm.SEToolUseStart || ev.Type == llm.SEMessageFinal {
+						emitted = true
+					}
+					if !yield(ev, err) {
+						stopped = true
+						return false
+					}
+					return true
+				})
+				resp.Body.Close()
+				release()
+				if stopped {
+					return
+				}
+				if budgetErr != nil {
+					err = budgetErr
+				} else if err == nil {
+					return
+				}
 			}
-			yield(llm.StreamEvent{}, budgetErr)
-		} else if err != nil {
-			err = requestError(err)
-			var e *Error
-			if errors.As(err, &e) && e.StatusCode == 0 {
-				e.StatusCode, e.RequestID = resp.StatusCode, resp.Header.Get("X-Request-Id")
+			if budget.limit > 0 && parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				err = failure("auxiliary_timeout", "판정·요약 응답이 90초 제한을 초과했습니다", ctx.Err())
+			} else if ctx.Err() != nil && (err == nil || !errors.Is(err, ctx.Err())) {
+				err = failure("canceled", "요청이 취소되었습니다", ctx.Err())
 			}
-			yield(llm.StreamEvent{}, err)
+			e := p.annotate(err, stage, shape, attempts, emitted)
+			if resp != nil {
+				e.StatusCode = resp.StatusCode
+				e.RequestID = safeToken(resp.Header.Get("X-Request-Id"))
+			}
+			if ctx.Err() != nil || emitted || attempt >= p.cfg.MaxRetries || !retryable(e) {
+				yield(llm.StreamEvent{}, e)
+				return
+			}
+			delay := p.retryDelay(attempt)
+			if resp != nil {
+				if seconds, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && seconds > 0 {
+					delay = time.Duration(min(seconds, 30)) * time.Second
+				}
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				yield(llm.StreamEvent{}, p.annotate(failure("canceled", "요청이 취소되었습니다", ctx.Err()), "backoff", shape, attempt+1, false))
+				return
+			case <-timer.C:
+			}
 		}
 	}
 }
 
-// Complete preserves Norma's atomic return contract, but unlike its built-in
-// providers it buffers an HTTP SSE request (SIWC requires stream:true).
+func (p *provider) retryDelay(attempt int) time.Duration {
+	if p.fixedRetry {
+		return p.cfg.RetryInterval
+	}
+	limit := 30 * time.Second
+	if p.cfg.APIKey != "" {
+		limit = 8 * time.Second
+	}
+	return min(p.cfg.RetryInterval*time.Duration(1<<attempt), limit)
+}
+
+// Complete atomically aggregates the same SSE transport used by Stream.
 func (p *provider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	acc := llm.NewAccumulator()
 	for ev, err := range p.Stream(ctx, req) {
@@ -175,47 +197,23 @@ func (p *provider) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 }
 
 func (p *provider) open(ctx context.Context, body []byte) (*http.Response, context.CancelFunc, error) {
-	for attempt := 0; ; attempt++ {
-		resp, release, err := authorizedRequest(ctx, p.cfg.Authorize, p.cfg.HTTPClient, http.MethodPost, responsesURL, body)
-		if err == nil && resp.StatusCode == http.StatusOK {
-			// The ChatGPT plan route can omit Content-Type on a valid SSE body.
-			// consume still validates every event and requires response.completed.
-			contentType := strings.TrimSpace(strings.ToLower(resp.Header.Get("Content-Type")))
-			if contentType != "" && !strings.HasPrefix(contentType, "text/event-stream") {
-				resp.Body.Close()
-				release()
-				err := failure("invalid_stream", "서버가 이벤트 스트림을 반환하지 않았습니다", nil)
-				err.StatusCode, err.RequestID = resp.StatusCode, resp.Header.Get("X-Request-Id")
-				return nil, nil, err
-			}
+	resp, release, err := authorizedRequest(ctx, p.cfg.Authorize, p.cfg.HTTPClient, http.MethodPost, responsesURL, body)
+	if err != nil {
+		return resp, nil, err
+	}
+	if resp.StatusCode == http.StatusOK {
+		// Some valid plan streams omit Content-Type. Event validation still applies.
+		contentType := strings.TrimSpace(strings.ToLower(resp.Header.Get("Content-Type")))
+		if contentType == "" || strings.HasPrefix(contentType, "text/event-stream") {
 			return resp, release, nil
 		}
-		delay := p.cfg.RetryInterval
-		if resp != nil {
-			err = httpFailure(resp)
-			if seconds, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && seconds > 0 {
-				delay = time.Duration(min(seconds, 30)) * time.Second
-			}
-			resp.Body.Close()
-		}
-		if release != nil {
-			release()
-		}
-		if ctx.Err() != nil {
-			return nil, nil, failure("canceled", "요청이 취소되었습니다", ctx.Err())
-		}
-		if attempt >= p.cfg.MaxRetries || !retryable(err) {
-			return nil, nil, err
-		}
-		delay = min(delay*time.Duration(1<<attempt), 30*time.Second)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, nil, failure("canceled", "요청이 취소되었습니다", ctx.Err())
-		case <-timer.C:
-		}
+		err = failure("invalid_stream", "서버가 이벤트 스트림을 반환하지 않았습니다", nil)
+	} else {
+		err = httpFailure(resp)
 	}
+	resp.Body.Close()
+	release()
+	return resp, nil, err
 }
 
 func authorizedRequest(ctx context.Context, authorize Authorize, client *http.Client, method, url string, body []byte) (*http.Response, context.CancelFunc, error) {
@@ -250,65 +248,11 @@ func authorizedRequest(ctx context.Context, authorize Authorize, client *http.Cl
 	resp, err := client.Do(req)
 	if err != nil {
 		release()
-		return nil, nil, failure("transport_error", "OpenAI에 연결할 수 없습니다", err)
+		e := failure("transport_error", "OpenAI에 연결할 수 없습니다", err)
+		e.Attempts = 1
+		return nil, nil, e
 	}
 	return resp, release, nil
-}
-
-func retryable(err error) bool {
-	var e *Error
-	if !errors.As(err, &e) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
-	if strings.HasPrefix(e.Code, "subscription_sharing_") {
-		return e.Code == "subscription_sharing_usage_unavailable" || e.Code == "subscription_sharing_user_unavailable"
-	}
-	return e.Code == "transport_error" || e.StatusCode == 408 || e.StatusCode == 429 || e.StatusCode >= 500
-}
-
-func httpFailure(resp *http.Response) *Error {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	e := responseFailure(body)
-	e.StatusCode, e.RequestID, e.cause = resp.StatusCode, resp.Header.Get("X-Request-Id"), err
-	return e
-}
-
-func responseFailure(body []byte) *Error {
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Param   string `json:"param"`
-			Message string `json:"message"`
-		} `json:"error"`
-		Code  string `json:"code"`
-		Param string `json:"param"`
-	}
-	_ = json.Unmarshal(body, &envelope)
-	code, param := envelope.Error.Code, envelope.Error.Param
-	if code == "" {
-		code, param = envelope.Code, envelope.Param
-	}
-	message := "OpenAI가 요청을 완료하지 못했습니다"
-	switch code {
-	case "subscription_sharing_usage_limit_exceeded":
-		message = "ChatGPT 사용 한도에 도달했습니다. ChatGPT 사용량 설정을 확인해 주세요"
-	case "subscription_sharing_user_not_eligible", "subscription_sharing_route_not_supported", "chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context":
-		message = "이 연결에서 ChatGPT 플랜 사용이 허용되지 않았습니다"
-	case "subscription_sharing_invalid_user":
-		message = "ChatGPT 연결의 인증 상태를 확인해 주세요"
-	case "subscription_sharing_unsupported_capability":
-		message = "ChatGPT 플랜에서 지원하지 않는 요청입니다"
-	case "subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable":
-		message = "ChatGPT 사용 가능 여부를 일시적으로 확인할 수 없습니다"
-	case "context_length_exceeded":
-		message = "입력이 모델 문맥 한도를 초과했습니다 (context_length_exceeded)"
-	}
-	// Norma and side-question compaction recognize overflow by its printable
-	// marker. Retain that signal without exposing arbitrary upstream messages.
-	if code == "" && strings.Contains(strings.ToLower(envelope.Error.Message), "maximum context length") {
-		message = "입력이 모델 문맥 한도를 초과했습니다 (context_length_exceeded)"
-	}
-	return &Error{Code: code, Param: param, Body: append([]byte(nil), body...), Message: message}
 }
 
 type Model struct {

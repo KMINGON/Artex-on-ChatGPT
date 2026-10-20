@@ -34,7 +34,6 @@ func TestResolveRetryFromGlobal(t *testing.T) {
 	got := resolveRetry(db.RetryOverride{}, pol)
 	want := agent.RetryConfig{
 		ConnectAttempts: 5, ConnectInterval: 2 * time.Second,
-		EmptyAttempts:  -1,
 		StreamAttempts: 4, StreamInterval: 1500 * time.Millisecond,
 	}
 	if got != want {

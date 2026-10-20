@@ -63,7 +63,7 @@ func (s *Server) poolMember(p *db.LLMProfile, rank int) *llmpool.Member {
 		return nil
 	}
 	return &llmpool.Member{
-		ID: p.ID, Name: p.Name, Model: p.Model, Format: p.Format,
+		ID: p.ID, Name: p.Name, Model: p.Model, ConnectionIdentity: cfg.ConnectionIdentity(),
 		Priority: p.Priority, Active: p.IsDefault, Rank: rank,
 		WindowTokens: cfg.CompactionWindow(), Prov: prov,
 	}
@@ -105,7 +105,7 @@ func (s *Server) poolChain(headID int64, headProv llm.Provider, headCfg agent.Co
 		}
 	}
 	members := []*llmpool.Member{{
-		ID: head.ID, Name: head.Name, Model: head.Model, Format: head.Format,
+		ID: head.ID, Name: head.Name, Model: head.Model, ConnectionIdentity: headCfg.ConnectionIdentity(),
 		Priority: head.Priority, Active: head.IsDefault, Rank: llmpool.RankActive,
 		WindowTokens: headCfg.CompactionWindow(), Prov: headProv,
 	}}
@@ -163,7 +163,6 @@ type LLMPoolMemberStatus struct {
 	ProfileID string `json:"profile_id"`
 	Name      string `json:"name"`
 	Model     string `json:"model"`
-	Format    string `json:"format"`
 	Priority  int    `json:"priority"`
 	Active    bool   `json:"active"`   // is the globally-activated profile
 	Excluded  bool   `json:"excluded"` // pool_exclude — not a failover target
@@ -203,7 +202,7 @@ func (s *Server) llmPoolStatus() map[string]any {
 	for _, p := range all {
 		st := health[p.ID]
 		m := LLMPoolMemberStatus{
-			ProfileID: i64s(p.ID), Name: p.Name, Model: p.Model, Format: p.Format,
+			ProfileID: i64s(p.ID), Name: p.Name, Model: p.Model,
 			Priority: p.Priority, Active: p.IsDefault, Excluded: p.PoolExclude,
 			State: "ok", Fails: st.Fails, Trips: st.Trips,
 			LastError: st.LastError,

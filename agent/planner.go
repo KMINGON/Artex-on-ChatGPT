@@ -21,24 +21,25 @@ import (
 // assets, judges whether the task goal is met, and emits 0..N exploration intents
 // into the frontier. It is the sole intent generator.
 type Planner struct {
-	findingRecorder   FindingRecorder
-	prov              llm.Provider
-	model             string
-	tx                *transcript.Store                      // raw LLM conversation persistence (nil = off)
-	window            int                                    // context window in tokens (for compaction)
-	windowFn          func() int                             // optional dynamic task-chain minimum
-	maxTurns          int                                    // max agent turns per run (0 = unlimited)
-	killWork          func(intentID int64) error             // engine callback to terminate a running work (nil = off)
-	steerWork         func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
-	proxyAddr         string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert       string                                 // recording proxy's CA cert path (HTTPS verify)
-	webSearch         WebSearchOpts                          // web_search tool backend selection (off by default)
-	workDir           string                                 // shared work dir (surfaced in prompt as artifact-output target)
-	injectConstraints func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
-	nonStreamingFn    func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn      func() bool                            // resolver: use experimental noa compaction? (nil = off)
-	maxTokensFn       func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor         *Compactor                             // cold-node compaction (§7); nil = disabled
+	findingRecorder    FindingRecorder
+	connectionIdentity func() string
+	prov               llm.Provider
+	model              string
+	tx                 *transcript.Store                      // raw LLM conversation persistence (nil = off)
+	window             int                                    // context window in tokens (for compaction)
+	windowFn           func() int                             // optional dynamic task-chain minimum
+	maxTurns           int                                    // max agent turns per run (0 = unlimited)
+	killWork           func(intentID int64) error             // engine callback to terminate a running work (nil = off)
+	steerWork          func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
+	proxyAddr          string                                 // recording proxy for WebFetch (empty = direct)
+	proxyCACert        string                                 // recording proxy's CA cert path (HTTPS verify)
+	webSearch          WebSearchOpts                          // web_search tool backend selection (off by default)
+	workDir            string                                 // shared work dir (surfaced in prompt as artifact-output target)
+	injectConstraints  func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
+	nonStreamingFn     func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
+	noaEnabledFn       func() bool                            // resolver: use experimental noa compaction? (nil = off)
+	maxTokensFn        func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor          *Compactor                             // cold-node compaction (§7); nil = disabled
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -415,20 +416,17 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		WebFetchCACert:  p.proxyCACert,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
-		EnableWebSearch:       p.webSearch.Enabled,
-		WebSearchBackend:      p.webSearch.Backend,
-		BraveSearchAPIKey:     p.webSearch.BraveKey,
-		TavilySearchAPIKey:    p.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: p.webSearch.DeepSeekBaseURL,
-		DeepSeekSearchAPIKey:  p.webSearch.DeepSeekAPIKey,
-		DeepSeekSearchModel:   p.webSearch.DeepSeekModel,
-		WebSearchProxy:        p.webSearch.Proxy,
-		BashEnv:               proxyEnv(p.proxyAddr, p.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:            taskDir,                              // 本任务工作目录 <workDir>/tasks/<taskID>
-		ToolOutputDir:         cmdOutDir(taskDir),
-		MaxTurns:              p.maxTurns, // 0 = unlimited (configurable in agent management)
-		MaxDuration:           maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
-		Compaction:            compactionConfig(p.compactionWindow()),
+		EnableWebSearch:    p.webSearch.Enabled,
+		WebSearchBackend:   p.webSearch.Backend,
+		BraveSearchAPIKey:  p.webSearch.BraveKey,
+		TavilySearchAPIKey: p.webSearch.TavilyKey,
+		WebSearchProxy:     p.webSearch.Proxy,
+		BashEnv:            proxyEnv(p.proxyAddr, p.proxyCACert), // Bash 子命令默认走代理+信任 CA
+		WorkingDir:         taskDir,                              // 本任务工作目录 <workDir>/tasks/<taskID>
+		ToolOutputDir:      cmdOutDir(taskDir),
+		MaxTurns:           p.maxTurns, // 0 = unlimited (configurable in agent management)
+		MaxDuration:        maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
+		Compaction:         compactionConfig(p.compactionWindow()),
 		// 跨唤醒共享的规划待办：让串行链在多轮之间保留（session 是新的，store 不是）。
 		Todos: p.todoFor(ts.ID()),
 		// 命中【本轮】步数预算→ SDK 跑收尾:把本轮已想清楚的结论落地(该派的 add_intent、
@@ -444,6 +442,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())
+	boundSession, changed, connectionErr := connectedSession(p.workDir, noaSession, p.connectionIdentity)
+	if connectionErr != nil {
+		return false, "", connectionErr
+	}
+	noaSession = boundSession
+	if p.tx != nil {
+		opts.SessionID = boundSession
+	}
+	if changed {
+		if emit != nil {
+			emit(db.Activity{Worker: "planner", Kind: "text", Summary: "모델 연결이 변경되어 새 컨텍스트를 시작했습니다. 이전 작업 데이터는 보존됩니다."})
+		}
+	}
 	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。

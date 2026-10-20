@@ -89,7 +89,7 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 					continue
 				}
 				if msg.Role != llm.RoleAssistant || !strings.HasPrefix(block.Signature, reasoningPrefix) {
-					return nil, nil, failure("unsupported_reasoning", "이 제공자의 추론 기록을 ChatGPT로 재전송할 수 없습니다. 새 대화를 시작해 주세요", nil)
+					return nil, nil, failure("unsupported_reasoning", "이 제공자의 추론 기록을 OpenAI로 재전송할 수 없습니다. 새 대화를 시작해 주세요", nil)
 				}
 				raw := json.RawMessage(strings.TrimPrefix(block.Signature, reasoningPrefix))
 				var item struct {
@@ -104,15 +104,23 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 			}
 		}
 	}
-	// An allowlist avoids leaking Norma's temperature/output caps into this route.
+	// Only API-key requests may carry token and sampling controls.
 	body := map[string]any{"model": cfg.Model, "input": input, "store": false, "stream": true, "instructions": strings.Join(req.System, "\n\n")}
-	if auxiliaryRequest(req) {
+	if cfg.APIKey != "" {
+		if req.MaxTokens > 0 {
+			body["max_output_tokens"] = req.MaxTokens
+		}
+		if req.Temperature != nil {
+			body["temperature"] = *req.Temperature
+		}
+	}
+	if cfg.APIKey == "" && auxiliaryRequest(req) {
 		body["instructions"] = fmt.Sprintf("%s\n\nReturn a concise result within approximately %d tokens and %d UTF-8 bytes. Follow the required output format exactly; omit preambles and repeated source material.", body["instructions"], req.MaxTokens, auxiliaryByteLimit(req))
 	}
 	if len(functions) > 0 {
 		body["tools"] = []any{map[string]any{"type": "namespace", "name": "artex", "description": "ARTEX local tools", "tools": functions}}
 	}
-	if req.Thinking != "disabled" {
+	if req.Thinking != "disabled" && (cfg.APIKey == "" || cfg.ReasoningEffort != "") {
 		reasoning := map[string]any{"summary": "auto"}
 		if cfg.ReasoningEffort != "" {
 			reasoning["effort"] = cfg.ReasoningEffort
@@ -127,7 +135,7 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 }
 
 func unsupportedBlock(kind llm.BlockType) error {
-	return failure("unsupported_content", fmt.Sprintf("현재 ChatGPT 연결에서 지원하지 않는 콘텐츠입니다: %q", kind), nil)
+	return failure("unsupported_content", fmt.Sprintf("현재 OpenAI 연결에서 지원하지 않는 콘텐츠입니다: %q", kind), nil)
 }
 
 func validArguments(raw []byte) bool {

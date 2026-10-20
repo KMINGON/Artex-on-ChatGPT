@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -64,10 +65,8 @@ func preview(s string, n int) string {
 	return string(r)
 }
 
-// model_error（provider/API 故障：LLM 层瞬时重试耗尽，或流已开始后中途断流）
-// 收场的 work 不是「试过没做完」也不是真失败，而是外部抖动。默认把它当永久
-// blocked 会白丢一条意图，所以这里对该终态额外重跑几次，每次之间退避一下，给
-// provider 恢复的时间；重试期间若被暂停/终止/取消则立即让位给对应分支处理。
+// Legacy providers may retry a whole run only before output/tool effects and
+// without a lower-layer retry decision. Responses owns its retry budget.
 const (
 	modelErrorRetries      = 2               // model_error 收场后额外重试的次数
 	modelErrorRetryBackoff = 3 * time.Second // 每次重试前的退避
@@ -96,7 +95,7 @@ const (
 // In particular, a quota error after partial streaming advances the task cursor
 // for the next LLM call but must not replay this whole intent on the backup.
 func retryableWorkerModelError(reason harness.TerminalReason, err error) bool {
-	return reason == harness.ReasonModelError && !isTaskLLMRuntimeError(err)
+	return reason == harness.ReasonModelError && !isTaskLLMRuntimeError(err) && isRetryableStreamError(err)
 }
 
 // Engine drives the event-driven exploration loop with real LLM agents
@@ -1053,10 +1052,23 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
 	var err error
+	runAttempt := 1
+	runEmit := func(activity db.Activity) {
+		if activity.Kind == "result" && activity.IsError {
+			metadata := map[string]any{}
+			_ = json.Unmarshal(activity.Metadata, &metadata)
+			if metadata == nil {
+				metadata = map[string]any{}
+			}
+			metadata["worker_run_attempt"] = runAttempt
+			activity.Metadata, _ = json.Marshal(metadata)
+		}
+		emit(activity)
+	}
 	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding, requestID, message)
 	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding)
 	}
 	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
@@ -1066,16 +1078,17 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	for attempt := 1; attempt <= maxRetries &&
 		retryableWorkerModelError(reason, err) &&
 		workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.isSettling(t.ID); attempt++ {
-		log.Printf("[worker %s] task %s 意图 #%d model_error 收场，%v 后重试 (%d/%d)",
+		log.Printf("[worker %s] task %s intent #%d: 출력·도구 실행 전 실패, %v 후 전체 실행 재시도 (%d/%d)",
 			name, t.ID, intent.ID, retryBackoff, attempt, maxRetries)
 		if sleepCtx(workCtx, retryBackoff) {
 			break // 退避期间被取消（终止/暂停）→ 交给下方分支处理
 		}
+		runAttempt++
 		e.BeginLLMCall(t.ID)
 		if hasChatMessage {
-			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding, requestID, message)
 		} else {
-			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding)
 		}
 		e.EndLLMCall(t.ID)
 	}

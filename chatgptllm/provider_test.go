@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -54,7 +55,16 @@ func auth(ctx context.Context) (context.Context, context.CancelFunc, string, err
 
 func testProvider(t *testing.T, client *http.Client) llm.Provider {
 	t.Helper()
-	p, err := New(Config{Model: "account-model", Authorize: auth, HTTPClient: client, MaxRetries: -1})
+	return testProviderMode(t, client, false)
+}
+
+func testProviderMode(t *testing.T, client *http.Client, api bool) llm.Provider {
+	t.Helper()
+	cfg := Config{Model: "account-model", Authorize: auth, HTTPClient: client, MaxRetries: -1}
+	if api {
+		cfg.APIKey, cfg.Authorize = "test-secret", nil
+	}
+	p, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +89,11 @@ func callItem(id, call, name, args string) map[string]any {
 }
 
 func TestNormaToolRoundTrip(t *testing.T) {
-	for _, nonStreaming := range []bool{false, true} {
-		t.Run(fmt.Sprintf("complete=%v", nonStreaming), func(t *testing.T) {
+	for _, tc := range []struct{ api, nonStreaming, large bool }{
+		{false, false, false}, {false, true, false}, {true, false, false}, {true, true, false},
+		{false, false, true}, {true, false, true},
+	} {
+		t.Run(fmt.Sprintf("api=%v/complete=%v/large=%v", tc.api, tc.nonStreaming, tc.large), func(t *testing.T) {
 			var calls, executions atomic.Int32
 			var terminalSent atomic.Bool
 			client := fakeClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +106,13 @@ func TestNormaToolRoundTrip(t *testing.T) {
 				if string(request["stream"]) != "true" || string(request["store"]) != "false" {
 					t.Error("incorrect SIWC flags")
 				}
+				if tc.api && string(request["max_output_tokens"]) != "17" {
+					t.Errorf("API output cap lost: %s", request["max_output_tokens"])
+				}
 				for _, key := range []string{"temperature", "max_output_tokens", "max_tokens", "previous_response_id", "thinking", "stop"} {
+					if tc.api && key == "max_output_tokens" {
+						continue
+					}
 					if _, ok := request[key]; ok {
 						t.Errorf("forbidden field %s", key)
 					}
@@ -147,6 +166,9 @@ func TestNormaToolRoundTrip(t *testing.T) {
 					if typ == "function_call_output" {
 						_ = json.Unmarshal(item["output"], &output)
 						resultIDs[id] = strings.Contains(output, "result-"+id)
+						if tc.large && (!strings.Contains(output, "<persisted-output>") || len(output) < 30000 || len(output) > 31000) {
+							t.Errorf("large result was not bounded: %d bytes", len(output))
+						}
 					}
 					if typ == "function_call" {
 						_ = json.Unmarshal(item["arguments"], &args)
@@ -162,6 +184,10 @@ func TestNormaToolRoundTrip(t *testing.T) {
 				}
 				completed(w, textItem("완료"))
 			})
+			toolSuffix := ""
+			if tc.large {
+				toolSuffix = strings.Repeat("x", 50218)
+			}
 			probe := tool.Build(tool.Spec{Name: "probe.read", Schema: map[string]any{"type": "object", "properties": map[string]any{"n": map[string]any{"type": "integer"}}, "required": []string{"n"}}, Run: func(_ context.Context, raw json.RawMessage, tc *tool.ToolContext) (tool.Result, error) {
 				if !terminalSent.Load() {
 					t.Error("side effect before response.completed")
@@ -174,9 +200,10 @@ func TestNormaToolRoundTrip(t *testing.T) {
 					t.Errorf("corrupt arguments: %s", raw)
 				}
 				executions.Add(1)
-				return tool.Text("result-" + tc.ToolUseID), nil
+				return tool.Text("result-" + tc.ToolUseID + toolSuffix), nil
 			}})
-			out, err := agentcore.Run(t.Context(), agentcore.Options{Provider: testProvider(t, client), Tools: []tool.CoreTool{probe}, PermissionMode: permission.ModeBypass, NonStreaming: nonStreaming, WorkingDir: t.TempDir(), MaxTurns: 3, MaxTokens: 17}, "검사")
+			workingDir := t.TempDir()
+			out, err := agentcore.Run(t.Context(), agentcore.Options{Provider: testProviderMode(t, client, tc.api), Tools: []tool.CoreTool{probe}, PermissionMode: permission.ModeBypass, NonStreaming: tc.nonStreaming, WorkingDir: workingDir, ToolOutputDir: filepath.Join(workingDir, "cmd-output"), MaxTurns: 3, MaxTokens: 17}, "검사")
 			if err != nil || out != "완료" || executions.Load() != 2 || calls.Load() != 2 {
 				t.Fatalf("out=%q err=%v executions=%d calls=%d", out, err, executions.Load(), calls.Load())
 			}
@@ -332,6 +359,12 @@ func TestCatalogAndUnsupportedInput(t *testing.T) {
 }
 
 func TestReasoningAndPhaseReplayAfterTranscriptReload(t *testing.T) {
+	for _, api := range []bool{false, true} {
+		t.Run(fmt.Sprintf("api=%v", api), func(t *testing.T) { testReasoningAndPhaseReplayAfterTranscriptReload(t, api) })
+	}
+}
+
+func testReasoningAndPhaseReplayAfterTranscriptReload(t *testing.T, api bool) {
 	answer := textItem("answer")
 	answer["phase"] = "final_answer"
 	commentary := textItem("checking")
@@ -342,10 +375,10 @@ func TestReasoningAndPhaseReplayAfterTranscriptReload(t *testing.T) {
 		{"id": "rs2", "type": "reasoning", "summary": []any{}, "encrypted_content": "no-summary"},
 		answer,
 	}
-	p := testProvider(t, fakeClient(t, func(w http.ResponseWriter, _ *http.Request) {
+	p := testProviderMode(t, fakeClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		completed(w, items...)
-	}))
+	}), api)
 	msg, _, _, err := p.Complete(t.Context(), llm.CompletionRequest{})
 	if err != nil {
 		t.Fatal(err)

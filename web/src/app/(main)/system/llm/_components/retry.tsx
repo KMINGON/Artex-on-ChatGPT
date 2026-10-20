@@ -1,13 +1,6 @@
 "use client";
 
-// LLM 重试配置的共用件：五层重试各自的「次数 + 间隔」。
-//
-// 五层从内到外：建连(SDK) → 空响应(SDK) → 同 provider 安全窗口 → 轮询熔断 → 意图重跑。
-// 前三层跟着端点走，所以每个模型配置都能覆盖全局默认；后两层是进程级的，只有全局一份。
-//
-// 所有输入都遵循同一套「留空 = 不配置」语义，与后端 db.RetryRule 一致：
-//   次数   空/0 = 用内置默认 | -1 = 关闭这层重试 | >0 = 用这个次数
-//   间隔   空/0 = 用这层原本的指数退避 | >0 = 改用这个固定毫秒间隔
+// Only controls applied by the Responses runtime are exposed.
 
 import * as React from "react";
 
@@ -24,13 +17,11 @@ import type { LLMRetryOverride, LLMRetryPolicy, LLMRetryRule } from "@/lib/types
 export const ZERO_RULE: LLMRetryRule = { attempts: 0, interval_ms: 0 };
 export const ZERO_OVERRIDE: LLMRetryOverride = {
   connect: ZERO_RULE,
-  empty: ZERO_RULE,
-  stream: ZERO_RULE,
 };
 const ZERO_POLICY: LLMRetryPolicy = {
+  empty: ZERO_RULE,
   ...ZERO_OVERRIDE,
   breaker: ZERO_RULE,
-  intent: ZERO_RULE,
 };
 
 // 每层的「次数留空时的默认值」，仅用于输入框占位符。其余文案（标题 / 触发 / 说明等）
@@ -38,9 +29,7 @@ const ZERO_POLICY: LLMRetryPolicy = {
 export const RETRY_LAYERS = {
   connect: { defAttempts: 3 },
   empty: { defAttempts: 2 },
-  stream: { defAttempts: 2 },
   breaker: { defAttempts: 3 },
-  intent: { defAttempts: 2 },
 } satisfies Record<string, { defAttempts: number }>;
 
 type LayerKey = keyof typeof RETRY_LAYERS;
@@ -113,21 +102,31 @@ export function RetryRuleFields({
     <div className={compact ? "grid gap-2" : "grid gap-3 rounded-lg border p-3"}>
       <div className="grid gap-0.5">
         <div className="flex flex-wrap items-baseline gap-2">
-          <Label className="text-sm">{t(`retryLayer.${layer}.title`)}</Label>
-          <span className="text-muted-foreground text-xs">{t(`retryLayer.${layer}.where`)}</span>
+          <Label className="text-sm">
+            {layer === "empty" ? "빈 Worker 턴 이어쓰기" : t(`retryLayer.${layer}.title`)}
+          </Label>
+          <span className="text-muted-foreground text-xs">
+            {layer === "empty" ? "실행 루프" : t(`retryLayer.${layer}.where`)}
+          </span>
         </div>
         {/* 哪些错误会走到这层，具体到状态码——填了旋钮却看不到效果，多半是错误压根不落在这层。 */}
         <p className="text-muted-foreground text-xs">
           <span className="font-medium text-foreground">{t("retry.triggerLabel")}</span>:{" "}
-          {t(`retryLayer.${layer}.trigger`)}
+          {layer === "empty" ? "생각만 반환하고 본문·도구 호출 없이 끝난 Worker 턴" : t(`retryLayer.${layer}.trigger`)}
         </p>
         {!compact && (
           <p className="text-muted-foreground text-xs">
             <span className="font-medium text-foreground">{t("retry.skipsLabel")}</span>:{" "}
-            {t(`retryLayer.${layer}.skips`)}
+            {layer === "empty" ? "API 전송 재시도에는 적용하지 않음" : t(`retryLayer.${layer}.skips`)}
           </p>
         )}
-        {!compact && <p className="text-muted-foreground text-xs">{t(`retryLayer.${layer}.desc`)}</p>}
+        {!compact && (
+          <p className="text-muted-foreground text-xs">
+            {layer === "empty"
+              ? "기존 이력을 유지하며 다음 행동을 요청하는 횟수입니다."
+              : t(`retryLayer.${layer}.desc`)}
+          </p>
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex items-center gap-2">
@@ -138,29 +137,33 @@ export function RetryRuleFields({
             id={`${idPrefix}-${layer}-n`}
             min={-1}
             value={value.attempts}
-            placeholder={t("retry.defaultN", { n: meta.defAttempts })}
+            placeholder={layer === "connect" ? "API 3 / 구독 2" : t("retry.defaultN", { n: meta.defAttempts })}
             onChange={(n) => onChange({ ...value, attempts: n })}
           />
         </div>
-        <div className="flex items-center gap-2">
-          <Label htmlFor={`${idPrefix}-${layer}-ms`} className="text-muted-foreground text-xs">
-            {t("retry.intervalMs")}
-          </Label>
-          <NumField
-            id={`${idPrefix}-${layer}-ms`}
-            min={0}
-            value={value.interval_ms}
-            placeholder={t("retry.defaultBackoff")}
-            onChange={(n) => onChange({ ...value, interval_ms: n })}
-          />
-          <span className="text-muted-foreground text-xs">
-            {human ? t("retry.fixed", { human }) : t(`retryLayer.${layer}.defInterval`)}
-          </span>
-        </div>
+        {layer !== "empty" && (
+          <div className="flex items-center gap-2">
+            <Label htmlFor={`${idPrefix}-${layer}-ms`} className="text-muted-foreground text-xs">
+              {t("retry.intervalMs")}
+            </Label>
+            <NumField
+              id={`${idPrefix}-${layer}-ms`}
+              min={0}
+              value={value.interval_ms}
+              placeholder={t("retry.defaultBackoff")}
+              onChange={(n) => onChange({ ...value, interval_ms: n })}
+            />
+            <span className="text-muted-foreground text-xs">
+              {human ? t("retry.fixed", { human }) : t(`retryLayer.${layer}.defInterval`)}
+            </span>
+          </div>
+        )}
       </div>
       {!compact && (
         <p className="text-muted-foreground text-xs">
-          {t("retry.emptyLine", { hint: t(`retryLayer.${layer}.offHint`) })}
+          {layer === "empty"
+            ? "0은 기존 기본값, -1은 이어쓰기 중지입니다."
+            : t("retry.emptyLine", { hint: t(`retryLayer.${layer}.offHint`) })}
         </p>
       )}
     </div>
@@ -180,9 +183,11 @@ export function ProfileRetryFields({
     <div className="grid gap-3 rounded-lg border p-3">
       <div className="grid gap-0.5">
         <Label className="text-sm">{t("retry.override.label")}</Label>
-        <p className="text-muted-foreground text-xs">{t("retry.override.hint")}</p>
+        <p className="text-muted-foreground text-xs">
+          연결 재시도만 개별 설정으로 덮어씁니다. 0은 전역 설정을 따릅니다.
+        </p>
       </div>
-      {(["connect", "empty", "stream"] as const).map((k) => (
+      {(["connect"] as const).map((k) => (
         <div key={k} className="border-t pt-3 first:border-t-0 first:pt-0">
           <RetryRuleFields
             compact
@@ -248,10 +253,9 @@ export function RetryPolicyPanel() {
   return (
     <div className="grid gap-4">
       <div className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs leading-relaxed">
-        {t.rich("retry.intro", {
-          chain: (c) => <span className="text-foreground">{c}</span>,
-          emph: (c) => <span className="text-foreground">{c}</span>,
-        })}
+        연결 재시도는 일시적인 HTTP 오류와 출력 전달 전의 재시도 가능한 SSE 오류에 같은 횟수를 적용합니다. 기본 재시도는
+        OpenAI API 3회, ChatGPT 구독 2회입니다. 출력 전달 뒤의 실패나 검증 오류는 재생하지 않습니다. 빈 Worker 턴
+        이어쓰기와 순환 서킷 차단은 별도 실행 제어입니다.
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

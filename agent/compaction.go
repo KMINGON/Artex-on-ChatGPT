@@ -232,8 +232,17 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 		}
 		toCreate = append(toCreate, b)
 	}
-	// Supersede stale digests FIRST (atomic drop of their covers edges) so a member
-	// is never covered by both an old and a new digest (§5.1 one-member-one-digest).
+	// Generate all replacements before retiring any digest. A failed or truncated
+	// summary must leave the currently usable graph unchanged.
+	bodies := make([]string, len(toCreate))
+	for i, b := range toCreate {
+		body, err := c.compress(ctx, g, b, nodeByID)
+		if err != nil {
+			log.Printf("[compaction] compress exp=%d block=%v: %v", ts.ID(), b.Members, err)
+			return
+		}
+		bodies[i] = body
+	}
 	var stale []int64
 	for _, d := range active {
 		sig, _ := digestSigGen(d)
@@ -243,9 +252,10 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 	}
 	if err := ts.SupersedeDigests(stale); err != nil {
 		log.Printf("[compaction] supersede exp=%d: %v", ts.ID(), err)
+		return
 	}
-	for _, b := range toCreate {
-		c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, active))
+	for i, b := range toCreate {
+		c.saveBlock(ts, b, nodeByID, cvers, c.generationFor(b, active), bodies[i])
 	}
 }
 
@@ -259,6 +269,10 @@ func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *c
 		log.Printf("[compaction] compress exp=%d block=%v: %v", ts.ID(), b.Members, err)
 		return
 	}
+	c.saveBlock(ts, b, nodeByID, cvers, generation, body)
+}
+
+func (c *Compactor) saveBlock(ts *db.ExplorationStore, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int, body string) {
 	// Re-read fresh state and drop any member that revived while we compressed.
 	fresh, _, err := loadColdGraph(ts)
 	if err != nil {
@@ -518,9 +532,17 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		MaxTokens: 1500,
 		Thinking:  "disabled",
 	}
-	msg, _, _, err := c.prov.Complete(ctx, req)
+	msg, stopReason, _, err := c.prov.Complete(ctx, req)
 	if err != nil {
 		return "", err
+	}
+	if stopReason != "end_turn" {
+		return "", fmt.Errorf("graph summary did not complete normally (stop_reason=%q)", stopReason)
+	}
+	for _, block := range msg.Content {
+		if block.Type == llm.BlockToolUse {
+			return "", fmt.Errorf("graph summary unexpectedly requested a tool")
+		}
 	}
 	body := strings.TrimSpace(msg.Text())
 	if body == "" {

@@ -36,6 +36,9 @@ func (p *captureProvider) Stream(_ context.Context, req llm.CompletionRequest) i
 		if !yield(llm.StreamEvent{Type: llm.SETextDelta, Text: p.reply}, nil) {
 			return
 		}
+		if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: "end_turn"}, nil) {
+			return
+		}
 		yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
 	}
 }

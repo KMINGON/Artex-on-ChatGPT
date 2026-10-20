@@ -93,7 +93,7 @@ func TestSnapshotExcludesPartialStreamAndSelectsPoolMember(t *testing.T) {
 	var snapshots []Snapshot
 	failed := Bind(fakeProvider{stream: func(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 		return func(y func(llm.StreamEvent, error) bool) { y(llm.StreamEvent{}, errors.New("HTTP 503 unavailable")) }
-	}}, Model{Model: "failed"})
+	}}, Model{ProfileID: 1, Model: "fixture-model"})
 	good := Bind(fakeProvider{stream: func(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 		return func(y func(llm.StreamEvent, error) bool) {
 			if !y(llm.StreamEvent{Type: llm.SETextDelta, Text: "complete"}, nil) {
@@ -101,8 +101,8 @@ func TestSnapshotExcludesPartialStreamAndSelectsPoolMember(t *testing.T) {
 			}
 			y(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
 		}
-	}}, Model{Model: "selected"})
-	pool := llmpool.New([]*llmpool.Member{{ID: 1, Name: "failed", Rank: 2, Prov: failed}, {ID: 2, Name: "selected", Rank: 1, Prov: good}}, nil)
+	}}, Model{ProfileID: 2, Model: "fixture-model"})
+	pool := llmpool.New([]*llmpool.Member{{ID: 1, ConnectionIdentity: "same-fixture-connection", Name: "failed", Rank: 2, Prov: failed}, {ID: 2, ConnectionIdentity: "same-fixture-connection", Name: "selected", Rank: 1, Prov: good}}, nil)
 	ctx, deps := Attach(WithPublisher(t.Context(), func(s Snapshot) { snapshots = append(snapshots, s) }), Parent{ConversationID: 2}, harness.QueryDeps{}, pool)
 	for ev, err := range deps.CallModel(ctx, fixture()) {
 		if err != nil {
@@ -112,7 +112,7 @@ func TestSnapshotExcludesPartialStreamAndSelectsPoolMember(t *testing.T) {
 			t.Fatal("partial reply published")
 		}
 	}
-	if last := snapshots[len(snapshots)-1]; last.Model.Model != "selected" || last.Request.Messages[len(last.Request.Messages)-1].Text() != "complete" {
+	if last := snapshots[len(snapshots)-1]; last.Model.ProfileID != 2 || last.Request.Messages[len(last.Request.Messages)-1].Text() != "complete" {
 		t.Fatalf("wrong selected model/checkpoint: %+v", last)
 	}
 	count := len(snapshots)

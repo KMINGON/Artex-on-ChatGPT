@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -25,7 +24,6 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
 
@@ -1862,21 +1860,20 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	// APIKey has json:"-" on db.LLMProfile so it is never leaked to the UI on
-	// read; accept it here via a sibling field for create/update. Streaming is a
-	// *bool shadowing the embedded json:"streaming": an absent field must default
-	// to streaming (true), which a plain bool zero value (false = non-streaming)
-	// would get wrong — legacy/partial clients that never send it stay streaming.
 	var body struct {
 		db.LLMProfile
-		APIKey    string `json:"api_key"`
-		Streaming *bool  `json:"streaming"`
+		APIKey string `json:"api_key"`
 	}
-	if err := decode(r, &body); err != nil {
+	if err := decodeOpenAISettings(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
 	p := body.LLMProfile
+	p.Format = "openai-responses"
+	if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.Model) == "" {
+		writeErr(w, 400, "이름과 OpenAI 모델을 입력해 주세요")
+		return
+	}
 	if p.ID != 0 && p.AuthMode == "" {
 		if previous, err := pg.ProfileByID(p.ID); err == nil && previous != nil {
 			p.AuthMode, p.ChatGPTAccountID = previous.AuthMode, previous.ChatGPTAccountID
@@ -1912,16 +1909,24 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "지원하지 않는 인증 방식입니다")
 		return
 	}
+	if p.ID != 0 {
+		previous, err := pg.ProfileByID(p.ID)
+		if err != nil {
+			writeErr(w, 500, "프로필을 읽을 수 없습니다")
+			return
+		}
+		if previous == nil {
+			writeErr(w, 404, "프로필을 찾을 수 없습니다")
+			return
+		}
+		if p.AuthMode != "chatgpt_plan" && body.APIKey == "" && (previous.UnsupportedReason() != "" || previous.AuthMode == "chatgpt_plan") {
+			writeErr(w, 400, "새 OpenAI API 키를 입력해 주세요. 이전 연결의 키는 다른 인증에 재사용하지 않습니다")
+			return
+		}
+	}
 	p.APIKey = body.APIKey
-	p.Streaming = body.Streaming == nil || *body.Streaming
-	// 输出上限:负数无意义,归零(= 不发送该字段)。字段名开关只有 Chat Completions
-	// 用得上——anthropic 与 openai-responses 各自定死了字段名,存下来只会误导后续读者,
-	// 故非 openai 格式一律清空。未知取值同样清空,避免把 DB CHECK 的报错甩给用户。
 	if p.MaxTokens < 0 {
 		p.MaxTokens = 0
-	}
-	if p.Format != "openai" || p.MaxTokensField != llm.MaxTokensFieldCompletion {
-		p.MaxTokensField = ""
 	}
 	id, err := pg.SaveProfile(&p)
 	if err != nil {
@@ -1958,7 +1963,7 @@ func (s *Server) pgSaveLLMRetryPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var pol db.LLMRetryPolicy
-	if err := decode(r, &pol); err != nil {
+	if err := decodeOpenAISettings(r, &pol); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -2077,143 +2082,86 @@ func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.llmPoolStatus())
 }
 
-// pgListModels fetches available models from the provider's API endpoint.
-// Supports OpenAI-format (GET /models) and Anthropic-format (GET /v1/models); for
-// Anthropic-compatible third parties (e.g. DeepSeek) whose model list lives only on
-// the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
+// pgListModels uses the official OpenAI API endpoint only.
 func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider  string `json:"provider"` // "openai" | "anthropic"
-		BaseURL   string `json:"base_url"`
+		AuthMode  string `json:"auth_mode"`
 		APIKey    string `json:"api_key"`
 		Proxy     string `json:"proxy"`
-		ProfileID *int64 `json:"profile_id"` // fallback: use stored key from this profile
+		ProfileID *int64 `json:"profile_id"`
 	}
-	if err := decode(r, &req); err != nil {
+	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	// Resolve API key: form input > profile stored key.
-	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey == "" && req.ProfileID != nil {
-		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
-			apiKey = p.APIKey
-		}
+	if req.AuthMode == "chatgpt_plan" {
+		writeErr(w, 400, "ChatGPT 계정의 모델 목록을 사용해 주세요")
+		return
 	}
-	if apiKey == "" {
+	key := strings.TrimSpace(req.APIKey)
+	if key == "" && req.ProfileID != nil && s.m.pg != nil {
+		p, err := s.m.pg.ProfileByID(*req.ProfileID)
+		if err != nil {
+			writeErr(w, 500, "프로필을 읽을 수 없습니다")
+			return
+		}
+		if p == nil {
+			writeErr(w, 404, "프로필을 찾을 수 없습니다")
+			return
+		}
+		if reason := p.UnsupportedReason(); reason != "" {
+			writeErr(w, 400, reason)
+			return
+		}
+		if p.AuthMode == "chatgpt_plan" {
+			writeErr(w, 400, "ChatGPT 계정의 모델 목록을 사용해 주세요")
+			return
+		}
+		key = p.APIKey
+	}
+	if key == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": errMgmtNoAPIKey})
 		return
 	}
-
-	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
-	provider := strings.TrimSpace(req.Provider)
-
-	// Candidate endpoints to try in order. Some Anthropic-compatible providers
-	// (e.g. DeepSeek) implement /v1/messages under an /anthropic path but expose
-	// the model list only on their OpenAI-format path — so for anthropic we fall
-	// back to the OpenAI endpoint at the stripped root.
-	type candidate struct {
-		url string
-		hdr http.Header
-	}
-	bearerHdr := func() http.Header {
-		h := http.Header{}
-		h.Set("Authorization", "Bearer "+apiKey)
-		return h
-	}
-	anthropicHdr := func() http.Header {
-		h := http.Header{}
-		h.Set("x-api-key", apiKey)
-		h.Set("anthropic-version", "2023-06-01")
-		return h
-	}
-
-	var candidates []candidate
-	switch provider {
-	case "openai", "openai-responses":
-		// Responses API shares the OpenAI model list at /v1/models; tolerate a full
-		// endpoint URL of either format.
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		b := strings.TrimRight(strings.TrimSuffix(strings.TrimSuffix(baseURL, "/chat/completions"), "/responses"), "/")
-		candidates = append(candidates, candidate{b + "/models", bearerHdr()})
-	default: // anthropic
-		if baseURL == "" {
-			baseURL = "https://api.anthropic.com"
-		}
-		b := strings.TrimRight(strings.TrimSuffix(baseURL, "/v1/messages"), "/")
-		candidates = append(candidates, candidate{b + "/v1/models", anthropicHdr()})
-		// Fallback for Anthropic-compatible third parties whose model list lives on
-		// the OpenAI path: strip a trailing /anthropic and try the OpenAI endpoint.
-		if root := strings.TrimRight(strings.TrimSuffix(b, "/anthropic"), "/"); root != b {
-			candidates = append(candidates,
-				candidate{root + "/models", bearerHdr()},
-				candidate{root + "/v1/models", bearerHdr()},
-			)
-		}
-	}
-
-	// Build HTTP client with optional proxy.
-	transport := &http.Transport{}
-	if p := strings.TrimSpace(req.Proxy); p != "" {
-		if pu, err := url.Parse(p); err == nil {
-			transport.Proxy = http.ProxyURL(pu)
-		}
-	}
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
-
-	// Try each candidate; return the first that yields a non-empty model list.
-	var lastErr string
-	emptyOK := false
-	for _, c := range candidates {
-		httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, c.url, nil)
-		if err != nil {
-			lastErr = errMgmtBuildReqFail + err.Error()
-			continue
-		}
-		httpReq.Header = c.hdr
-		resp, err := client.Do(httpReq)
-		if err != nil {
-			lastErr = errMgmtReqFail + err.Error()
-			continue
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Sprintf(errMgmtAPIReturned, resp.StatusCode, string(body[:min(len(body), 512)]))
-			continue
-		}
-		// Both OpenAI and Anthropic return {"data": [{"id": "..."},...]}.
-		var parsed struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(body, &parsed); err != nil {
-			lastErr = errMgmtParseRespFail + err.Error()
-			continue
-		}
-		models := make([]string, 0, len(parsed.Data))
-		for _, m := range parsed.Data {
-			if m.ID != "" {
-				models = append(models, m.ID)
-			}
-		}
-		if len(models) > 0 {
-			writeJSON(w, 200, map[string]any{"ok": true, "models": models})
-			return
-		}
-		emptyOK = true // 200 but no model ids — keep trying other candidates
-	}
-	if emptyOK {
-		writeJSON(w, 200, map[string]any{"ok": true, "models": []string{}})
+	client, err := agent.ChatGPTHTTPClient(req.Proxy)
+	if err != nil {
+		writeErr(w, 400, "프록시 주소가 올바르지 않습니다")
 		return
 	}
-	if lastErr == "" {
-		lastErr = errMgmtNoModelList
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.openai.com/v1/models", nil)
+	if err != nil {
+		writeErr(w, 500, "모델 목록 요청을 만들 수 없습니다")
+		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": false, "error": lastErr})
+	request.Header.Set("Authorization", "Bearer "+key)
+	response, err := client.Do(request)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "OpenAI 모델 목록에 연결할 수 없습니다"})
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": fmt.Sprintf("OpenAI 모델 목록 요청 실패 (HTTP %d)", response.StatusCode)})
+		return
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&parsed); err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "모델 목록 응답을 읽을 수 없습니다"})
+		return
+	}
+	models := make([]string, 0, len(parsed.Data))
+	for _, model := range parsed.Data {
+		if model.ID != "" {
+			models = append(models, model.ID)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "models": models})
 }
 
 // --- prompt template helpers (Go text/template + catalog 白名单) ---

@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,8 @@ import (
 )
 
 const IntentBlockedLLMQuota = "llm_quota_exhausted"
+
+var ErrTaskLLMBillingTransition = errors.New("OpenAI API 키와 ChatGPT 구독 사이의 자동 전환을 중단했습니다. 사용할 연결을 직접 선택하세요")
 
 // TaskLLMProfile is one ordered entry in a task's explicit failover chain.
 type TaskLLMProfile struct {
@@ -523,6 +526,14 @@ WHERE task_id=$1 AND position>$2 AND status='ready'
 ORDER BY position LIMIT 1`, taskID, position).Scan(&next)
 	switch err {
 	case nil:
+		var sourceAuth, nextAuth string
+		if err := tx.QueryRow(`SELECT COALESCE(NULLIF(source.auth_mode,''),'api_key'), COALESCE(NULLIF(target.auth_mode,''),'api_key')
+FROM llm_profiles source CROSS JOIN llm_profiles target WHERE source.id=$1 AND target.id=$2`, profileID, next).Scan(&sourceAuth, &nextAuth); err != nil {
+			return out, err
+		}
+		if sourceAuth != nextAuth {
+			return out, ErrTaskLLMBillingTransition // rollback also preserves the previous cursor/status
+		}
 		out.Advanced = true
 		out.NextProfileID = &next
 		if _, err := tx.Exec(`UPDATE tasks

@@ -28,7 +28,11 @@ func TestChatGPTProfileRoundTripAndBillingIsolation(t *testing.T) {
 		t.Fatalf("legacy key preservation: %+v %v", stored, err)
 	}
 	p.AuthMode, p.ChatGPTAccountID, p.Format = "chatgpt_plan", "client-reference-only", "openai-responses"
-	p.BaseURL, p.SessionHeaderKey, p.MaxTokens = "https://example.invalid", "Authorization", 123
+	p.BaseURL = "https://example.invalid"
+	if _, err := d.SaveProfile(p); err == nil {
+		t.Fatal("custom endpoint accepted")
+	}
+	p.BaseURL, p.SessionHeaderKey, p.MaxTokens = "", "Authorization", 123
 	if _, err := d.SaveProfile(p); err != nil {
 		t.Fatal(err)
 	}

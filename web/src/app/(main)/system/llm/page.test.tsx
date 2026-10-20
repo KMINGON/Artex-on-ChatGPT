@@ -72,16 +72,10 @@ describe("ChatGPT model profile", () => {
           name: "개인 구독",
           auth_mode: "chatgpt_plan",
           chatgpt_account_id: "account-id",
-          format: "openai-responses",
           model: "returned-model-id",
           context_window_k: 128,
           api_key: "",
-          base_url: "",
-          streaming: true,
           max_tokens: 0,
-          thinking_type: "",
-          max_tokens_field: "",
-          session_header_key: "",
           pool_exclude: true,
         }),
       ),
@@ -97,5 +91,65 @@ describe("ChatGPT model profile", () => {
     expect(dialog.getByTitle(messages.llmPage.profile.model.loadTitle)).toBeDisabled();
     expect(dialog.getByRole("button", { name: "새로 만들기" })).toBeDisabled();
     expect(api.chatgptModels).not.toHaveBeenCalled();
+  });
+  it("offers only OpenAI API settings and preserves the chosen model/output cap", async () => {
+    await act(async () =>
+      render(
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <LLMPage />
+        </NextIntlClientProvider>,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "새로 만들기" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    for (const label of [
+      messages.llmPage.profile.baseUrl.label,
+      messages.llmPage.profile.sessionHeader.label,
+      messages.llmPage.profile.streaming.label,
+      messages.llmPage.profile.thinkingType.label,
+      messages.llmPage.profile.maxTokensField.label,
+    ]) {
+      expect(dialog.queryByText(label)).not.toBeInTheDocument();
+    }
+    fireEvent.change(dialog.getByLabelText("이름"), { target: { value: "OpenAI API" } });
+    fireEvent.change(dialog.getByLabelText("모델"), { target: { value: "existing-openai-model" } });
+    fireEvent.change(dialog.getByLabelText("API Key"), { target: { value: "test-api-key" } });
+    fireEvent.change(dialog.getByLabelText(messages.llmPage.profile.maxTokens.label), { target: { value: "4096" } });
+    fireEvent.click(dialog.getByRole("button", { name: "새로 만들기" }));
+    await waitFor(() => expect(api.saveLLMProfile).toHaveBeenCalled());
+    const body = vi.mocked(api.saveLLMProfile).mock.calls[0][0];
+    expect(body).toEqual(
+      expect.objectContaining({ auth_mode: "api_key", model: "existing-openai-model", max_tokens: 4096 }),
+    );
+    for (const key of ["format", "base_url", "thinking_type", "streaming", "max_tokens_field", "session_header_key"])
+      expect(body).not.toHaveProperty(key);
+  });
+
+  it("keeps a retired profile visible and requires an explicit replacement model", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      {
+        id: "17",
+        name: "이전 연결",
+        model: "legacy-model",
+        auth_mode: "api_key",
+        configuration_error: "OpenAI 모델과 인증을 다시 선택해 주세요",
+        rate_per_second: 0,
+        rate_per_minute: 0,
+        is_default: false,
+      },
+    ]);
+    await act(async () =>
+      render(
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <LLMPage />
+        </NextIntlClientProvider>,
+      ),
+    );
+    expect(screen.getByText("legacy-model")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /이전 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByRole("alert")).toHaveTextContent("OpenAI 모델과 인증을 다시 선택해 주세요");
+    expect(dialog.getByLabelText("모델")).toHaveValue("");
+    expect(api.saveLLMProfile).not.toHaveBeenCalled();
   });
 });

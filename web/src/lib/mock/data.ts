@@ -3106,54 +3106,43 @@ export const audit: Audit = {
 export const llmProfiles: LLMProfile[] = [
   {
     id: "1",
-    name: "Claude Opus 4.8",
-    format: "anthropic",
-    model: "claude-opus-4-8",
+    name: "OpenAI GPT-4o",
+    model: "gpt-4o",
     api_key_hint: "…a3f2",
     rate_per_second: 0,
     rate_per_minute: 0,
     context_window_k: 1000,
-    thinking_type: "enabled",
     reasoning_effort: "high",
     is_default: true,
     priority: 0,
     pool_exclude: false,
-    // anthropic 的字段名固定，故 max_tokens_field 恒为空。
     max_tokens: 0,
-    max_tokens_field: "",
   },
   {
     id: "2",
-    name: "DeepSeek V4",
-    format: "openai",
-    base_url: "https://api.deepseek.com",
-    model: "deepseek-v4-flash",
+    name: "OpenAI GPT-5",
+    model: "gpt-5",
     api_key_hint: "…9c11",
     rate_per_second: 0,
     rate_per_minute: 60,
     context_window_k: 128,
-    thinking_type: "",
     reasoning_effort: "",
     is_default: false,
     priority: 10,
     pool_exclude: false,
-    // openai 格式 + 推理模型：上限走 max_completion_tokens。
     max_tokens: 8192,
-    max_tokens_field: "max_completion_tokens",
   },
 ];
 
 export const llmConfig = {
   configured: true,
-  provider: "anthropic",
-  model: "claude-opus-4-8",
-  base_url: "",
+  provider: "openai-responses",
+  model: "gpt-4o",
   proxy: "",
   key_set: true,
   rate_per_second: 0,
   rate_per_minute: 0,
   context_window_k: 1000,
-  thinking_type: "enabled",
   reasoning_effort: "high",
 };
 
@@ -3475,9 +3464,8 @@ export const llmPool: LLMPoolStatus = {
   chain: [
     {
       profile_id: "1",
-      name: "Claude Opus 4.8",
-      model: "claude-opus-4-8",
-      format: "anthropic",
+      name: "OpenAI GPT-4o",
+      model: "gpt-4o",
       priority: 0,
       active: true,
       excluded: false,
@@ -3488,9 +3476,8 @@ export const llmPool: LLMPoolStatus = {
     },
     {
       profile_id: "2",
-      name: "DeepSeek V4",
-      model: "deepseek-v4-flash",
-      format: "openai",
+      name: "OpenAI GPT-5",
+      model: "gpt-5",
       priority: 10,
       active: false,
       excluded: false,
@@ -4257,7 +4244,7 @@ export const llmRecords = [
   {
     id: 1,
     ts: T("2026-08-09T02:10:02Z"),
-    model: "claude-opus-4-8",
+    model: "gpt-4o",
     profile_name: "Default",
     session_id: "exp1-worker-i12",
     task_id: "t-001",
@@ -4272,7 +4259,7 @@ export const llmRecords = [
   {
     id: 2,
     ts: T("2026-08-09T02:11:40Z"),
-    model: "claude-opus-4-8",
+    model: "gpt-4o",
     profile_name: "Default",
     session_id: "exp1-planner",
     task_id: "t-001",
@@ -4287,7 +4274,7 @@ export const llmRecords = [
   {
     id: 3,
     ts: T("2026-08-09T02:15:20Z"),
-    model: "claude-opus-4-8",
+    model: "gpt-4o",
     profile_name: "Default",
     session_id: "exp1-worker-i18",
     task_id: "t-001",
@@ -4302,7 +4289,7 @@ export const llmRecords = [
   {
     id: 4,
     ts: T("2026-08-09T02:16:05Z"),
-    model: "claude-opus-4-8",
+    model: "gpt-4o",
     profile_name: "Default",
     session_id: "exp1-worker-i18",
     task_id: "t-001",

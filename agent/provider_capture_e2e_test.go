@@ -3,129 +3,107 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/agentcore"
+	"github.com/Autumn-27/norma/harness"
+	"github.com/Autumn-27/norma/permission"
+	"github.com/Autumn-27/norma/tool"
+	"github.com/Autumn-27/norma/transcript"
 )
 
-// End-to-end through a real norma provider: the Capture rides the context into
-// norma, survives its internal request building, and comes back holding the
-// exact bytes buildBody() put on the wire. This is the load-bearing assumption
-// of the whole feature — norma must propagate the caller's context down to
-// http.NewRequestWithContext.
-func TestCapturePropagatesThroughNormaProvider(t *testing.T) {
-	sse := strings.Join([]string{
-		`event: message_start`,
-		`data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":11,"output_tokens":1}}}`,
-		``,
-		`event: content_block_delta`,
-		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
-		``,
-		`event: message_delta`,
-		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}`,
-		``,
-		`event: message_stop`,
-		`data: {"type":"message_stop"}`,
-		``,
-	}, "\n")
-
-	// Record exactly what the server receives, so the capture can be compared
-	// against it byte for byte rather than merely spot-checked for fields.
-	var gotPath, serverSaw string
+// Exercise the production API wiring, a real harmless tool, durable transcript,
+// cold resume and the raw-recording exclusion together.
+func TestAPIResponsesToolReplayAndColdResumeWithoutRawCapture(t *testing.T) {
+	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		b, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("server read body: %v", err)
+		calls++
+		var req struct {
+			Input []json.RawMessage `json:"input"`
 		}
-		serverSaw = string(b)
-		w.Header().Set("content-type", "text/event-stream")
-		_, _ = io.WriteString(w, sse)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if calls > 1 {
+			raw, _ := json.Marshal(req.Input)
+			for _, want := range []string{"PRIVATE_OPAQUE_FIXTURE", `"phase":"commentary"`, `"call_id":"call_fixture"`, "ARTEX_TOOL_OK"} {
+				if !strings.Contains(string(raw), want) {
+					t.Errorf("replay missing expected state at turn %d", calls)
+				}
+			}
+		}
+		if calls == 1 {
+			writeCompleted(w, []any{
+				map[string]any{"type": "reasoning", "id": "reasoning_fixture", "summary": []any{}, "encrypted_content": "PRIVATE_OPAQUE_FIXTURE"},
+				map[string]any{"type": "message", "id": "message_fixture", "role": "assistant", "phase": "commentary", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": "Checking the local tool."}}},
+				map[string]any{"type": "function_call", "id": "function_fixture", "call_id": "call_fixture", "name": "Bash", "namespace": "artex", "arguments": `{"command":"printf 'ARTEX_TOOL_OK\\n'"}`, "status": "completed"},
+			})
+		} else {
+			writeCompleted(w, textOutput("done"))
+		}
 	}))
 	defer srv.Close()
-
-	cfg := Config{
-		Format:  llm.FormatAnthropic,
-		BaseURL: srv.URL,
-		APIKey:  "test-key",
-		Model:   "claude-test",
-	}
-	prov, err := cfg.NewProvider()
+	cfg := apiFixtureConfig(t, srv)
+	provider, err := cfg.NewProvider()
 	if err != nil {
-		t.Fatalf("NewProvider: %v", err)
+		t.Fatal(err)
 	}
-
-	ctx, capt := llmrec.NewCapture(context.Background())
-	req := llm.CompletionRequest{
-		System:   []string{"you are a scanner"},
-		Messages: []llm.Message{{Role: "user", Content: []llm.ContentBlock{{Type: "text", Text: "go"}}}},
-		Tools: []llm.ToolSchema{{
-			Name:        "bash",
-			Description: "run a shell command",
-			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}},
-		}},
-		MaxTokens: 1024,
-	}
-
-	var text strings.Builder
-	for ev, err := range prov.Stream(ctx, req) {
+	store := transcript.NewStore(t.TempDir())
+	opts := agentcore.Options{Provider: provider, Tools: []tool.CoreTool{tool.NewBash()}, PermissionMode: permission.ModeBypass, WorkingDir: t.TempDir(), Transcript: store, SessionID: "api-replay"}
+	ctx, capture := llmrec.NewCapture(context.Background())
+	session := agentcore.NewSession(opts)
+	var reply string
+	for ev, err := range session.Prompt(ctx, "Run the fixture tool") {
+		if ev.Kind == harness.KindText {
+			reply += ev.Text
+		}
 		if err != nil {
-			t.Fatalf("stream: %v", err)
-		}
-		if ev.Type == llm.SETextDelta {
-			text.WriteString(ev.Text)
+			t.Fatal(err)
 		}
 	}
-	if text.String() != "hello" {
-		t.Fatalf("stream text=%q, capture interfered with delivery", text.String())
+	if !strings.Contains(reply, "done") {
+		t.Fatalf("model did not complete tool roundtrip: %q", reply)
 	}
-	if gotPath != "/v1/messages" {
-		t.Fatalf("path=%q", gotPath)
+	if calls != 2 {
+		t.Fatalf("tool roundtrip calls=%d", calls)
 	}
-
-	// The raw request must be what norma actually sent, not the recorder's
-	// re-serialization — which is exactly why it carries fields the normalized
-	// view drops.
-	raw := capt.RawRequest()
-	if raw == "" {
-		t.Fatal("no raw request captured — context did not reach the transport")
+	records, err := store.Load(store.MainPath("api-replay"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The load-bearing claim: what we stored equals, byte for byte, what the
-	// server received — not merely "has the right fields".
-	if raw != serverSaw {
-		t.Fatalf("captured request != what the server received:\n got: %q\nsaw: %q", raw, serverSaw)
+	found := false
+	for _, record := range records {
+		if record.Message != nil && len(record.Message.ProviderData) > 0 {
+			found = true
+		}
 	}
-	var body map[string]any
-	if err := json.Unmarshal([]byte(raw), &body); err != nil {
-		t.Fatalf("raw request is not valid JSON: %v\n%s", err, raw)
+	if !found {
+		t.Fatal("transcript lost provider state")
 	}
-	if body["model"] != "claude-test" {
-		t.Errorf("model=%v want claude-test (absent from CompletionRequest)", body["model"])
+	resumed := agentcore.NewSession(opts)
+	if err := resumed.Resume("api-replay"); err != nil {
+		t.Fatal(err)
 	}
-	if body["stream"] != true {
-		t.Errorf("stream=%v want true", body["stream"])
+	reply = ""
+	for ev, err := range resumed.Prompt(ctx, "Continue") {
+		if ev.Kind == harness.KindText {
+			reply += ev.Text
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	// The full tool schema is the headline gain: the normalized view keeps names only.
-	tools, _ := body["tools"].([]any)
-	if len(tools) != 1 {
-		t.Fatalf("tools=%v", body["tools"])
+	if reply != "done" {
+		t.Fatalf("resumed model did not complete: %q", reply)
 	}
-	tool, _ := tools[0].(map[string]any)
-	if tool["description"] != "run a shell command" {
-		t.Errorf("tool description missing: %v", tool)
+	if calls != 3 {
+		t.Fatalf("resume calls=%d", calls)
 	}
-	if tool["input_schema"] == nil {
-		t.Errorf("tool input_schema missing: %v", tool)
-	}
-
-	// And the response is the untouched SSE frames, including the events the
-	// recorder never turns into stored output.
-	if capt.RawResponse() != sse {
-		t.Errorf("RawResponse mismatch:\n got: %q\nwant: %q", capt.RawResponse(), sse)
+	if capture.RawRequest() != "" || capture.RawResponse() != "" {
+		t.Fatal("opaque state entered raw recording")
 	}
 }

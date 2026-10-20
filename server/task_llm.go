@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -48,9 +49,11 @@ type llmActivityMetadata struct {
 }
 
 type taskLLMRuntime struct {
-	s        *Server
-	taskID   string
-	agentKey string
+	s               *Server
+	taskID          string
+	agentKey        string
+	selectionMu     sync.Mutex
+	sessionIdentity map[string]string
 }
 
 type taskLLMError struct {
@@ -66,7 +69,8 @@ func (e *taskLLMError) Error() string {
 	return e.cause.Error()
 }
 
-func (e *taskLLMError) Unwrap() error { return e.cause }
+func (e *taskLLMError) Unwrap() error  { return e.cause }
+func (e *taskLLMError) NoReplay() bool { return true }
 
 func isTaskLLMRuntimeError(err error) bool {
 	var target *taskLLMError
@@ -90,10 +94,12 @@ func isQuotaExhaustedError(err error) bool {
 }
 
 type taskLLMSelection struct {
-	task      *Task
-	profileID int64
-	revision  int64
-	provider  llm.Provider
+	task               *Task
+	profileID          int64
+	revision           int64
+	provider           llm.Provider
+	connectionIdentity string
+	chatgptPlan        bool
 	// retry 是这次选中的配置解析出来的重试参数(profile 覆盖 → 全局策略 → 内置默认)。
 	// 同 provider 安全窗口重试按它走,所以换了 profile 就换一套重试节奏。
 	retry agent.RetryConfig
@@ -128,6 +134,8 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	sel := taskLLMSelection{task: t, revision: pt.LLMChainRevision}
 	if prov, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		sel.provider, sel.retry = prov, cfg.Retry
+		sel.connectionIdentity = cfg.ConnectionIdentity()
+		sel.chatgptPlan = cfg.AuthMode == "chatgpt_plan"
 		return sel, nil
 	}
 	if len(pt.LLMProfileIDs) > 0 {
@@ -140,6 +148,8 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
 		}
 		sel.provider, sel.retry = prov, cfg.Retry
+		sel.connectionIdentity = cfg.ConnectionIdentity()
+		sel.chatgptPlan = cfg.AuthMode == "chatgpt_plan"
 		return sel, nil
 	}
 	prov, cfg, ok := r.s.globalProvider()
@@ -147,6 +157,8 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
 	sel.provider, sel.retry = prov, cfg.Retry
+	sel.connectionIdentity = cfg.ConnectionIdentity()
+	sel.chatgptPlan = cfg.AuthMode == "chatgpt_plan"
 	return sel, nil
 }
 
@@ -178,11 +190,9 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	return agent.Config{}, false
 }
 
-// nonStreaming reports whether the task's currently-active LLM source is set to
-// non-streaming. Unresolvable → streaming (false), the safe default.
+// Responses always streams; Complete remains available to auxiliary callers.
 func (r *taskLLMRuntime) nonStreaming() bool {
-	cfg, ok := r.activeCfg()
-	return ok && !cfg.Stream
+	return false
 }
 
 // maxTokens returns the currently-active source's per-reply output cap.
@@ -203,9 +213,15 @@ func parseTaskID(id string) (int64, error) {
 // streamHooks builds the failover/exhaustion callbacks shared by Stream and
 // Complete: how to read the current profile selection, how to mark it quota
 // exhausted, and how to emit a failover transition.
-func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
+func (r *taskLLMRuntime) streamHooks(ctx context.Context, req llm.CompletionRequest) taskLLMStreamHooks {
 	return taskLLMStreamHooks{
-		current: r.current,
+		current: func() (taskLLMSelection, error) {
+			selection, err := r.current()
+			if err == nil {
+				err = r.observeConnection(transcript.SessionIDFrom(ctx), req, selection.connectionIdentity)
+			}
+			return selection, err
+		},
 		exhaust: func(selection taskLLMSelection, cause error) (db.TaskLLMTransition, error) {
 			taskNum, _ := parseTaskID(r.taskID)
 			transition, err := r.s.m.pg.MarkTaskLLMProfileQuotaExhaustedAtRevision(taskNum, selection.profileID, selection.revision, cause.Error())
@@ -223,27 +239,52 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 	}
 }
 
-func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	ctx = llmrec.WithTaskID(ctx, r.taskID)
-	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks())
+// This records only connections observed by this runtime. The first observation
+// cannot establish the origin of a legacy transcript.
+func (r *taskLLMRuntime) observeConnection(sessionID string, req llm.CompletionRequest, identity string) error {
+	if sessionID == "" {
+		return nil
+	}
+	r.selectionMu.Lock()
+	defer r.selectionMu.Unlock()
+	if r.sessionIdentity == nil {
+		r.sessionIdentity = make(map[string]string)
+	}
+	if previous, known := r.sessionIdentity[sessionID]; known && previous != identity && llm.HasProviderState(req) {
+		return &taskLLMError{taskID: r.taskID, cause: errors.New("실행 중 연결이 변경되어 기존 응답 상태를 재전송하지 않았습니다. 새 세션에서 다시 시도하세요")}
+	}
+	r.sessionIdentity[sessionID] = identity
+	return nil
 }
 
-// Complete is the non-streaming counterpart of Stream. A non-streaming call is
-// atomic — it never delivers partial output — so every failure is safe to retry
-// on the same provider or fail over to the next profile without risking
-// duplicated model output or tool execution (the "committed" bookkeeping the
-// streaming path needs is unnecessary here).
+func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	ctx = llmrec.WithTaskID(ctx, r.taskID)
+	return streamTaskLLM(ctx, r.taskID, req, r.streamHooks(ctx, req))
+}
+
+// Complete returns the accumulated SSE result. Provider-owned retry limits and
+// billing/state guards still apply even though no partial result reaches callers.
 func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	ctx = llmrec.WithTaskID(ctx, r.taskID)
-	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
+	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks(ctx, req))
 }
 
 func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) (llm.Message, string, llm.Usage, error) {
+	var previousIdentity string
+	var previousPlan bool
+	selected := false
 	for {
 		selection, err := hooks.current()
 		if err != nil {
 			return llm.Message{}, "", llm.Usage{}, err
 		}
+		if selected && selection.chatgptPlan != previousPlan {
+			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, cause: db.ErrTaskLLMBillingTransition}
+		}
+		if selected && llm.HasProviderState(req) && selection.connectionIdentity != previousIdentity {
+			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, cause: errors.New("연결이 변경되어 기존 응답 상태를 재전송하지 않았습니다. 새 대화에서 다시 시도하세요")}
+		}
+		previousIdentity, previousPlan, selected = selection.connectionIdentity, selection.chatgptPlan, true
 		var (
 			msg     llm.Message
 			sr      string
@@ -272,11 +313,11 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		}
 		// profileID=0: 显式链已被清空;非额度错误:透传。二者都不改任务 failover 状态。
 		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
-			return llm.Message{}, "", llm.Usage{}, callErr
+			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, cause: callErr}
 		}
 		transition, markErr := hooks.exhaust(selection, callErr)
 		if markErr != nil {
-			return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
+			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, cause: fmt.Errorf("mark profile quota exhausted: %w", errors.Join(callErr, markErr))}
 		}
 		if transition.Advanced && !transition.Stale && hooks.transition != nil {
 			hooks.transition(selection, transition, callErr)
@@ -290,12 +331,24 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 
 func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest, hooks taskLLMStreamHooks) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
+		var previousIdentity string
+		var previousPlan bool
+		selected := false
 		for {
 			selection, err := hooks.current()
 			if err != nil {
 				yield(llm.StreamEvent{}, err)
 				return
 			}
+			if selected && selection.chatgptPlan != previousPlan {
+				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: db.ErrTaskLLMBillingTransition})
+				return
+			}
+			if selected && llm.HasProviderState(req) && selection.connectionIdentity != previousIdentity {
+				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: errors.New("연결이 변경되어 기존 응답 상태를 재전송하지 않았습니다. 새 대화에서 다시 시도하세요")})
+				return
+			}
+			previousIdentity, previousPlan, selected = selection.connectionIdentity, selection.chatgptPlan, true
 			committed := false
 			var pending []llm.StreamEvent
 			var streamErr error
@@ -358,20 +411,13 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 						return
 					}
 				}
-				yield(llm.StreamEvent{}, streamErr)
+				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: streamErr})
 				return
 			}
 			transition, markErr := hooks.exhaust(selection, streamErr)
 			if markErr != nil {
-				cause := fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr)
-				if committed {
-					// Output may already have driven tool execution. Report the persistence
-					// failure, but classify it as router-handled so the worker does not
-					// replay the entire intent and duplicate those side effects.
-					yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: cause})
-				} else {
-					yield(llm.StreamEvent{}, cause)
-				}
+				cause := fmt.Errorf("mark profile quota exhausted: %w", errors.Join(streamErr, markErr))
+				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, cause: cause})
 				return
 			}
 			if transition.Advanced && !transition.Stale && hooks.transition != nil {
@@ -436,8 +482,16 @@ func isRetryableStreamError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// ChatGPT's adapter owns bounded admission retries. Replaying its Complete
-	// error here could repeat a stream that already consumed subscription usage.
+	// The Responses adapter owns one admission/stream retry budget. Do not
+	// multiply it here; billing fallback is a separate policy.
+	var noReplay interface{ NoReplay() bool }
+	if errors.As(err, &noReplay) && noReplay.NoReplay() {
+		return false
+	}
+	var sameAuth interface{ RetryableSameAuth() bool }
+	if errors.As(err, &sameAuth) {
+		return sameAuth.RetryableSameAuth()
+	}
 	var policy interface{ NoFallback() bool }
 	if errors.As(err, &policy) && policy.NoFallback() {
 		return false
@@ -456,9 +510,19 @@ func isRetryableStreamError(err error) bool {
 			return false
 		}
 	}
-	// 其余(传输 reset/EOF/timeout、408/429/5xx、流内 error 事件如 anthropic
-	// overloaded_error 等)一律视为瞬时,允许重试。
-	return true
+	// Unknown failures are not evidence of a transient condition. The typed
+	// Responses errors above classify their codes without inspecting messages.
+	for _, transient := range []string{
+		"connection reset", "broken pipe", "eof", "timeout", "timed out",
+		"temporary network", "network is unreachable", "dial tcp",
+		"status 408", "status 429", "status 500", "status 502", "status 503", "status 504",
+		"overloaded_error", "server_error", "rate_limit_exceeded",
+	} {
+		if strings.Contains(s, transient) {
+			return true
+		}
+	}
+	return false
 }
 
 // CompactionWindow mirrors current()'s precedence so the context window always
@@ -576,7 +640,11 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
 	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)
 	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
-	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
+	wk.SetConnectionIdentity(func() string {
+		cfg, _ := workerRuntime.activeCfg()
+		return cfg.ConnectionIdentity()
+	})
+	wk.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
 	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	wk.SetWebSearch(s.webSearchFor("worker"))
@@ -586,6 +654,10 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)
 	pl.SetMaxTokens(plannerRuntime.maxTokens)
+	pl.SetConnectionIdentity(func() string {
+		cfg, _ := plannerRuntime.activeCfg()
+		return cfg.ConnectionIdentity()
+	})
 	pl.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	pl.SetKillWork(s.engine.KillWork)
 	pl.SetSteerWork(s.engine.SteerWork)
@@ -601,6 +673,10 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)
 	main.SetNonStreaming(mainRuntime.nonStreaming)
 	main.SetMaxTokens(mainRuntime.maxTokens)
+	main.SetConnectionIdentity(func() string {
+		cfg, _ := mainRuntime.activeCfg()
+		return cfg.ConnectionIdentity()
+	})
 	main.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
 	main.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	main.SetWebSearch(s.webSearchFor("mainagent"))

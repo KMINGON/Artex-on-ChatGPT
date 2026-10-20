@@ -25,7 +25,7 @@ const MOCK_LOGS: LogLine[] = [
     ts: "2026-07-26T03:55:01Z",
     level: "info",
     tag: "config",
-    text: "LLM configured from DB: anthropic / claude-opus-4-8",
+    text: "LLM configured from DB: openai-responses / gpt-4o",
   },
   {
     seq: 3,

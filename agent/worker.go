@@ -28,41 +28,31 @@ import (
 // WebSearchOpts is the web-search backend selection the server pushes into each
 // agent (planner/worker/main). Enabled=false leaves the web_search tool off.
 // Backend is "ddgs" (no key), "brave-free" (BraveKey required), "tavily"
-// (TavilyKey required), or "deepseek" (DeepSeek* required, filled from the
-// active LLM profile). It maps directly onto agentcore.Options.
+// (TavilyKey required). It maps directly onto agentcore.Options.
 // Proxy is a dedicated egress proxy for the search request (http/https/socks5),
 // independent of the traffic-recording MITM proxy — set it when the search endpoint
 // is only reachable via a VPN/SOCKS proxy. Empty = direct.
-//
-// 注意 deepseek 后端与其它三个的性质不同：DeepSeek 没有可直接调用的搜索接口，
-// 搜索只存在于其 Anthropic 兼容 messages 接口内部(web_search_20250305 server
-// tool)，因此每次搜索会消耗一次模型调用，且搜索请求由 DeepSeek 服务端发出——
-// 不经过本机 Proxy，也不会进流量留痕。
 type WebSearchOpts struct {
 	Enabled   bool
 	Backend   string
 	BraveKey  string
 	TavilyKey string
 	Proxy     string
-	// DeepSeek* 来自当前激活的 LLM 配置(仅 anthropic 格式的 DeepSeek 官方端点)，
-	// 不单独配置，随 LLM 配置切换而变。
-	DeepSeekBaseURL string
-	DeepSeekAPIKey  string
-	DeepSeekModel   string
 }
 
 type Worker struct {
-	findingRecorder FindingRecorder
-	prov            llm.Provider
-	model           string
-	workDir         string
-	proxyAddr       string
-	proxyCACert     string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
-	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
-	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
-	window          int               // context window in tokens (for compaction)
-	windowFn        func() int        // optional dynamic task-chain minimum
-	maxTurns        int               // max agent turns per run (0 = unlimited)
+	findingRecorder    FindingRecorder
+	connectionIdentity func() string
+	prov               llm.Provider
+	model              string
+	workDir            string
+	proxyAddr          string
+	proxyCACert        string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	webSearch          WebSearchOpts     // web_search tool backend selection (off by default)
+	tx                 *transcript.Store // raw LLM conversation persistence (nil = off)
+	window             int               // context window in tokens (for compaction)
+	windowFn           func() int        // optional dynamic task-chain minimum
+	maxTurns           int               // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
@@ -441,14 +431,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		WebFetchCACert: w.proxyCACert,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
-		EnableWebSearch:       w.webSearch.Enabled,
-		WebSearchBackend:      w.webSearch.Backend,
-		BraveSearchAPIKey:     w.webSearch.BraveKey,
-		TavilySearchAPIKey:    w.webSearch.TavilyKey,
-		DeepSeekSearchBaseURL: w.webSearch.DeepSeekBaseURL,
-		DeepSeekSearchAPIKey:  w.webSearch.DeepSeekAPIKey,
-		DeepSeekSearchModel:   w.webSearch.DeepSeekModel,
-		WebSearchProxy:        w.webSearch.Proxy,
+		EnableWebSearch:    w.webSearch.Enabled,
+		WebSearchBackend:   w.webSearch.Backend,
+		BraveSearchAPIKey:  w.webSearch.BraveKey,
+		TavilySearchAPIKey: w.webSearch.TavilyKey,
+		WebSearchProxy:     w.webSearch.Proxy,
 		// Bash 子命令的 HTTP 默认走记录代理 + 信任其 CA（工具无需 -x/-k）。
 		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
 		WorkingDir: runDir,
@@ -492,6 +479,17 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
 	noaSession := WorkerSessionID(ts.ID(), intent.ID)
+	boundSession, changed, connectionErr := connectedSession(w.workDir, noaSession, w.connectionIdentity)
+	if connectionErr != nil {
+		return harness.ReasonModelError, WriteCounts{}, connectionErr
+	}
+	noaSession = boundSession
+	if w.tx != nil {
+		opts.SessionID = boundSession
+	}
+	if changed {
+		emitWrap(db.Activity{Kind: "text", Summary: "모델 연결이 변경되어 새 컨텍스트를 시작했습니다. 이전 기록과 작업 데이터는 보존됩니다."})
+	}
 	enableNoa(&opts, w.noaEnabledFn, w.workDir, noaSession, noaWarn(noaSession))
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)

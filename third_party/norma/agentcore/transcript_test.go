@@ -2,8 +2,6 @@ package agentcore
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -13,20 +11,6 @@ import (
 	"github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 )
-
-// textServer replies with a single end_turn text message carrying usage.
-func textServer(t *testing.T, text string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(sse(
-			`data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}`, ``,
-			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`, ``,
-			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+text+`"}}`, ``,
-			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}`, ``,
-			`data: {"type":"message_stop"}`, ``,
-		)))
-	}))
-}
 
 func drainPrompt(t *testing.T, s *Session, input string) {
 	t.Helper()
@@ -40,9 +24,7 @@ func drainPrompt(t *testing.T, s *Session, input string) {
 // TestTranscriptPersistAndResume drives a Session with a transcript store, then
 // resumes a fresh Session from disk and continues the conversation.
 func TestTranscriptPersistAndResume(t *testing.T) {
-	srv := textServer(t, "first answer")
-	defer srv.Close()
-	prov, _ := llm.NewProvider(llm.Config{Format: llm.FormatAnthropic, BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	prov := textProvider("first answer")
 	store := transcript.NewStore(t.TempDir())
 
 	s := NewSession(Options{
@@ -77,9 +59,7 @@ func TestTranscriptPersistAndResume(t *testing.T) {
 	}
 
 	// Resume into a fresh Session and verify history is rebuilt.
-	srv2 := textServer(t, "second answer")
-	defer srv2.Close()
-	prov2, _ := llm.NewProvider(llm.Config{Format: llm.FormatAnthropic, BaseURL: srv2.URL, APIKey: "k", Model: "m"})
+	prov2 := textProvider("second answer")
 	resumed := NewSession(Options{
 		Provider:       prov2,
 		SystemPrompt:   []string{"test"},
@@ -153,9 +133,7 @@ func TestResumeRestoresCompactedView(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	srv := textServer(t, "next")
-	defer srv.Close()
-	prov, _ := llm.NewProvider(llm.Config{Format: llm.FormatAnthropic, BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	prov := textProvider("next")
 	s := NewSession(Options{
 		Provider:       prov,
 		SystemPrompt:   []string{"test"},

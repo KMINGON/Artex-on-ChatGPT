@@ -37,7 +37,7 @@ func attachReplayState(message *llm.Message, output []json.RawMessage) error {
 func replayItems(message llm.Message) ([]json.RawMessage, error) {
 	var state replayState
 	if message.Role != llm.RoleAssistant || json.Unmarshal(message.ProviderData, &state) != nil || state.Version != 1 || state.Provider != replayProvider || state.ContentHash != contentHash(message.Content) || len(state.Output) == 0 {
-		return nil, failure("invalid_replay_state", "저장된 ChatGPT 응답과 대화 내용이 일치하지 않습니다. 새 대화를 시작해 주세요", nil)
+		return nil, failure("invalid_replay_state", "저장된 OpenAI 응답과 대화 내용이 일치하지 않습니다. 새 대화를 시작해 주세요", nil)
 	}
 	ids := map[string]bool{}
 	for _, raw := range state.Output {

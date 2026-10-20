@@ -4,22 +4,26 @@ import (
 	"context"
 	"iter"
 
-	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/norma/llm"
 )
 
 // Invalid persisted subscription settings must remain selected, even if the
 // caller normally resolves another provider when construction fails.
-type unavailableChatGPTProvider struct{}
+type unavailableProvider struct{ err error }
 
-func (unavailableChatGPTProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
-	return func(yield func(llm.StreamEvent, error) bool) { yield(llm.StreamEvent{}, chatGPTConfigError()) }
+func (p unavailableProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) { yield(llm.StreamEvent{}, p.configError()) }
 }
 
-func (unavailableChatGPTProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	return llm.Message{}, "", llm.Usage{}, chatGPTConfigError()
+func (p unavailableProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	return llm.Message{}, "", llm.Usage{}, p.configError()
 }
 
-func chatGPTConfigError() error {
-	return &chatgptllm.Error{Code: "invalid_config", Message: "ChatGPT 모델·프록시 설정을 확인해 주세요"}
+type configError struct{ error }
+
+func (configError) NoFallback() bool { return true }
+func (configError) Retryable() bool  { return false }
+
+func (p unavailableProvider) configError() error {
+	return configError{p.err}
 }

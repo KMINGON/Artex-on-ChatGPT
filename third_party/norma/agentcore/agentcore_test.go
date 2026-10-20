@@ -2,10 +2,8 @@ package agentcore
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
+	"iter"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/Autumn-27/norma/harness"
@@ -14,82 +12,89 @@ import (
 	"github.com/Autumn-27/norma/tool"
 )
 
-func sse(lines ...string) string { return strings.Join(lines, "\n") + "\n" }
+// The host owns the wire adapter; these tests exercise the engine contract.
+type fixtureProvider func(llm.CompletionRequest) llm.Message
 
-// TestEndToEnd drives the whole stack: agentcore.Session → harness loop → real
-// Anthropic HTTP provider (fake SSE server) → real Bash tool, over two turns.
-func TestEndToEnd(t *testing.T) {
-	var calls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := atomic.AddInt32(&calls, 1)
-		if n == 1 {
-			w.Write([]byte(sse(
-				`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"Bash"}}`, ``,
-				`data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"echo loop-works\"}"}}`, ``,
-				`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`, ``,
-				`data: {"type":"message_stop"}`, ``,
-			)))
+func (p fixtureProvider) Stream(_ context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		message := p(req)
+		stop := "end_turn"
+		for _, block := range message.Content {
+			if block.Type == llm.BlockToolUse {
+				stop = "tool_use"
+				if !yield(llm.StreamEvent{Type: llm.SEToolUseStart, ToolID: block.ID, ToolName: block.Name}, nil) {
+					return
+				}
+				if !yield(llm.StreamEvent{Type: llm.SEToolInputJSON, Text: string(block.Input)}, nil) {
+					return
+				}
+			} else if block.Type == llm.BlockText {
+				if !yield(llm.StreamEvent{Type: llm.SETextDelta, Text: block.Text}, nil) {
+					return
+				}
+			}
+		}
+		if !yield(llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: stop, Usage: llm.Usage{InputTokens: 10, OutputTokens: 5}}, nil) {
 			return
 		}
-		body := make([]byte, r.ContentLength)
-		r.Body.Read(body)
-		if !strings.Contains(string(body), "loop-works") {
-			t.Errorf("second request missing tool_result")
-		}
-		w.Write([]byte(sse(
-			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`, ``,
-			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"The command ran."}}`, ``,
-			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`, ``,
-			`data: {"type":"message_stop"}`, ``,
-		)))
-	}))
-	defer srv.Close()
-
-	prov, _ := llm.NewProvider(llm.Config{Format: llm.FormatAnthropic, BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	opts := Options{
-		Provider:       prov,
-		SystemPrompt:   []string{"You are a test agent."},
-		Tools:          []tool.CoreTool{tool.NewBash()},
-		PermissionMode: permission.ModeBypass,
-		WorkingDir:     t.TempDir(),
+		yield(llm.StreamEvent{Type: llm.SEMessageStop}, nil)
 	}
-
-	var sawText string
-	s := NewSession(opts)
-	for ev, err := range s.Prompt(context.Background(), "run echo") {
+}
+func (p fixtureProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	acc := llm.NewAccumulator()
+	for ev, err := range p.Stream(ctx, req) {
 		if err != nil {
-			t.Fatalf("err: %v", err)
+			return llm.Message{}, "", llm.Usage{}, err
 		}
-		if ev.Kind == harness.KindText {
-			sawText += ev.Text
-		}
+		acc.Add(ev)
 	}
-	if sawText != "The command ran." {
-		t.Fatalf("streamed text=%q", sawText)
-	}
-	if atomic.LoadInt32(&calls) != 2 {
-		t.Fatalf("model calls=%d", calls)
-	}
-	if len(s.Messages()) != 4 {
-		t.Fatalf("messages=%d", len(s.Messages()))
+	return acc.Message(), acc.StopReason, acc.Usage, nil
+}
+func textProvider(text string) fixtureProvider {
+	return func(llm.CompletionRequest) llm.Message {
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock(text)}}
 	}
 }
 
-func TestRunConvenience(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(sse(
-			`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`, ``,
-			`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, ``,
-			`data: [DONE]`, ``,
-		)))
-	}))
-	defer srv.Close()
-	prov, _ := llm.NewProvider(llm.Config{Format: llm.FormatOpenAI, BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	out, err := Run(context.Background(), Options{Provider: prov, SystemPrompt: []string{"hi"}, Tools: []tool.CoreTool{}}, "say hello")
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+func TestEndToEnd(t *testing.T) {
+	calls := 0
+	provider := fixtureProvider(func(req llm.CompletionRequest) llm.Message {
+		calls++
+		if calls == 1 {
+			return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "tu1", Name: "Bash", Input: []byte(`{"command":"echo loop-works"}`)}}}
+		}
+		found := false
+		for _, message := range req.Messages {
+			for _, block := range message.Content {
+				if block.Type == llm.BlockToolResult {
+					for _, text := range block.Content {
+						found = found || strings.Contains(text.Text, "loop-works")
+					}
+				}
+			}
+		}
+		if !found {
+			t.Error("second request missing tool result")
+		}
+		return textProvider("The command ran.")(req)
+	})
+	s := NewSession(Options{Provider: provider, SystemPrompt: []string{"test"}, Tools: []tool.CoreTool{tool.NewBash()}, PermissionMode: permission.ModeBypass, WorkingDir: t.TempDir()})
+	var text string
+	for ev, err := range s.Prompt(context.Background(), "run echo") {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ev.Kind == harness.KindText {
+			text += ev.Text
+		}
 	}
-	if out != "hello" {
-		t.Fatalf("out=%q", out)
+	if text != "The command ran." || calls != 2 || len(s.Messages()) != 4 {
+		t.Fatalf("text=%q calls=%d messages=%d", text, calls, len(s.Messages()))
+	}
+}
+func TestRunConvenience(t *testing.T) {
+	out, err := Run(context.Background(), Options{Provider: textProvider("hello"), SystemPrompt: []string{"hi"}, Tools: []tool.CoreTool{}}, "say hello")
+	if err != nil || out != "hello" {
+		t.Fatalf("out=%q err=%v", out, err)
 	}
 }

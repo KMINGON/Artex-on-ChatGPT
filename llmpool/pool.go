@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/norma/llm"
 )
 
@@ -18,12 +19,13 @@ import (
 // with the recorder by the caller, so a failed attempt is still recorded under
 // its own profile name).
 type Member struct {
-	ID       int64  // llm_profiles.id
-	Name     string // profile name, for logs / UI
-	Model    string
-	Format   string // "anthropic" | "openai"
-	Priority int    // the profile's configured priority (display only)
-	Active   bool   // is_default (display only)
+	ID                 int64  // llm_profiles.id
+	Name               string // profile name, for logs / UI
+	Model              string
+	Format             string // "openai-responses"
+	ConnectionIdentity string // current credential/model fingerprint; never a raw secret
+	Priority           int    // the profile's configured priority (display only)
+	Active             bool   // is_default (display only)
 	// Rank is the ordering key the caller assigned: higher goes first, and members
 	// sharing a Rank take turns leading (load-spreading across duplicate keys).
 	// The caller encodes "active profile heads the chain" as a Rank above every
@@ -84,12 +86,25 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var lastErr error
 		for i, m := range order {
+			if llm.HasProviderState(req) && !sameConnection(p.Head(), m) {
+				yield(llm.StreamEvent{}, connectionChangeError())
+				return
+			}
 			emitted := false
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
 				if err != nil && !emitted && shouldFailover(ctx, err) {
 					failed = err
 					break // safe window: nothing reached the caller yet
+				}
+				if !sameConnection(p.Head(), m) {
+					if ev.Type == llm.SEThinkingSignature {
+						continue
+					}
+					if ev.FinalMessage != nil {
+						message := withoutProviderState(*ev.FinalMessage)
+						ev.FinalMessage = &message
+					}
 				}
 				emitted = true
 				if !yield(ev, err) {
@@ -110,6 +125,10 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			}
 			if i+1 < len(order) {
 				n := order[i+1]
+				if llm.HasProviderState(req) && !sameConnection(m, n) {
+					yield(llm.StreamEvent{}, connectionChangeError())
+					return
+				}
 				log.Printf("[llmpool] LLM 故障转移：%q(%s) → %q(%s)，原因：%s",
 					m.Name, m.Model, n.Name, n.Model, trimErr(failed))
 			}
@@ -118,7 +137,7 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			lastErr = ErrExhausted
 		}
 		log.Printf("[llmpool] 轮询链已耗尽(%d 个配置全部失败)，最后错误：%s", len(order), trimErr(lastErr))
-		yield(llm.StreamEvent{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr))
+		yield(llm.StreamEvent{}, fmt.Errorf("%w: %w", ErrExhausted, lastErr))
 	}
 }
 
@@ -131,9 +150,15 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 	order := p.order(req)
 	var lastErr error
 	for i, m := range order {
+		if llm.HasProviderState(req) && !sameConnection(p.Head(), m) {
+			return llm.Message{}, "", llm.Usage{}, connectionChangeError()
+		}
 		msg, sr, usage, err := m.Prov.Complete(ctx, req)
 		if err == nil {
 			p.health.Pass(m.ID)
+			if !sameConnection(p.Head(), m) {
+				msg = withoutProviderState(msg)
+			}
 			return msg, sr, usage, nil
 		}
 		if !shouldFailover(ctx, err) {
@@ -149,6 +174,9 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		}
 		if i+1 < len(order) {
 			n := order[i+1]
+			if llm.HasProviderState(req) && !sameConnection(m, n) {
+				return llm.Message{}, "", llm.Usage{}, connectionChangeError()
+			}
 			log.Printf("[llmpool] LLM 故障转移：%q(%s) → %q(%s)，原因：%s",
 				m.Name, m.Model, n.Name, n.Model, trimErr(err))
 		}
@@ -157,7 +185,7 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		lastErr = ErrExhausted
 	}
 	log.Printf("[llmpool] 轮询链已耗尽(%d 个配置全部失败)，最后错误：%s", len(order), trimErr(lastErr))
-	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w: %v", ErrExhausted, lastErr)
+	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w: %w", ErrExhausted, lastErr)
 }
 
 // order picks the members to try, in order: skip those in a cooling-off window
@@ -207,13 +235,15 @@ func rotateGroups(in []*Member, n uint64) []*Member {
 	return out
 }
 
-// statusRe pulls the HTTP status out of the SDK's error text, which is formatted
-// as "<prefix>: status <code>: <body>" (norma/llm/retry.go). The SDK exposes no
-// typed error, so the string is what we have.
+// Keep string status parsing for existing provider wrappers and test fixtures.
 var statusRe = regexp.MustCompile(`status (\d{3})`)
 
 // statusOf returns the HTTP status carried by err, or 0 if it isn't one.
 func statusOf(err error) int {
+	var responseErr *chatgptllm.Error
+	if errors.As(err, &responseErr) {
+		return responseErr.StatusCode
+	}
 	m := statusRe.FindStringSubmatch(err.Error())
 	if m == nil {
 		return 0
@@ -238,6 +268,13 @@ func shouldFailover(ctx context.Context, err error) bool {
 	}
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	var responseErr *chatgptllm.Error
+	if errors.As(err, &responseErr) && responseErr.StatusCode == 0 {
+		// Local encoding/auth/replay errors never reached HTTP. Only a real
+		// connection attempt may consume a different profile's credential.
+		return responseErr.Code == "transport_error" &&
+			(responseErr.Stage == "" || responseErr.Stage == "admission")
 	}
 	switch code := statusOf(err); {
 	case code == 0:
@@ -300,4 +337,23 @@ func blocksLen(bs []llm.ContentBlock) int {
 		}
 	}
 	return n
+}
+
+func sameConnection(a, b *Member) bool {
+	return a.ID == b.ID || a.ConnectionIdentity != "" && a.ConnectionIdentity == b.ConnectionIdentity
+}
+func connectionChangeError() error {
+	return errors.New("모델 연결을 전환하려면 새 대화를 시작해 주세요. 이전 추론 상태는 다른 계정·API 키·모델로 재전송하지 않습니다")
+}
+
+// A legacy pool may use a different credential before any output is delivered.
+// Its visible answer remains usable, but the next call must not replay that
+// credential's opaque state through the configured head.
+func withoutProviderState(message llm.Message) llm.Message {
+	message.ProviderData = nil
+	message.Content = append([]llm.ContentBlock(nil), message.Content...)
+	for i := range message.Content {
+		message.Content[i].Signature = ""
+	}
+	return message
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 )
 
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a
@@ -72,7 +73,8 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		tkind = kind
 		tbuf.WriteString(text)
 	}
-	lastTool := &runTrace{startedAt: time.Now()}
+	lastTool := &runTrace{startedAt: time.Now(), role: sessionRole(s.SessionID())}
+	runID := transcript.NewSessionID()
 	var lastUsage *llm.Usage
 
 	var finalText string
@@ -85,8 +87,13 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				rec(activityWithUsage(db.Activity{Kind: "result", Summary: firstLine(sum, 400), Detail: detail}, lastUsage))
 				return finalText, reason, ctx.Err()
 			}
-			rec(activityWithUsage(db.Activity{Kind: "result", IsError: true, Summary: "执行出错: " + err.Error(), Detail: err.Error()}, lastUsage))
-			return finalText, reason, err
+			sum, detail := "이번 에이전트 실행을 완료하지 못했습니다", err.Error()
+			if ErrorDiagnostics(err) != nil {
+				reason = harness.ReasonModelError
+				sum, detail = terminalText(ctx, &harness.Terminal{Reason: reason, Err: err}, lastTool)
+			}
+			rec(failureActivity(ctx, activityWithUsage(db.Activity{Kind: "result", IsError: true, Summary: firstLine(sum, 400), Detail: detail}, lastUsage), err, runID, s.SessionID(), lastTool, 0))
+			return finalText, reason, protectRunOutput(err, lastTool)
 		}
 		switch ev.Kind {
 		case harness.KindToolUse:
@@ -111,8 +118,10 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
 		case harness.KindText:
+			lastTool.outputEmitted = lastTool.outputEmitted || ev.Text != ""
 			addDelta("text", ev.Text)
 		case harness.KindThinking:
+			lastTool.outputEmitted = lastTool.outputEmitted || ev.Text != ""
 			addDelta("thinking", ev.Text)
 		case harness.KindUsage:
 			// live cumulative token usage (per model turn). Emitted as a non-rendered
@@ -135,22 +144,22 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				reason = ev.Terminal.Reason
 				// the buffered tail text usually equals Terminal.Text (final answer);
 				// drop it to avoid a duplicate record, the result row carries it.
-				if tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(ev.Terminal.Text) {
+				if ev.Terminal.Reason != harness.ReasonModelError && tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(ev.Terminal.Text) {
 					tbuf.Reset()
 					tkind = ""
 				}
 				flush() // flush any trailing thinking / non-final text
 				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
+				if sum == "" || ev.Terminal.Err != nil || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
 					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
-				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
+				rec(failureActivity(ctx, db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
 					Summary: firstLine(sum, 400), Detail: detail,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
-					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
+					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens}, ev.Terminal.Err, runID, s.SessionID(), lastTool, ev.Terminal.Turns))
 				if ev.Terminal.Err != nil {
-					rerr = ev.Terminal.Err
+					rerr = protectRunOutput(ev.Terminal.Err, lastTool)
 				}
 			}
 		}

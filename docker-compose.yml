@@ -15,19 +15,16 @@ services:
     restart: unless-stopped
 
   artex:
-    # 이 포크가 릴리스 태그(v*)마다 GitHub Container Registry 에 발행하는 이미지입니다
-    # (.github/workflows/release.yml 의 docker 잡). 상류 autumn27/artex 는 Docker Hub 에서 내려갔습니다.
+    # 원본 artex-global 이미지 예제입니다. 이 포크의 OpenAI 변경은 포함되지 않습니다.
+    # 개인 PC에서 이 포크를 실행하려면 README의 소스 빌드 절차를 따르세요.
     image: ghcr.io/jiwoochris/artex-global:${ARTEX_TAG:-latest}
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       ARTEX_PG_DSN: postgres://${POSTGRES_USER:-artex}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-artex}?sslmode=disable
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ARTEX_LLM_PROVIDER: ${ARTEX_LLM_PROVIDER:-}
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-}
-      ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:-}
       ARTEX_LLM_PROXY: ${ARTEX_LLM_PROXY:-}
       # 첫 실행 보호. 비워 두면 기동 로그에 무작위 설정 토큰이 찍히고, /setup 에서 그 값을
       # 입력해야 관리자 비밀번호를 만들 수 있습니다(docker compose logs artex 로 확인).

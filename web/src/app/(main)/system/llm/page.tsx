@@ -42,10 +42,7 @@ import { cn } from "@/lib/utils";
 import { ChatGPTAccountCard } from "./_components/chatgpt-account-card";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
-// 思考开关(thinking.type)与思考强度(reasoning_effort)是两个【互相独立】的字段，
-// 各自单独设置——有些接口没有 thinking 字段、只靠强度参数就能激活思考，故需解耦。
-// 存库空字符串 = 该字段【不发送】；Radix Select 不接受空 value，故 UI 用 "none"
-// 哨兵表示不发送，存取时与 "" 互转（NONE / fromStore / toStore）。
+// Empty effort means the model default; the select uses a nonempty sentinel.
 const NONE = "none";
 const fromStore = (v?: string) => (v ? v : NONE);
 const toStore = (v: string) => (v === NONE ? "" : v);
@@ -271,25 +268,19 @@ function ProfileSheet({
   const t = useTranslations("llmPage");
   const isNew = !profile;
   const [name, setName] = React.useState("");
-  const [format, setFormat] = React.useState<"anthropic" | "openai" | "openai-responses">("anthropic");
   const [authMode, setAuthMode] = React.useState<LLMAuthMode>("api_key");
   const [accountId, setAccountId] = React.useState("");
   const [model, setModel] = React.useState("");
-  const [baseUrl, setBaseUrl] = React.useState("");
   const [proxy, setProxy] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [keyHint, setKeyHint] = React.useState("");
   const [rps, setRps] = React.useState("0");
   const [rpm, setRpm] = React.useState("0");
   const [cw, setCw] = React.useState("0"); // 上下文窗口(K tokens);0=默认200K
-  const [thinkingType, setThinkingType] = React.useState(NONE);
   const [effort, setEffort] = React.useState(NONE);
   const [priority, setPriority] = React.useState("0"); // 轮询顺位;越大越先
   const [poolExclude, setPoolExclude] = React.useState(false);
-  const [streaming, setStreaming] = React.useState(true); // true=流式(默认);false=非流式
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
-  const [maxTokensField, setMaxTokensField] = React.useState(NONE); // 上限用哪个字段名;NONE=max_tokens
-  const [sessionHeaderKey, setSessionHeaderKey] = React.useState(""); // 自定义会话头名;空=不发送
   const [retry, setRetry] = React.useState<LLMRetryOverride>(ZERO_OVERRIDE); // 本配置的重试覆盖;全 0=跟随全局
   const [testing, setTesting] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -301,16 +292,7 @@ function ProfileSheet({
   const selectedAccount = accounts.find((account) => account.id === accountId);
   const accountReady = Boolean(selectedAccount?.connected && selectedAccount.plan_enabled);
 
-  // 思考开关 / 上限字段名 / 思考强度三组选项的标签走 i18n，故在组件内按当前语言构造。
-  const THINKING_TYPES: { value: string; label: string }[] = [
-    { value: NONE, label: t("profile.thinkingType.opt.none") },
-    { value: "disabled", label: t("profile.thinkingType.opt.disabled") },
-    { value: "enabled", label: t("profile.thinkingType.opt.enabled") },
-  ];
-  const MAX_TOKENS_FIELDS: { value: string; label: string }[] = [
-    { value: NONE, label: t("profile.maxTokensField.opt.default") },
-    { value: "max_completion_tokens", label: "max_completion_tokens" },
-  ];
+  // Preserve the existing effort choices without introducing model-specific defaults.
   const EFFORT_LEVELS: { value: string; label: string }[] = [
     { value: NONE, label: t("profile.effort.opt.none") },
     { value: "low", label: "low" },
@@ -327,21 +309,15 @@ function ProfileSheet({
     setName(profile?.name ?? "");
     setAuthMode(profile?.auth_mode ?? "api_key");
     setAccountId(profile?.chatgpt_account_id ?? "");
-    setFormat(profile?.format === "openai" || profile?.format === "openai-responses" ? profile.format : "anthropic");
-    setModel(profile?.model ?? "");
-    setBaseUrl(profile?.base_url ?? "");
+    setModel(profile?.configuration_error ? "" : (profile?.model ?? ""));
     setProxy(profile?.proxy ?? "");
     setRps(String(profile?.rate_per_second ?? 0));
     setRpm(String(profile?.rate_per_minute ?? 0));
     setCw(String(profile?.context_window_k ?? 0));
-    setThinkingType(fromStore(profile?.thinking_type));
     setEffort(fromStore(profile?.reasoning_effort));
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
-    setStreaming(profile?.streaming ?? true);
     setMaxTokens(String(profile?.max_tokens ?? 0));
-    setMaxTokensField(fromStore(profile?.max_tokens_field));
-    setSessionHeaderKey(profile?.session_header_key ?? "");
     setRetry(profile?.retry ?? ZERO_OVERRIDE);
     setApiKey("");
     setKeyHint(profile?.api_key_hint ?? "");
@@ -369,7 +345,7 @@ function ProfileSheet({
     try {
       const r = isChatGPT
         ? { ok: true, models: await api.chatgptModels(accountId), error: undefined }
-        : await api.fetchLLMModels(format, baseUrl, apiKey, proxy, profileId).then((result) => ({
+        : await api.fetchLLMModels(apiKey, proxy, profileId).then((result) => ({
             ...result,
             models: result.models?.map((id) => ({ id, name: id })),
           }));
@@ -395,20 +371,15 @@ function ProfileSheet({
     try {
       // 用配置实际会跑的思考参数来测，这样不支持该字段的模型在这里就失败，
       // 而不是等到跑任务时才炸。传 profile id：Key 输入框留空时用已存的 Key。
-      const r = await api.testLLM(
-        isChatGPT ? "openai-responses" : format,
+      const r = await api.testLLM({
         model,
-        isChatGPT ? "" : baseUrl,
-        isChatGPT ? "" : apiKey,
+        api_key: isChatGPT ? "" : apiKey,
         proxy,
-        isChatGPT ? "" : toStore(thinkingType),
-        toStore(effort),
-        profileId,
-        isChatGPT || streaming,
-        isChatGPT ? "" : sessionHeaderKey.trim(),
-        authMode,
-        isChatGPT ? accountId : undefined,
-      );
+        reasoning_effort: toStore(effort),
+        profile_id: profileId,
+        auth_mode: authMode,
+        chatgpt_account_id: isChatGPT ? accountId : undefined,
+      });
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
         toast.success(t("profile.toast.testOk", { latency: r.latency_ms ?? "?", model: r.model ?? model }), {
@@ -437,26 +408,20 @@ function ProfileSheet({
       const { id } = await api.saveLLMProfile({
         ...(profile ? { id: Number(profile.id) } : {}),
         name: name.trim(),
-        format: isChatGPT ? "openai-responses" : format,
         auth_mode: authMode,
         chatgpt_account_id: isChatGPT ? accountId : "",
         model: model.trim(),
-        base_url: isChatGPT ? "" : baseUrl.trim(),
         proxy: proxy.trim(),
         api_key: isChatGPT ? "" : apiKey,
         rate_per_second: Number(rps) || 0,
         rate_per_minute: Number(rpm) || 0,
         context_window_k: Number(cw) || 0,
-        thinking_type: isChatGPT ? "" : toStore(thinkingType),
         reasoning_effort: toStore(effort),
         priority: isChatGPT ? 0 : Number(priority) || 0,
         pool_exclude: isChatGPT || poolExclude,
-        streaming: isChatGPT || streaming,
         max_tokens: isChatGPT ? 0 : Math.max(0, Number(maxTokens) || 0),
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
-        max_tokens_field: !isChatGPT && format === "openai" ? toStore(maxTokensField) : "",
-        session_header_key: isChatGPT ? "" : sessionHeaderKey.trim(),
         retry,
       });
       if (isNew) toast.success(t("profile.toast.created", { name: name.trim() }));
@@ -489,6 +454,11 @@ function ProfileSheet({
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+          {profile?.configuration_error && (
+            <p role="alert" className="text-destructive text-sm">
+              {profile.configuration_error}
+            </p>
+          )}
           <div className="grid gap-2">
             <Label htmlFor="p-auth-mode">모델 연결 방식</Label>
             <Select
@@ -496,7 +466,6 @@ function ProfileSheet({
               onValueChange={(value) => {
                 setAuthMode(value as LLMAuthMode);
                 if (value === "chatgpt_plan") {
-                  setFormat("openai-responses");
                   setAccountId(accounts.find((account) => account.connected && account.plan_enabled)?.id ?? "");
                 }
                 setModel("");
@@ -510,7 +479,7 @@ function ProfileSheet({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="api_key">API 키</SelectItem>
+                <SelectItem value="api_key">OpenAI API 키</SelectItem>
                 <SelectItem value="chatgpt_plan">ChatGPT 구독 계정</SelectItem>
               </SelectContent>
             </Select>
@@ -568,24 +537,6 @@ function ProfileSheet({
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
-            {!isChatGPT && (
-              <div className="grid gap-2">
-                <Label>{t("profile.format.label")}</Label>
-                <Select
-                  value={format}
-                  onValueChange={(v) => setFormat(v as "anthropic" | "openai" | "openai-responses")}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t("profile.format.placeholder")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="anthropic">Anthropic</SelectItem>
-                    <SelectItem value="openai">OpenAI (Chat Completions)</SelectItem>
-                    <SelectItem value="openai-responses">OpenAI (Responses API)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
           </div>
 
           <div className="grid gap-2">
@@ -594,7 +545,7 @@ function ProfileSheet({
               <Input
                 id="p-model"
                 className="font-mono"
-                placeholder={isChatGPT ? "계정의 모델 목록에서 선택하세요" : "claude-opus-4-8"}
+                placeholder={isChatGPT ? "계정의 모델 목록에서 선택하세요" : "OpenAI 모델 ID"}
                 readOnly={isChatGPT}
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
@@ -640,19 +591,6 @@ function ProfileSheet({
             </div>
           </div>
 
-          {!isChatGPT && (
-            <div className="grid gap-2">
-              <Label htmlFor="p-base-url">{t("profile.baseUrl.label")}</Label>
-              <Input
-                id="p-base-url"
-                className="font-mono"
-                placeholder="https://api.openai.com/v1"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-              />
-            </div>
-          )}
-
           <div className="grid gap-2">
             <Label htmlFor="p-proxy">{t("profile.proxy.label")}</Label>
             <Input
@@ -664,22 +602,6 @@ function ProfileSheet({
             />
             <p className="text-muted-foreground text-xs">{t("profile.proxy.hint")}</p>
           </div>
-
-          {!isChatGPT && (
-            <div className="grid gap-2">
-              <Label htmlFor="p-session-header">{t("profile.sessionHeader.label")}</Label>
-              <Input
-                id="p-session-header"
-                className="font-mono"
-                placeholder={t("profile.sessionHeader.placeholder")}
-                value={sessionHeaderKey}
-                onChange={(e) => setSessionHeaderKey(e.target.value)}
-              />
-              <p className="text-muted-foreground text-xs">
-                {t.rich("profile.sessionHeader.hint", { b: (c) => <b>{c}</b> })}
-              </p>
-            </div>
-          )}
 
           {!isChatGPT && (
             <div className="grid gap-2">
@@ -742,13 +664,6 @@ function ProfileSheet({
                 </div>
                 <Switch checked={poolExclude} onCheckedChange={setPoolExclude} aria-label={t("profile.exclude.aria")} />
               </div>
-              <div className="flex items-center justify-between gap-4 border-t pt-3">
-                <div className="grid gap-0.5">
-                  <Label className="text-sm">{t("profile.streaming.label")}</Label>
-                  <p className="text-muted-foreground text-xs">{t("profile.streaming.hint")}</p>
-                </div>
-                <Switch checked={streaming} onCheckedChange={setStreaming} aria-label={t("profile.streaming.aria")} />
-              </div>
             </div>
           )}
 
@@ -771,52 +686,10 @@ function ProfileSheet({
                   placeholder="0"
                 />
               </div>
-              <div className="flex items-center justify-between gap-4 border-t pt-3">
-                <div className="grid gap-0.5">
-                  <Label className="text-sm">{t("profile.maxTokensField.label")}</Label>
-                  <p className="text-muted-foreground text-xs">{t(`profile.maxTokensFieldHint.${format}`)}</p>
-                </div>
-                <Select
-                  value={format === "openai" ? maxTokensField : NONE}
-                  onValueChange={setMaxTokensField}
-                  disabled={format !== "openai"}
-                >
-                  <SelectTrigger className="w-56 shrink-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {MAX_TOKENS_FIELDS.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
             </div>
           )}
 
           <div className="grid gap-3 rounded-lg border p-3">
-            {!isChatGPT && (
-              <div className="flex items-center justify-between gap-4">
-                <div className="grid gap-0.5">
-                  <Label className="text-sm">{t("profile.thinkingType.label")}</Label>
-                  <p className="text-muted-foreground text-xs">{t("profile.thinkingType.hint")}</p>
-                </div>
-                <Select value={thinkingType} onValueChange={setThinkingType}>
-                  <SelectTrigger className="w-32 shrink-0">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {THINKING_TYPES.map((o) => (
-                      <SelectItem key={o.value} value={o.value}>
-                        {o.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
             <div className={cn("flex items-center justify-between gap-4", !isChatGPT && "border-t pt-3")}>
               <div className="grid gap-0.5">
                 <Label className="text-sm">{t("profile.effort.label")}</Label>
@@ -880,6 +753,8 @@ export default function LLMPage() {
   // 一个配置在卡片上显示的「是否正常」。没填 Key 的配置根本发不出请求，比熔断更该先说。
   const healthOf = React.useCallback(
     (p: LLMProfile, m?: LLMPoolMember): Health => {
+      if (p.configuration_error)
+        return { label: "설정 재선택 필요", cls: "text-destructive", hint: p.configuration_error };
       if (p.auth_mode === "chatgpt_plan" && !p.connected) {
         return {
           label: "ChatGPT 연결 필요",
@@ -1037,7 +912,7 @@ export default function LLMPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium text-sm">{p.name}</span>
                           <Badge variant="outline" className="uppercase">
-                            {p.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : p.format}
+                            {p.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : "OpenAI API"}
                           </Badge>
                           <Badge variant="outline" className={cn("ml-auto", h.cls)} title={h.hint}>
                             {h.label}

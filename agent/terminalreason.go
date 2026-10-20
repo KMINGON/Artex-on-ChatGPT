@@ -12,16 +12,20 @@ import (
 // runTrace retains the latest tool call so an interrupted run can identify the
 // operation that was still in flight.
 type runTrace struct {
-	startedAt time.Time
-	id        string
-	name      string
-	input     string
-	at        time.Time
-	pending   bool
+	startedAt     time.Time
+	id            string
+	name          string
+	input         string
+	at            time.Time
+	pending       bool
+	role          string
+	toolCalls     int
+	outputEmitted bool
 }
 
 func (t *runTrace) start(id, name, input string) {
 	t.id, t.name, t.input, t.at, t.pending = id, name, input, time.Now(), true
+	t.toolCalls++
 }
 
 func (t *runTrace) done(id string) {
@@ -34,7 +38,7 @@ var reasonHint = map[harness.TerminalReason]string{
 	harness.ReasonCompleted:         "模型正常结束了本轮，但没有留下文字总结；事实和资产以本轮工具调用记录为准",
 	harness.ReasonMaxTurns:          "达到步数上限(MaxTurns)：SDK 已执行收尾并写回事实和资产，意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
 	harness.ReasonTimeout:           "达到单次运行的墙钟预算(MaxDuration)：到点会打断在跑的工具并就地进收尾，把已识别的事实和资产写回，意图会标记为 exhausted",
-	harness.ReasonModelError:        "模型或 API 调用失败（网络、鉴权、限流、供应商 5xx 等），重试用尽后意图标记为 blocked——传输层故障导致这条意图基本没真正探成；查其执行过程（get_worker_trace）后再决定重派或换法",
+	harness.ReasonModelError:        "이번 모델 호출을 완료하지 못했습니다. 구체 원인과 재시도 여부는 기록된 진단 정보로 확인하세요",
 	harness.ReasonBlockingLimit:     "上下文长度达到硬上限，请求在发出前被拦截；应收窄意图粒度或压缩工具返回",
 	harness.ReasonPromptTooLong:     "提示词过长且上下文压缩重试已经用尽，无法继续执行",
 	harness.ReasonImageError:        "当前模型不支持本轮多模态内容；请切换支持视觉的模型或避免工具返回图片",
@@ -48,6 +52,9 @@ var reasonHint = map[harness.TerminalReason]string{
 // and a Markdown detail block.
 func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (string, string) {
 	reason := term.Reason
+	if reason == harness.ReasonModelError {
+		return modelFailureText(term, tr)
+	}
 	aborted := reason == harness.ReasonAbortedStreaming || reason == harness.ReasonAbortedTools
 	// Prompt may return ctx.Err directly without a terminal event. Preserve the
 	// cancellation cause instead of falling back to an empty/unknown terminal reason.
@@ -116,6 +123,43 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`（已正常返回）\n", tr.name)
 	}
 	return sum, b.String()
+}
+
+func modelFailureText(term *harness.Terminal, tr *runTrace) (string, string) {
+	label := "에이전트"
+	if tr.role == "mainagent" {
+		label = "메인 에이전트"
+	} else if tr.role == "worker" {
+		label = "Worker"
+	}
+	summary := "이번 " + label + " 호출을 완료하지 못했습니다 (model_error)"
+	var b strings.Builder
+	b.WriteString(summary + "\n\n")
+	if term.Err != nil {
+		fmt.Fprintf(&b, "- **오류**: %v\n", term.Err)
+	}
+	if tr.toolCalls == 0 {
+		b.WriteString("- **도구 실행**: 이번 실행에서 도구 호출 전 실패했습니다.\n")
+	} else {
+		fmt.Fprintf(&b, "- **도구 실행**: 이번 실행에서 %d회 호출했습니다. 앞선 작업이 반영되었을 수 있으므로 실행 기록을 확인하세요.\n", tr.toolCalls)
+	}
+	d := ErrorDiagnostics(term.Err)
+	if attempts, ok := d["attempts"].(int); ok {
+		switch {
+		case attempts == 0:
+			b.WriteString("- **요청 시도**: HTTP 요청 전 실패했습니다. 재시도 없음.\n")
+		case attempts == 1:
+			b.WriteString("- **요청 시도**: 실패한 모델 요청의 HTTP 시도 1회, 재시도 없음.\n")
+		default:
+			fmt.Fprintf(&b, "- **요청 시도**: 실패한 모델 요청의 HTTP 시도 %d회, 재시도 %d회.\n", attempts, attempts-1)
+		}
+	} else {
+		b.WriteString("- **요청 시도**: HTTP 시도·재시도 횟수를 확인할 수 없습니다.\n")
+	}
+	if term.Turns > 0 {
+		fmt.Fprintf(&b, "- **모델 회차**: %d회. HTTP 시도 횟수와 별개입니다.\n", term.Turns)
+	}
+	return summary, b.String()
 }
 
 func terminalReasonLabel(reason harness.TerminalReason) string {

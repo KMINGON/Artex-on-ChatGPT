@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -40,6 +41,14 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		Format:    p.Format,
 		Model:     p.Model,
 		Source:    source,
+	}
+	if reason := p.UnsupportedReason(); reason != "" {
+		result.Reason = reason
+		return result
+	}
+	if _, err := agent.ChatGPTHTTPClient(p.Proxy); err != nil {
+		result.Reason = "LLM 프록시 설정을 확인해 주세요"
+		return result
 	}
 	if p.AuthMode == "chatgpt_plan" {
 		profiles := s.chatGPTProfileDTOs([]*db.LLMProfile{p})
@@ -78,7 +87,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 		}
 		if p != nil {
 			resolved := s.resolutionFromProfile(p, "agent_binding")
-			if resolved.Available || p.AuthMode == "chatgpt_plan" {
+			if resolved.Available || p.AuthMode == "chatgpt_plan" || p.UnsupportedReason() != "" {
 				return resolved, nil
 			}
 		}
@@ -100,7 +109,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 	}
 	if p != nil {
 		resolved := s.resolutionFromProfile(p, "global_profile")
-		if resolved.Available || p.AuthMode == "chatgpt_plan" {
+		if resolved.Available || p.AuthMode == "chatgpt_plan" || p.UnsupportedReason() != "" {
 			return resolved, nil
 		}
 	}

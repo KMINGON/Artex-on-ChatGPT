@@ -1,10 +1,5 @@
-// Package llm defines a vendor-neutral message model and a pluggable Provider
-// interface, with adapters that speak the Anthropic Messages API and the OpenAI
-// Chat Completions API. The internal model mirrors Anthropic's content-block
-// shape (the richer superset, including thinking and structured tool results);
-// the OpenAI adapter translates at its boundary. This lets the harness be
-// written once against a single representation while remaining compatible with
-// any model reachable through either wire format.
+// Package llm defines the shared message model and pluggable provider contract
+// used by the harness. Wire protocols and credentials belong to the host.
 package llm
 
 import "encoding/json"
@@ -139,10 +134,8 @@ type CompletionRequest struct {
 	MaxTokens       int
 	Temperature     *float64
 	Stop            []string
-	// Thinking overrides the provider's thinking mode for THIS request only:
-	// "" inherits Config.ThinkingType; "enabled"/"disabled" force that mode.
-	// Compaction's summary call sets "disabled" so the summarizer never spends
-	// tokens on reasoning and never replays thinking blocks (which Anthropic
-	// rejects when thinking is off).
+	// Thinking is a per-request reasoning hint. "disabled" lets bounded helper
+	// calls avoid inheriting the host's reasoning configuration; the provider
+	// decides which request fields are supported by the selected model.
 	Thinking string
 }

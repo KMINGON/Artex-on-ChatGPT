@@ -3,6 +3,7 @@ package compaction
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -74,10 +75,16 @@ func streamSummary(ctx context.Context, p llm.Provider, maxOut int, head []llm.M
 			return "", ctx.Err()
 		}
 		var text string
+		var stopReason string
+		var tools bool
 		var callErr error
 		if nonStreaming {
-			msg, _, _, err := p.Complete(ctx, req)
+			msg, stop, _, err := p.Complete(ctx, req)
 			text, callErr = msg.Text(), err
+			stopReason = stop
+			for _, block := range msg.Content {
+				tools = tools || block.Type == llm.BlockToolUse
+			}
 		} else {
 			acc := llm.NewAccumulator()
 			for ev, err := range p.Stream(ctx, req) {
@@ -86,18 +93,27 @@ func streamSummary(ctx context.Context, p llm.Provider, maxOut int, head []llm.M
 					break
 				}
 				acc.Add(ev)
+				tools = tools || ev.Type == llm.SEToolUseStart || ev.Type == llm.SEToolInputJSON
 			}
 			if callErr == nil {
 				text = acc.Message().Text()
+				stopReason = acc.StopReason
 			}
 		}
 		if callErr == nil {
+			if stopReason != "end_turn" || tools || strings.TrimSpace(text) == "" {
+				return "", fmt.Errorf("summary did not complete normally (stop_reason=%q)", stopReason)
+			}
 			return text, nil
 		}
 		if IsOverflow(callErr) {
 			return "", callErr // PTL — let the caller truncate, don't burn streaming retries
 		}
 		var noFallback interface{ NoFallback() bool }
+		var noReplay interface{ NoReplay() bool }
+		if errors.As(callErr, &noReplay) && noReplay.NoReplay() {
+			return "", callErr
+		}
 		if errors.As(callErr, &noFallback) && noFallback.NoFallback() {
 			return "", callErr
 		}

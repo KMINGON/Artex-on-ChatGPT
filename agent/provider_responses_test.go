@@ -1,30 +1,53 @@
 package agent
 
 import (
-	"testing"
-
+	"context"
+	"errors"
 	"github.com/Autumn-27/norma/llm"
+	"testing"
 )
 
-// TestConfigFromOpenAIResponses locks the openai-responses format wiring:
-// ConfigFrom resolves the Responses format, strips a full /responses endpoint
-// back to the API base, and Provider() round-trips the short name. NewProvider
-// must build a working provider for it.
-func TestConfigFromOpenAIResponses(t *testing.T) {
-	c := ConfigFrom("openai-responses", "gpt-5", "https://gw.example/v1/responses", "sk-x", "")
-	if c.Format != llm.FormatOpenAIResponses {
-		t.Fatalf("format=%v, want FormatOpenAIResponses", c.Format)
+func TestConfigOnlyAcceptsOfficialOpenAI(t *testing.T) {
+	for _, provider := range []string{"openai", "openai-responses"} {
+		c := ConfigFrom(provider, "existing-model", "https://api.openai.com/v1/responses", "fixture-key", "")
+		if c.Provider() != "openai-responses" || c.Model != "existing-model" || c.configErr != nil {
+			t.Fatalf("config not migrated: %+v", c)
+		}
 	}
-	if c.BaseURL != "https://gw.example/v1" {
-		t.Fatalf("base_url=%q, want the /responses suffix stripped", c.BaseURL)
+	for _, c := range []Config{
+		ConfigFrom("anthropic", "old-model", "", "fixture-key", ""),
+		ConfigFrom("unknown", "old-model", "", "fixture-key", ""),
+		ConfigFrom("openai", "old-model", "https://gateway.invalid/v1", "fixture-key", ""),
+	} {
+		p, err := c.NewProvider()
+		if err != nil || p == nil {
+			t.Fatal("unsupported profile must stay selected")
+		}
+		_, _, _, err = p.Complete(context.Background(), llm.CompletionRequest{})
+		var policy interface{ NoFallback() bool }
+		if !errors.As(err, &policy) || !policy.NoFallback() {
+			t.Fatalf("unsupported profile silently fell back: %v", err)
+		}
 	}
-	if c.Provider() != "openai-responses" {
-		t.Fatalf("Provider()=%q", c.Provider())
+}
+
+func TestFromEnvOnlyOpenAI(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "ignored")
+	t.Setenv("OPENAI_API_KEY", "")
+	if _, ok := FromEnv(); ok {
+		t.Fatal("removed key enabled inference")
 	}
-	if !c.Stream { // default streaming preserved
-		t.Fatal("Stream should default true")
+	t.Setenv("OPENAI_API_KEY", "fixture")
+	t.Setenv("ARTEX_LLM_PROVIDER", "openai")
+	t.Setenv("ARTEX_LLM_MODEL", "kept-model")
+	t.Setenv("ARTEX_LLM_BASE_URL", "")
+	c, ok := FromEnv()
+	if !ok || c.Model != "kept-model" || c.configErr != nil {
+		t.Fatal("official config rejected")
 	}
-	if _, err := c.NewProvider(); err != nil {
-		t.Fatalf("NewProvider: %v", err)
+	t.Setenv("ARTEX_LLM_PROVIDER", "anthropic")
+	c, ok = FromEnv()
+	if !ok || c.configErr == nil {
+		t.Fatal("unsupported provider silently changed")
 	}
 }

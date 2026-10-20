@@ -586,65 +586,46 @@ func agentDTOs(in []*db.Agent) []AgentDTO {
 // ---- LLMProfile (frontend "LLMProfile") — string id ----
 
 type LLMProfileDTO struct {
-	AuthMode         string  `json:"auth_mode"`
-	ChatGPTAccountID string  `json:"chatgpt_account_id,omitempty"`
-	Connected        bool    `json:"connected"`
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	Format           string  `json:"format"`
-	BaseURL          string  `json:"base_url,omitempty"`
-	Proxy            string  `json:"proxy,omitempty"`
-	Model            string  `json:"model"`
-	APIKeyHint       string  `json:"api_key_hint,omitempty"`
-	RatePerSecond    float64 `json:"rate_per_second"`
-	RatePerMinute    float64 `json:"rate_per_minute"`
-	ContextWindowK   int     `json:"context_window_k"`
-	ThinkingType     string  `json:"thinking_type"`
-	ReasoningEffort  string  `json:"reasoning_effort"`
-	IsDefault        bool    `json:"is_default"`
+	ConfigurationError string  `json:"configuration_error,omitempty"`
+	AuthMode           string  `json:"auth_mode"`
+	ChatGPTAccountID   string  `json:"chatgpt_account_id,omitempty"`
+	Connected          bool    `json:"connected"`
+	ID                 string  `json:"id"`
+	Name               string  `json:"name"`
+	Proxy              string  `json:"proxy,omitempty"`
+	Model              string  `json:"model"`
+	APIKeyHint         string  `json:"api_key_hint,omitempty"`
+	RatePerSecond      float64 `json:"rate_per_second"`
+	RatePerMinute      float64 `json:"rate_per_minute"`
+	ContextWindowK     int     `json:"context_window_k"`
+	ReasoningEffort    string  `json:"reasoning_effort"`
+	IsDefault          bool    `json:"is_default"`
 	// 轮询(故障转移)参数：priority 越大越先被选中(激活配置恒为链首)；
 	// pool_exclude=true 则不作为故障转移目标，但仍可被 agent/任务显式绑定。
-	Priority    int  `json:"priority"`
-	PoolExclude bool `json:"pool_exclude"`
-	// 收发模式：true=流式(SSE) | false=非流式。没有 omitempty —— false 必须出现在
-	// 响应里，否则前端读不到「非流式」，开关会回落成默认的流式。
-	Streaming bool `json:"streaming"`
-	// 单次回复输出上限(0=不发送，由服务端默认值决定)，以及它用哪个请求字段名
-	// (''=max_tokens | 'max_completion_tokens'，仅 openai 格式有意义)。
-	MaxTokens      int    `json:"max_tokens"`
-	MaxTokensField string `json:"max_tokens_field"`
-	// 自定义会话头名：非空时每次请求带该 HTTP 头，头值=当前会话/意图的 session id。
-	// ''=不发送。用于按 session-id 头做提示缓存/粘性路由的网关。
-	SessionHeaderKey string `json:"session_header_key"`
-	// 本配置对重试的覆盖(建连/空响应/同 provider 安全窗口)。每项 attempts:
-	// 0=继承全局策略 | -1=关闭该层重试 | >0=次数；interval_ms: 0=用默认指数退避 |
-	// >0=改用该固定毫秒间隔。全 0 = 完全跟随全局，即历史行为。
-	Retry db.RetryOverride `json:"retry"`
+	Priority    int              `json:"priority"`
+	PoolExclude bool             `json:"pool_exclude"`
+	MaxTokens   int              `json:"max_tokens"`
+	Retry       db.RetryOverride `json:"retry"`
 }
 
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 	return LLMProfileDTO{
-		AuthMode: p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: p.APIKeySet || p.APIKeyHint != "" || p.APIKey != "",
-		ID:               i64s(p.ID),
-		Name:             p.Name,
-		Format:           p.Format,
-		BaseURL:          p.BaseURL,
-		Proxy:            p.Proxy,
-		Model:            p.Model,
-		APIKeyHint:       p.APIKeyHint,
-		RatePerSecond:    p.RatePerSecond,
-		RatePerMinute:    p.RatePerMinute,
-		ContextWindowK:   p.ContextWindowK,
-		ThinkingType:     p.ThinkingType,
-		ReasoningEffort:  p.ReasoningEffort,
-		IsDefault:        p.IsDefault,
-		Priority:         p.Priority,
-		PoolExclude:      p.PoolExclude,
-		Streaming:        p.Streaming,
-		MaxTokens:        p.MaxTokens,
-		MaxTokensField:   p.MaxTokensField,
-		SessionHeaderKey: p.SessionHeaderKey,
-		Retry:            p.Retry,
+		ConfigurationError: p.UnsupportedReason(),
+		AuthMode:           p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: p.APIKeySet || p.APIKeyHint != "" || p.APIKey != "",
+		ID:              i64s(p.ID),
+		Name:            p.Name,
+		Proxy:           p.Proxy,
+		Model:           p.Model,
+		APIKeyHint:      p.APIKeyHint,
+		RatePerSecond:   p.RatePerSecond,
+		RatePerMinute:   p.RatePerMinute,
+		ContextWindowK:  p.ContextWindowK,
+		ReasoningEffort: p.ReasoningEffort,
+		IsDefault:       p.IsDefault,
+		Priority:        p.Priority,
+		PoolExclude:     p.PoolExclude,
+		MaxTokens:       p.MaxTokens,
+		Retry:           p.Retry,
 	}
 }
 

@@ -443,14 +443,11 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
-	cfg.Stream = p.Streaming
-	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
-	cfg.SessionHeaderKey = p.SessionHeaderKey
+	cfg.MaxTokens = p.MaxTokens
 	s.applyProfileRetry(&cfg, p)
 	s.configureChatGPT(&cfg, p)
-	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
+	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" && p.UnsupportedReason() == "" {
 		return cfg, false
 	}
 	s.cfgMu.Lock()
@@ -461,41 +458,29 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 
 // saveLLMConfig persists the LLM config as the active "default" profile in PG.
 func (s *Server) saveLLMConfig(cfg agent.Config) error {
-	// cfg.Provider() already returns one of the three valid format strings
-	// (anthropic / openai / openai-responses), matching the DB CHECK constraint.
-	format := cfg.Provider()
 	var id int64
-	// 这个 legacy 端点的请求体不含轮询/收发/输出上限参数,故把库里已存的值原样带回 —
-	// 否则每次保存都会把 profile 的 priority、pool_exclude、streaming 以及输出上限
-	// (max_tokens / max_tokens_field)悄悄重置成零值。
-	var priority int
+	var priority, maxTokens int
 	var poolExclude bool
-	streaming := true // 旧库/新建默认流式
-	var maxTokens int
-	var maxTokensField string
-	var sessionHeaderKey string
 	var retry db.RetryOverride
-	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
-		for _, p := range profs {
+	if profiles, _ := s.m.pg.ListProfiles(); profiles != nil {
+		for _, p := range profiles {
 			if p.Name == "default" {
 				if p.AuthMode == "chatgpt_plan" {
 					return fmt.Errorf("ChatGPT 설정은 시스템 → LLM 설정에서 수정해 주세요")
 				}
-				id, priority, poolExclude, streaming = p.ID, p.Priority, p.PoolExclude, p.Streaming
-				maxTokens, maxTokensField = p.MaxTokens, p.MaxTokensField
-				sessionHeaderKey = p.SessionHeaderKey
-				retry = p.Retry
+				id, priority, poolExclude, maxTokens, retry = p.ID, p.Priority, p.PoolExclude, p.MaxTokens, p.Retry
 				break
 			}
 		}
 	}
+
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
-		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
+		ID: id, Name: "default", Format: "openai-responses", Model: cfg.Model, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
-		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
-		Priority: priority, PoolExclude: poolExclude, Streaming: streaming,
-		MaxTokens: maxTokens, MaxTokensField: maxTokensField, SessionHeaderKey: sessionHeaderKey,
-		Retry: retry,
+		ContextWindowK: cfg.ContextWindowK, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
+		Priority: priority, PoolExclude: poolExclude,
+		MaxTokens: maxTokens,
+		Retry:     retry,
 	})
 	if err != nil {
 		return err
@@ -528,15 +513,7 @@ func (s *Server) webSearchFor(key string) agent.WebSearchOpts {
 	return o
 }
 
-// nonStreamingResolver returns a resolver capturing a profile's streaming choice.
-// The agents read it per run; a profile change rebuilds the agents (applyLLM),
-// so the captured value is always the one in effect for this build.
-func nonStreamingResolver(cfg agent.Config) func() bool {
-	nonStreaming := !cfg.Stream
-	return func() bool { return nonStreaming }
-}
-
-// maxTokensResolver mirrors nonStreamingResolver for the per-reply output cap.
+// maxTokensResolver supplies the per-reply API output cap.
 func maxTokensResolver(cfg agent.Config) func() int {
 	maxTokens := cfg.MaxTokens
 	return func() int { return maxTokens }
@@ -563,7 +540,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		s.cfgMu.Lock()
 		profName := s.llmProf
 		s.cfgMu.Unlock()
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, "", cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, 0, profName)
 	}
 	s.cfgMu.Lock()
@@ -592,7 +569,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
 	s.chatAgent.SetGuard(s.chatGuard())
-	s.chatAgent.SetNonStreaming(nonStreamingResolver(cfg))
+	s.chatAgent.SetConnectionIdentity(cfg.ConnectionIdentity)
 	s.chatAgent.SetMaxTokens(maxTokensResolver(cfg))
 	s.chatAgent.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
 	s.llmProv = prov
@@ -618,14 +595,11 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
-	cfg.Stream = p.Streaming
-	cfg.MaxTokens, cfg.MaxTokensField = p.MaxTokens, p.MaxTokensField
-	cfg.SessionHeaderKey = p.SessionHeaderKey
+	cfg.MaxTokens = p.MaxTokens
 	s.applyProfileRetry(&cfg, p)
 	s.configureChatGPT(&cfg, p)
-	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
+	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" && p.UnsupportedReason() == "" {
 		return cfg, false
 	}
 	return cfg, true
@@ -698,7 +672,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	}
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, "", cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	s.provCacheMu.Lock()
@@ -734,7 +708,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())
-	ca.SetNonStreaming(nonStreamingResolver(cfg))
+	ca.SetConnectionIdentity(cfg.ConnectionIdentity)
 	ca.SetMaxTokens(maxTokensResolver(cfg))
 	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
 	s.profMu.Lock()
@@ -1416,13 +1390,11 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"configured":       s.llmOn,
 		"provider":         s.llmCfg.Provider(),
 		"model":            s.llmCfg.Model,
-		"base_url":         s.llmCfg.BaseURL,
 		"proxy":            s.llmCfg.Proxy,
 		"key_set":          s.llmCfg.APIKey != "",
 		"rate_per_second":  s.llmCfg.RatePerSecond,
 		"rate_per_minute":  s.llmCfg.RatePerMinute,
 		"context_window_k": s.llmCfg.ContextWindowK,
-		"thinking_type":    s.llmCfg.ThinkingType,
 		"reasoning_effort": s.llmCfg.ReasoningEffort,
 	})
 }
@@ -1430,24 +1402,29 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 // setLLM configures the LLM at runtime. A blank api_key keeps the existing key.
 func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		AuthMode        string  `json:"auth_mode"`
 		Provider        string  `json:"provider"`
 		Model           string  `json:"model"`
-		BaseURL         string  `json:"base_url"`
 		Proxy           string  `json:"proxy"`
 		APIKey          string  `json:"api_key"`
 		RatePerSecond   float64 `json:"rate_per_second"`
 		RatePerMinute   float64 `json:"rate_per_minute"`
 		ContextWindowK  int     `json:"context_window_k"`
-		ThinkingType    string  `json:"thinking_type"`
 		ReasoningEffort string  `json:"reasoning_effort"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
+	if req.AuthMode == "chatgpt_plan" {
+		writeErr(w, 400, "ChatGPT 연결은 LLM 프로필 설정에서 수정해 주세요")
+		return
+	}
+	if req.Provider == "" {
+		req.Provider = "openai"
+	}
+	cfg := agent.ConfigFrom(req.Provider, req.Model, "", req.APIKey, req.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = req.RatePerSecond, req.RatePerMinute
-	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
 	if k := req.ContextWindowK; k > 0 { // 0 = keep default (200K); cap at 1M
 		if k > 1000 {
@@ -1456,9 +1433,12 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		cfg.ContextWindowK = k
 	}
 	if cfg.APIKey == "" {
-		s.cfgMu.Lock()
-		cfg.APIKey = s.llmCfg.APIKey // keep existing key if not re-entered
-		s.cfgMu.Unlock()
+		var err error
+		cfg.APIKey, err = s.savedAPIKey()
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if cfg.APIKey == "" {
 		writeErr(w, 400, "api_key required")
@@ -1491,55 +1471,50 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Provider         string `json:"provider"`
 		Model            string `json:"model"`
-		BaseURL          string `json:"base_url"`
 		Proxy            string `json:"proxy"`
 		APIKey           string `json:"api_key"`
 		AuthMode         string `json:"auth_mode"`
 		ChatGPTAccountID string `json:"chatgpt_account_id"`
-		ThinkingType     string `json:"thinking_type"`
 		ReasoningEffort  string `json:"reasoning_effort"`
-		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
-		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
-		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
+		ProfileID        *int64 `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
+	if req.Provider == "" {
+		req.Provider = "openai"
+	}
+	cfg := agent.ConfigFrom(req.Provider, req.Model, "", req.APIKey, req.Proxy)
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
-	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
-	// 同理，收发模式也照该 profile 的选择来：只支持其中一种通道的端点必须在这里就
-	// 暴露，而不是等会话里才发现"测试通过的配置根本跑不动"。
-	if req.Streaming != nil {
-		cfg.Stream = *req.Streaming
-	}
-	// 自定义会话头名照该配置来：非空则测试请求也发这个头(值为一次性随机 session id，
-	// 见 TestConnection)。opencode zen 等强制要求 x-opencode-session 的端点，缺了它
-	// 直接 400，必须在测试路径上也带上，否则"对话通、测试 400"。
-	cfg.SessionHeaderKey = req.SessionHeaderKey
-	// API Key 解析优先级：表单输入 > 指定 profile 存的 key > 全局配置的 key。
-	// 已存 profile 的 key 不回传浏览器，所以测试已存配置时表单为空，需从 DB 取。
-	// 会话头名同理：表单未带时用已存 profile 的值兜底。
 	if req.ProfileID != nil {
-		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+		p, err := s.m.pg.ProfileByID(*req.ProfileID)
+		if err != nil || p == nil {
+			writeErr(w, 400, "선택한 모델 연결을 찾을 수 없습니다")
+			return
+		}
+		{
+			if cfg.APIKey == "" && p.UnsupportedReason() != "" {
+				writeErr(w, 400, p.UnsupportedReason())
+				return
+			}
 			if req.AuthMode == "" {
 				req.AuthMode, req.ChatGPTAccountID = p.AuthMode, p.ChatGPTAccountID
 			}
 			if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 				cfg.APIKey = p.APIKey
 			}
-			if cfg.SessionHeaderKey == "" {
-				cfg.SessionHeaderKey = p.SessionHeaderKey
-			}
 		}
 	}
-	if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
-		s.cfgMu.Lock()
-		cfg.APIKey = s.llmCfg.APIKey
-		s.cfgMu.Unlock()
+	if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" && req.ProfileID == nil {
+		var err error
+		cfg.APIKey, err = s.savedAPIKey()
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
 	}
 	if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": trMsg(errLLMTestNoAPIKey)})
@@ -1787,18 +1762,7 @@ func schemeForPort(p int) string {
 }
 
 // llmHost returns the host of the configured LLM endpoint (to keep it out of scope).
-func (s *Server) llmHost() string {
-	s.cfgMu.Lock()
-	base := s.llmCfg.BaseURL
-	s.cfgMu.Unlock()
-	if base == "" {
-		return ""
-	}
-	if u, err := url.Parse(base); err == nil {
-		return strings.ToLower(u.Hostname())
-	}
-	return ""
-}
+func (s *Server) llmHost() string { return "api.openai.com" }
 
 func (s *Server) seed(t *Task, text string) {
 	scheme, host, port, ok := parseTarget(text)
@@ -3747,16 +3711,11 @@ func (s *Server) testWebSearch(w http.ResponseWriter, r *http.Request) {
 	cfg := actool.WebSearchConfig{Backend: backend, BraveAPIKey: braveKey, TavilyAPIKey: tavilyKey, Proxy: proxy}
 	// Hard cap so a slow/blocked proxy can't hang the request.
 	wall := 30 * time.Second
-	// deepseek 的凭据不在表单里，来自当前激活的 LLM 配置；同时它每次搜索都跑一次
-	// 模型推理，30s 的通用上限偏紧，单独放宽。这里不预判配置能不能用——测这一下
-	// 本来就是给用户自己确认的手段，真跑不通时下面的报错比预判更有信息量。
-	probeQuery := "test"
-	if strings.TrimSpace(backend) == deepSeekWebSearchBackend {
-		cfg.DeepSeekBaseURL, cfg.DeepSeekAPIKey, cfg.DeepSeekModel = s.m.deepSeekSearchCreds()
-		wall = 120 * time.Second
-		// 搜索词由 DeepSeek 端的模型自行决定，"test" 太空泛会让它跳过搜索直接作答。
-		probeQuery = "DeepSeek company official website"
+	if backend != "ddgs" && backend != "brave-free" && backend != "tavily" {
+		writeErr(w, 400, "이 검색 제공자는 지원하지 않습니다. DDGS, Brave 또는 Tavily를 다시 선택해 주세요")
+		return
 	}
+	probeQuery := "test"
 	ctx, cancel := context.WithTimeout(r.Context(), wall)
 	defer cancel()
 	results, err := actool.WebSearchProbe(ctx, cfg, probeQuery, 3)
@@ -3894,7 +3853,11 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			// emit every step (thinking/tool_use/tool_result/text/result) so the main
 			// agent session shows its work live, like worker/planner. The final answer
 			// is the captured "result" step — no separate reply emit (would duplicate).
+			var errorRecorded atomic.Bool
 			emit := func(rec db.Activity) {
+				if rec.Kind == "result" && rec.IsError {
+					errorRecorded.Store(true)
+				}
 				rec.MainSeg = segPtr
 				s.engine.emitActivity(t, rec)
 			}
@@ -3907,8 +3870,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			s.engine.BeginLLMCall(t.ID)
 			_, err := ma.Chat(ctx, maTaskID, mainSeg, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal, t.NotifyHint)
 			s.engine.EndLLMCall(t.ID)
-			if err != nil && ctx.Err() == nil {
-				s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", IsError: true, Summary: transcriptErrorSummary("메인 에이전트", err.Error()), MainSeg: segPtr})
+			if err != nil && ctx.Err() == nil && !errorRecorded.Load() {
+				metadata, _ := json.Marshal(map[string]any{"llm_error": agent.ErrorDiagnostics(err)})
+				s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "result", IsError: true, Summary: transcriptErrorSummary("메인 에이전트", err.Error()), MainSeg: segPtr, Metadata: metadata})
 			}
 		}()
 		writeJSON(w, 202, map[string]any{"status": "accepted", "mode": "llm"})

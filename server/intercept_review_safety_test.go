@@ -124,10 +124,11 @@ func TestJudgeOutputLimitCancelsInsteadOfTruncatingIntoAllow(t *testing.T) {
 
 func TestJudgeIncompleteOrUnexpectedStreamCannotAllow(t *testing.T) {
 	for name, p := range map[string]*judgeStreamProvider{
-		"missing completion": {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}}},
-		"max tokens":         {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}, {Type: llm.SEMessageDelta, StopReason: "max_tokens"}}},
-		"tool call":          {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}, {Type: llm.SEToolUseStart, ToolName: "Bash"}}},
-		"partial error":      {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}}, err: errors.New("stream interrupted")},
+		"missing completion":  {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}}},
+		"stop without reason": {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}, {Type: llm.SEMessageStop}}},
+		"max tokens":          {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}, {Type: llm.SEMessageDelta, StopReason: "max_tokens"}}},
+		"tool call":           {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}, {Type: llm.SEToolUseStart, ToolName: "Bash"}}},
+		"partial error":       {events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: validJudgeAllow}}, err: errors.New("stream interrupted")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := reviewDecision(t.Context(), p, 42, "policy", intercept.ReviewInput{})

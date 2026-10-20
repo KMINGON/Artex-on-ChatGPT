@@ -915,7 +915,7 @@ export interface Settings {
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.
   web_search_enabled: boolean;
-  web_search_backend: string; // "ddgs" | "brave-free" | "tavily" | "deepseek"
+  web_search_backend: string; // "ddgs" | "brave-free" | "tavily"
   brave_key_set: boolean;
   tavily_key_set: boolean;
   // write-only: only sent on PUT to store/clear the key.
@@ -1050,9 +1050,8 @@ export interface ChatGPTModel {
 
 export interface LLMProfile {
   id: string;
+  configuration_error?: string;
   name: string;
-  format: "openai" | "anthropic" | "openai-responses";
-  base_url?: string;
   proxy?: string;
   model: string;
   api_key_hint?: string;
@@ -1062,27 +1061,11 @@ export interface LLMProfile {
   rate_per_second: number;
   rate_per_minute: number;
   context_window_k?: number;
-  // 思考开关(thinking.type): ""=不发送(默认) | "disabled"=关闭 | "enabled"=开启
-  thinking_type?: string;
-  // 思考强度: ""=不发送(默认) | "low"/"medium"/"high"/"xhigh"/"max"
   reasoning_effort?: string;
   is_default: boolean;
-  // 轮询顺位：越大越先被选中。激活配置恒为链首，与本值无关。
   priority?: number;
-  // true = 不作为故障转移目标（仍可被 agent/任务显式绑定使用）。
   pool_exclude?: boolean;
-  // true（默认）= 流式(SSE) | false = 真·非流式(stream:false，一次性返回)。
-  streaming?: boolean;
-  // 单次回复的输出上限(token)。0 = 不发送该字段，由服务端默认值决定。
-  // 注意与 context_window_k 区分：后者是模型总容量，只在本地用于压缩阈值。
   max_tokens?: number;
-  // 上限用哪个请求字段名，仅 format="openai" 有意义：
-  // ""=max_tokens(默认) | "max_completion_tokens"(OpenAI 推理模型只认它)
-  max_tokens_field?: string;
-  // 自定义会话头名：非空时每次请求带该 HTTP 头，头值=当前会话/意图的 session id。
-  // ""=不发送。用于按 session-id 头做提示缓存/粘性路由的网关。
-  session_header_key?: string;
-  // 本配置对重试的覆盖（建连/空响应/同 provider 安全窗口）。留空/全 0 = 跟随全局策略。
   retry?: LLMRetryOverride;
 }
 
@@ -1095,19 +1078,15 @@ export interface LLMRetryRule {
   interval_ms: number;
 }
 
-// 单个 LLM 配置能覆盖的三层（都是「跟着端点走」的重试）。
+// Per-profile adapter retry budget.
 export interface LLMRetryOverride {
   connect: LLMRetryRule; // 建连重试：连接重置/超时/429/5xx，流开始前
-  empty: LLMRetryRule; // 空响应重试：完成但没有任何内容（仅 openai 格式）
-  stream: LLMRetryRule; // 同 provider 安全窗口重试：未交付输出前的断流重放
 }
 
-// 全局策略 = 上面三层的默认值 + 两层只有全局的：
-//   breaker 轮询熔断（attempts=连续几次瞬时失败熔断，interval_ms=固定冷却时长）
-//   intent  意图重跑（worker 以 model_error 收场后整条意图重跑）
+// Global adapter retries, Worker continuation and circuit breaking.
 export interface LLMRetryPolicy extends LLMRetryOverride {
+  empty: LLMRetryRule; // Worker continuation after a turn with no useful output
   breaker: LLMRetryRule;
-  intent: LLMRetryRule;
 }
 
 // ---- LLM 轮询（故障转移）----
@@ -1119,7 +1098,6 @@ export interface LLMPoolMember {
   profile_id: string;
   name: string;
   model: string;
-  format: string;
   priority: number;
   active: boolean; // 是否为当前激活配置（恒为链首）
   excluded: boolean; // pool_exclude：不参与轮询

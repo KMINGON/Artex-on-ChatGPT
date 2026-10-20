@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,37 +21,51 @@ import (
 	"github.com/Autumn-27/artex/chatgptllm"
 )
 
-func TestConnectionUsesOneToolFreeRequestInBothModes(t *testing.T) {
-	for _, streaming := range []bool{true, false} {
-		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
-			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls.Add(1)
-				var req map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Error(err)
-				}
-				if _, exists := req["tools"]; exists {
-					t.Errorf("connection test exposed tools: %#v", req["tools"])
-				}
-				if req["stream"] != streaming || req["reasoning_effort"] != "high" || req["model"] != "test-model" || req["max_tokens"] != float64(8192) {
-					t.Errorf("configured request mode lost: %#v", req)
-				}
-				if streaming {
-					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
-				} else {
-					_, _ = fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`)
-				}
-			}))
-			defer srv.Close()
-			cfg := ConfigFrom("openai", "test-model", srv.URL, "test-placeholder", "")
-			cfg.Stream, cfg.ReasoningEffort = streaming, "high"
-			_, reply, err := TestConnection(context.Background(), cfg)
-			if err != nil || reply != "OK" || calls.Load() != 1 {
-				t.Fatalf("reply=%q err=%v HTTP calls=%d", reply, err, calls.Load())
-			}
-		})
+// A rewritten transport keeps production URL validation intact while using a local fixture.
+func apiFixtureConfig(t *testing.T, srv *httptest.Server) Config {
+	t.Helper()
+	cfg := ConfigFrom("openai-responses", "test-model", "", "test-placeholder", "")
+	cfg.httpClient = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		cloned := req.Clone(req.Context())
+		target, _ := url.Parse(srv.URL)
+		cloned.URL.Scheme, cloned.URL.Host = target.Scheme, target.Host
+		return http.DefaultTransport.RoundTrip(cloned)
+	})}
+	return cfg
+}
+
+func writeCompleted(w http.ResponseWriter, output any) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	body, _ := json.Marshal(map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed", "output": output}})
+	fmt.Fprintf(w, "data: %s\n\n", body)
+}
+
+func textOutput(text string) []any {
+	return []any{map[string]any{"type": "message", "id": "message_text", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": text}}}}
+}
+
+func TestConnectionUsesOneToolFreeResponsesRequest(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if _, exists := req["tools"]; exists {
+			t.Error("connection test exposed tools")
+		}
+		if r.URL.Path != "/v1/responses" || req["stream"] != true || req["model"] != "test-model" || req["max_output_tokens"] != float64(8192) {
+			t.Error("Responses configuration lost")
+		}
+		writeCompleted(w, textOutput("OK"))
+	}))
+	defer srv.Close()
+	cfg := apiFixtureConfig(t, srv)
+	cfg.ReasoningEffort = "high"
+	_, reply, err := TestConnection(context.Background(), cfg)
+	if err != nil || reply != "OK" || calls.Load() != 1 {
+		t.Fatalf("reply=%q err=%v calls=%d", reply, err, calls.Load())
 	}
 }
 
@@ -60,15 +75,10 @@ func TestConnectionNeverExecutesUnexpectedToolCall(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{
-			"message": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{
-				"id": "unexpected", "type": "function", "function": map[string]any{"name": "Write", "arguments": string(args)},
-			}}}, "finish_reason": "tool_calls",
-		}}})
+		writeCompleted(w, []any{map[string]any{"type": "function_call", "id": "function_unexpected", "call_id": "unexpected", "name": "Write", "namespace": "artex", "arguments": string(args), "status": "completed"}})
 	}))
 	defer srv.Close()
-	cfg := ConfigFrom("openai", "test-model", srv.URL, "test-placeholder", "")
-	cfg.Stream = false
+	cfg := apiFixtureConfig(t, srv)
 	_, reply, err := TestConnection(context.Background(), cfg)
 	if err == nil || reply != "" || calls.Load() != 1 {
 		t.Fatalf("unexpected tool response accepted or repeated: reply=%q err=%v calls=%d", reply, err, calls.Load())
@@ -84,13 +94,15 @@ func TestConnectionDoesNotRetryFailureOrEmptyReply(t *testing.T) {
 			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				w.WriteHeader(status)
-				_, _ = fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`)
+				if status == 200 {
+					writeCompleted(w, textOutput(""))
+				} else {
+					w.WriteHeader(status)
+				}
 			}))
 			defer srv.Close()
-			cfg := ConfigFrom("openai", "test-model", srv.URL, "test-placeholder", "")
-			cfg.Stream = false
-			cfg.Retry.ConnectAttempts, cfg.Retry.EmptyAttempts = 4, 4
+			cfg := apiFixtureConfig(t, srv)
+			cfg.Retry.ConnectAttempts = 4
 			_, reply, err := TestConnection(context.Background(), cfg)
 			if err == nil || reply != "" || calls.Load() != 1 {
 				t.Fatalf("failed test was accepted/retried: reply=%q err=%v calls=%d", reply, err, calls.Load())
@@ -105,7 +117,7 @@ func TestConnectionHonorsEarlierCallerDeadline(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer srv.Close()
-	cfg := ConfigFrom("openai", "test-model", srv.URL, "test-placeholder", "")
+	cfg := apiFixtureConfig(t, srv)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	_, _, err := TestConnection(ctx, cfg)
@@ -133,7 +145,7 @@ func TestChatGPTConnectionLogsOnlySafeResultFields(t *testing.T) {
 		t.Fatalf("private diagnostic leaked: %s", line)
 	}
 	output.Reset()
-	_, _, err := TestConnection(context.Background(), Config{AuthMode: "chatgpt_plan", Model: "test", APIKey: "never-use-this-key", Stream: true})
+	_, _, err := TestConnection(context.Background(), Config{AuthMode: "chatgpt_plan", Model: "test", APIKey: "never-use-this-key"})
 	if err == nil {
 		t.Fatal("signed-out account unexpectedly succeeded")
 	}

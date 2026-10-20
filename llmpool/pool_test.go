@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/norma/llm"
 )
 
@@ -313,6 +314,99 @@ func TestExhaustedChainReportsClearly(t *testing.T) {
 	}
 }
 
+func TestExhaustedChainPreservesFinalDiagnosticsAndReplayPolicy(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprint(complete), func(t *testing.T) {
+			last := &chatgptllm.Error{
+				APIKeyMode: true, StatusCode: 429, Code: "insufficient_quota",
+				Stage: "admission", Attempts: 1, RequestID: "req-final",
+				Message: "API 한도 도달",
+			}
+			a := &fakeProv{errs: []error{&chatgptllm.Error{
+				APIKeyMode: true, StatusCode: 429, Code: "insufficient_quota",
+				Stage: "admission", RequestID: "req-first", Message: "API 한도 도달",
+			}}}
+			b := &fakeProv{errs: []error{fmt.Errorf("recorded provider: %w", last)}}
+			p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, nil)
+			var err error
+			if complete {
+				_, _, _, err = p.Complete(t.Context(), llm.CompletionRequest{})
+			} else {
+				_, err = drain(p.Stream(t.Context(), llm.CompletionRequest{}))
+			}
+			var responseErr *chatgptllm.Error
+			var policy interface{ NoReplay() bool }
+			var diagnostics interface{ Diagnostics() map[string]any }
+			if !errors.Is(err, ErrExhausted) || !errors.As(err, &responseErr) || responseErr != last ||
+				!errors.As(err, &policy) || !policy.NoReplay() || !errors.As(err, &diagnostics) {
+				t.Fatalf("final provider contract lost: %v", err)
+			}
+			if diagnostics.Diagnostics()["request_id"] != "req-final" || a.calls != 1 || b.calls != 1 {
+				t.Fatalf("wrong final diagnostics/calls: %+v calls=%d/%d", diagnostics.Diagnostics(), a.calls, b.calls)
+			}
+		})
+	}
+}
+
+func TestTypedLocalFailuresNeverConsumeFallbackProfile(t *testing.T) {
+	for _, tc := range []struct{ code, stage string }{
+		{"invalid_config", ""},
+		{"unsupported_content", "encoding"},
+		{"invalid_replay_state", "encoding"},
+		{"invalid_reasoning", "encoding"},
+		{"authorization_failed", "authorization"},
+		{"not_connected", "authorization"},
+		{"unknown_local_failure", ""},
+		{"interrupted_stream", "stream"},
+	} {
+		for _, complete := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/complete=%v", tc.code, complete), func(t *testing.T) {
+				local := &chatgptllm.Error{APIKeyMode: true, Code: tc.code, Stage: tc.stage, Message: "local failure"}
+				a := &fakeProv{errs: []error{fmt.Errorf("provider: %w", local)}}
+				b := okProv("b", "must not be requested")
+				reg := NewRegistry(nil, nil)
+				p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
+				var err error
+				if complete {
+					_, _, _, err = p.Complete(t.Context(), llm.CompletionRequest{})
+				} else {
+					_, err = drain(p.Stream(t.Context(), llm.CompletionRequest{}))
+				}
+				if !errors.Is(err, local) || a.calls != 1 || b.calls != 0 || reg.Get(1).Fails != 0 {
+					t.Fatalf("local failure fell over or tripped health: %v calls=%d/%d", err, a.calls, b.calls)
+				}
+			})
+		}
+	}
+}
+
+func TestTypedTransportAndAPIQuotaStillFailOver(t *testing.T) {
+	for _, failure := range []*chatgptllm.Error{
+		{APIKeyMode: true, Code: "transport_error", Stage: "admission", Attempts: 4},
+		{APIKeyMode: true, Code: "insufficient_quota", Stage: "admission", StatusCode: 429, Attempts: 1},
+	} {
+		for _, complete := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/complete=%v", failure.Code, complete), func(t *testing.T) {
+				a := &fakeProv{errs: []error{fmt.Errorf("provider: %w", failure)}}
+				b := okProv("b", "fallback answer")
+				p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, nil)
+				var text string
+				var err error
+				if complete {
+					var msg llm.Message
+					msg, _, _, err = p.Complete(t.Context(), llm.CompletionRequest{})
+					text = msg.Text()
+				} else {
+					text, err = drain(p.Stream(t.Context(), llm.CompletionRequest{}))
+				}
+				if err != nil || text != "fallback answer" || a.calls != 1 || b.calls != 1 {
+					t.Fatalf("valid fallback blocked: %q %v calls=%d/%d", text, err, a.calls, b.calls)
+				}
+			})
+		}
+	}
+}
+
 // Equal-rank members take turns leading, so duplicate keys share the load.
 func TestEqualRankRotates(t *testing.T) {
 	a, b := okProv("a", "a"), okProv("b", "b")
@@ -366,5 +460,33 @@ func TestExpiredWindowIsClosed(t *testing.T) {
 	reg.Restore(1, State{Trips: 1, OpenUntil: time.Now().Add(-time.Second)})
 	if reg.IsOpen(1) {
 		t.Fatal("expired window should read as closed")
+	}
+}
+
+func TestOpaqueStateNeverCrossesPoolConnection(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		for _, same := range []bool{false, true} {
+			a, b := failProv("a", 402), okProv("b", "next")
+			first, next := member(1, "a", 10, a), member(2, "b", 5, b)
+			first.ConnectionIdentity = "connection-one"
+			next.ConnectionIdentity = "connection-two"
+			if same {
+				next.ConnectionIdentity = first.ConnectionIdentity
+			}
+			pool := New([]*Member{first, next}, NewRegistry(nil, nil))
+			req := llm.CompletionRequest{Messages: []llm.Message{{Role: llm.RoleAssistant, ProviderData: []byte(`{"opaque":"fixture"}`)}}}
+			var err error
+			if complete {
+				_, _, _, err = pool.Complete(context.Background(), req)
+			} else {
+				_, err = drain(pool.Stream(context.Background(), req))
+			}
+			if same && (err != nil || b.calls != 1) {
+				t.Fatalf("same connection fallback blocked: %v", err)
+			}
+			if !same && (err == nil || b.calls != 0) {
+				t.Fatal("private state crossed connection boundary")
+			}
+		}
 	}
 }

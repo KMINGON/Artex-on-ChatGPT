@@ -350,7 +350,7 @@ function LLMProfileRow({
             <span className="text-sm">{defaultLabel}</span>
             {activeDefault && (
               <span className="text-muted-foreground text-[11px]">
-                {activeDefault.format} · {activeDefault.model}
+                {activeDefault.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : "OpenAI API"} · {activeDefault.model}
               </span>
             )}
           </button>
@@ -367,9 +367,12 @@ function LLMProfileRow({
                 selected === Number(p.id) && "bg-accent",
               )}
             >
-              <span className="text-sm">{p.name}</span>
+              <span className="text-sm">
+                {p.name}
+                {p.configuration_error ? " · 설정 재선택 필요" : ""}
+              </span>
               <span className="text-muted-foreground text-[11px]">
-                {p.format} · {p.model}
+                {p.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : "OpenAI API"} · {p.model}
               </span>
             </button>
           ))}

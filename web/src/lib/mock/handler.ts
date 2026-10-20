@@ -849,7 +849,7 @@ function mockProfileResolution(profileID: number | undefined, source: TaskLLMRes
   return {
     profile_id: Number(profile.id),
     name: profile.name,
-    format: profile.format,
+    format: "openai-responses",
     model: profile.model,
     source,
     available,
@@ -1646,7 +1646,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return {
       models: [
         {
-          model: "claude-opus-4-6",
+          model: "gpt-4o",
           calls: 42,
           input_tokens: 1250000,
           output_tokens: 86000,
@@ -1654,7 +1654,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
           cache_write_tokens: 120000,
         },
         {
-          model: "claude-haiku-4-5",
+          model: "gpt-5",
           calls: 18,
           input_tokens: 320000,
           output_tokens: 24000,
@@ -2336,8 +2336,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
   if (path === "/llm" && m === "GET") return D.llmConfig;
   if (path === "/llm" && m === "POST") return { ok: true };
-  if (path === "/llm/test")
-    return { ok: true, latency_ms: 128, model: String(b.model ?? "claude-opus-4-8"), reply: "OK" };
+  if (path === "/llm/test") return { ok: true, latency_ms: 128, model: String(b.model ?? "gpt-4o"), reply: "OK" };
   if (path === "/llm/profiles" && m === "GET")
     return {
       profiles: mockLLMProfiles.map((profile) => ({
@@ -2362,7 +2361,6 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       id,
       name: String(b.name ?? ""),
       model: String(b.model ?? ""),
-      format: b.format === "openai" || b.format === "openai-responses" ? b.format : "anthropic",
       auth_mode: b.auth_mode === "chatgpt_plan" ? "chatgpt_plan" : "api_key",
       api_key_hint: b.auth_mode === "chatgpt_plan" ? undefined : apiKeyHint,
       is_default: existing?.is_default ?? false,

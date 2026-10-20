@@ -14,7 +14,6 @@ import (
 	"github.com/Autumn-27/artex/chatgptauth"
 	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
 )
 
 // The credential store belongs to the local OS user, outside the repository and
@@ -45,9 +44,8 @@ func (s *Server) configureChatGPT(cfg *agent.Config, p *db.LLMProfile) {
 	// Keep a signed-out profile selected. Requests fail closed instead of resolving
 	// another profile or an environment API key when credentials are unavailable.
 	cfg.ChatGPTAuth, _ = s.chatGPTManager()
-	cfg.Format = llm.FormatOpenAIResponses
-	cfg.APIKey, cfg.BaseURL, cfg.SessionHeaderKey, cfg.ThinkingType, cfg.MaxTokensField = "", "", "", "", ""
-	cfg.Stream, cfg.MaxTokens = true, 0
+	cfg.APIKey = ""
+	cfg.MaxTokens = 0
 }
 
 func (s *Server) chatGPTProfileDTOs(ps []*db.LLMProfile) []LLMProfileDTO {

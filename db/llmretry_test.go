@@ -18,8 +18,6 @@ func TestProfileRetryRoundTrip(t *testing.T) {
 
 	want := RetryOverride{
 		Connect: RetryRule{Attempts: 5, IntervalMS: 2000},
-		Empty:   RetryRule{Attempts: -1},
-		Stream:  RetryRule{IntervalMS: 250},
 	}
 	id, err := d.SaveProfile(&LLMProfile{
 		Name: "t-retry-roundtrip", Format: "openai", Model: "m", APIKey: "k", Retry: want,
@@ -38,7 +36,7 @@ func TestProfileRetryRoundTrip(t *testing.T) {
 	}
 	// Keyless update path (the UI sends no key when the user didn't retype it).
 	got.APIKey = ""
-	got.Retry.Stream = RetryRule{Attempts: 3, IntervalMS: 700}
+	got.Retry.Connect = RetryRule{Attempts: 3, IntervalMS: 700}
 	if _, err := d.SaveProfile(got); err != nil {
 		t.Fatal(err)
 	}
@@ -46,10 +44,10 @@ func TestProfileRetryRoundTrip(t *testing.T) {
 	if err != nil || after == nil {
 		t.Fatalf("ProfileByID after update: %v", err)
 	}
-	if after.Retry.Stream != (RetryRule{Attempts: 3, IntervalMS: 700}) {
-		t.Fatalf("stream=%+v after update", after.Retry.Stream)
+	if after.Retry.Connect != (RetryRule{Attempts: 3, IntervalMS: 700}) {
+		t.Fatalf("connect=%+v after update", after.Retry.Connect)
 	}
-	if after.Retry.Connect != want.Connect || after.Retry.Empty != want.Empty {
+	if after.Retry.Stream != want.Stream || after.Retry.Empty != want.Empty {
 		t.Fatalf("untouched rules changed: %+v", after.Retry)
 	}
 	// The listing query reads a different column list — it must agree.
@@ -58,7 +56,7 @@ func TestProfileRetryRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range profiles {
-		if p.ID == id && p.Retry.Connect != want.Connect {
+		if p.ID == id && p.Retry.Connect != after.Retry.Connect {
 			t.Fatalf("ListProfiles retry=%+v, want %+v", p.Retry, want)
 		}
 	}
@@ -114,7 +112,7 @@ func TestLLMRetryPolicyRoundTrip(t *testing.T) {
 	want := LLMRetryPolicy{
 		Connect: RetryRule{Attempts: 4, IntervalMS: 1500},
 		Breaker: RetryRule{Attempts: 2, IntervalMS: 90_000},
-		Intent:  RetryRule{Attempts: -1},
+		Empty:   RetryRule{Attempts: -1},
 	}
 	if err := d.SetLLMRetryPolicy(want); err != nil {
 		t.Fatal(err)
@@ -128,11 +126,11 @@ func TestLLMRetryPolicyRoundTrip(t *testing.T) {
 	}
 
 	// 越界值写进去也会被夹回区间，读出来是夹紧后的值。
-	if err := d.SetLLMRetryPolicy(LLMRetryPolicy{Stream: RetryRule{Attempts: 999, IntervalMS: 99_999_999}}); err != nil {
+	if err := d.SetLLMRetryPolicy(LLMRetryPolicy{Connect: RetryRule{Attempts: 999, IntervalMS: 99_999_999}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := d.LLMRetryPolicy().Stream; got.Attempts != 20 || got.IntervalMS != 3600_000 {
-		t.Fatalf("stream=%+v, want the 20 / 1h caps", got)
+	if got := d.LLMRetryPolicy().Connect; got.Attempts != 20 || got.IntervalMS != 3600_000 {
+		t.Fatalf("connect=%+v, want the 20 / 1h caps", got)
 	}
 
 	// 键不存在 = 全默认。

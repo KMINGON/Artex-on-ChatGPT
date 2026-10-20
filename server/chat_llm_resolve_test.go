@@ -33,7 +33,7 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 		t.Fatalf("no-profile reason=%q, want %q", reason, errChatNoLLMProfile)
 	}
 
-	id, err := m.pg.SaveProfile(&db.LLMProfile{Name: "p1", Format: "anthropic", Model: "claude-x", APIKey: "sk-test"})
+	id, err := m.pg.SaveProfile(&db.LLMProfile{Name: "p1", Format: "openai-responses", Model: "gpt-x", APIKey: "sk-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestResolveChatAgentHonoursConversationProfile(t *testing.T) {
 	s.chatAgent = nil
 	s.cfgMu.Unlock()
 
-	id, err := m.pg.SaveProfile(&db.LLMProfile{Name: "conv-pick", Format: "anthropic", Model: "claude-x", APIKey: "sk-test"})
+	id, err := m.pg.SaveProfile(&db.LLMProfile{Name: "conv-pick", Format: "openai-responses", Model: "gpt-x", APIKey: "sk-test"})
 	if err != nil {
 		t.Fatal(err)
 	}

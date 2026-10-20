@@ -120,3 +120,45 @@ func TestSideActualChatCheckpointToolResultAndTranscriptIsolation(t *testing.T) 
 		})
 	}
 }
+
+func TestChatConnectionRotationKeepsConversationSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	store := transcript.NewStore(filepath.Join(dir, "transcripts"))
+	provider := sidequestion.Bind(&sideAgentProvider{calls: 1}, sidequestion.Model{Model: "fixture", Streaming: true})
+	chat := NewChatAgent(provider, "fixture", dir, store, 100000)
+	cfg := Config{AuthMode: "api_key", APIKey: "first-fixture-key", Model: "fixture"}
+	chat.SetConnectionIdentity(func() string { return cfg.ConnectionIdentity() })
+	var snapshots []sidequestion.Snapshot
+	ctx := sidequestion.WithPublisher(t.Context(), func(s sidequestion.Snapshot) { snapshots = append(snapshots, s) })
+	run := func(message string) sidequestion.Snapshot {
+		t.Helper()
+		snapshots = nil
+		if _, err := chat.Chat(ctx, "mainagent", "conv-42", message, 2, time.Minute, false, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(snapshots) == 0 || snapshots[len(snapshots)-1].Parent.ConversationID != 42 {
+			t.Fatal("connection rotation lost the logical conversation snapshot")
+		}
+		return snapshots[len(snapshots)-1]
+	}
+	run("first-connection-message")
+	before, err := os.ReadFile(store.MainPath("conv-42"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.APIKey = "second-fixture-key"
+	rotated := run("second-connection-message")
+	raw, _ := json.Marshal(rotated.Request)
+	if strings.Contains(string(raw), "first-connection-message") {
+		t.Fatal("rotated connection replayed the old transcript")
+	}
+	resumed := run("third-message")
+	raw, _ = json.Marshal(resumed.Request)
+	if !strings.Contains(string(raw), "second-connection-message") {
+		t.Fatal("new connection did not resume its own transcript")
+	}
+	after, err := os.ReadFile(store.MainPath("conv-42"))
+	if err != nil || string(after) != string(before) {
+		t.Fatal("connection rotation modified the previous transcript")
+	}
+}

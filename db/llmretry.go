@@ -76,21 +76,20 @@ func (o RetryOverride) Clamped() RetryOverride {
 	return o
 }
 
-// LLMRetryPolicy holds the五层 retry configuration. Connect/Empty/Stream are the
-// per-request layers (a profile may override them, see LLMProfile.Retry);
-// Breaker and Intent are process-wide by nature and live only here.
+// LLMRetryPolicy exposes adapter retries, Worker continuation and circuit
+// breaking. Obsolete Stream/Intent settings remain private for legacy reads.
 type LLMRetryPolicy struct {
-	// Connect：SDK 建连重试(连接重置/超时/429/5xx，流开始前)。默认 3 次、指数退避。
+	// Connect: one adapter budget for supported transient HTTP/pre-output SSE failures.
 	Connect RetryRule `json:"connect"`
-	// Empty：SDK 空响应重试(完成但无 content block，仅 openai 格式)。默认 2 次、指数退避。
+	// Empty: Worker continuation after a thinking-only turn; not transport retries.
 	Empty RetryRule `json:"empty"`
 	// Stream：同 provider 安全窗口重试(未交付输出前的断流重放)。默认 2 次、0.5s 起指数(封顶 4s)。
-	Stream RetryRule `json:"stream"`
+	Stream RetryRule `json:"-"`
 	// Breaker：轮询熔断。Attempts=连续几次瞬时失败触发熔断(默认 3，-1=瞬时失败不熔断，
 	// 硬失败如余额不足/密钥失效仍立即熔断)；IntervalMS=固定冷却时长(0=默认 1/5/30min 梯度)。
 	Breaker RetryRule `json:"breaker"`
 	// Intent：worker 以 model_error 收场后的整条意图重跑。默认 2 次、固定 3s。
-	Intent RetryRule `json:"intent"`
+	Intent RetryRule `json:"-"`
 }
 
 // Clamped returns the policy with every rule clamped.
@@ -114,12 +113,40 @@ func (d *DB) LLMRetryPolicy() LLMRetryPolicy {
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		return LLMRetryPolicy{}
 	}
+	var legacy struct {
+		Stream RetryRule `json:"stream"`
+		Intent RetryRule `json:"intent"`
+	}
+	if json.Unmarshal([]byte(raw), &legacy) == nil {
+		p.Stream, p.Intent = legacy.Stream, legacy.Intent
+	}
 	return p.Clamped()
 }
 
-// SetLLMRetryPolicy persists the global retry policy (values are clamped first).
+// SetLLMRetryPolicy updates active controls while preserving retired JSON fields.
 func (d *DB) SetLLMRetryPolicy(p LLMRetryPolicy) error {
-	raw, err := json.Marshal(p.Clamped())
+	fields := map[string]json.RawMessage{}
+	previous, ok, err := d.GetSetting(settingLLMRetryPolicy)
+	if err != nil {
+		return err
+	}
+	if ok && previous != "" {
+		if err := json.Unmarshal([]byte(previous), &fields); err != nil {
+			return err
+		}
+		if fields == nil {
+			fields = map[string]json.RawMessage{}
+		}
+	}
+	p = p.Clamped()
+	for name, rule := range map[string]RetryRule{"connect": p.Connect, "empty": p.Empty, "breaker": p.Breaker} {
+		raw, err := json.Marshal(rule)
+		if err != nil {
+			return err
+		}
+		fields[name] = raw
+	}
+	raw, err := json.Marshal(fields)
 	if err != nil {
 		return err
 	}

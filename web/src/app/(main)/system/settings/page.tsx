@@ -475,23 +475,15 @@ export default function SystemSettingsPage() {
                     <SelectItem value="ddgs">{t("webSearch.sourceDdgs")}</SelectItem>
                     <SelectItem value="brave-free">{t("webSearch.sourceBrave")}</SelectItem>
                     <SelectItem value="tavily">{t("webSearch.sourceTavily")}</SelectItem>
-                    <SelectItem value="deepseek">{t("webSearch.sourceDeepseek")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
             )}
 
-            {webSearch && backend === "deepseek" && (
-              <div className="border-border/60 bg-muted/30 flex flex-col gap-2 rounded-md border p-3">
-                <p className="text-sm font-medium">{t("webSearch.deepseekTitle")}</p>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {t.rich("webSearch.deepseekDesc1", richTags)}
-                </p>
-                <p className="text-muted-foreground text-xs leading-relaxed">
-                  {t.rich("webSearch.deepseekDesc2", richTags)}
-                </p>
-                <p className="text-muted-foreground text-xs leading-relaxed">{t("webSearch.deepseekDesc3")}</p>
-              </div>
+            {webSearch && !["ddgs", "brave-free", "tavily"].includes(backend) && (
+              <p role="alert" className="text-destructive text-sm">
+                이전 검색 제공자는 지원하지 않습니다. DDGS, Brave 또는 Tavily를 선택해 주세요.
+              </p>
             )}
 
             {webSearch && backend === "brave-free" && (

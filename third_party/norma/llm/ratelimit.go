@@ -123,8 +123,7 @@ func (b *bucket) reserve() time.Duration {
 }
 
 // RateLimited wraps any Provider so that all of its Stream calls share one rate
-// limit. Use it for custom Provider implementations; the built-in providers take
-// a RateLimit via Config. Returns p unchanged if rl imposes no limit.
+// limit. Returns p unchanged if rl imposes no limit.
 func RateLimited(p Provider, rl RateLimit) Provider {
 	l := newRateLimiter(rl)
 	if l == nil {

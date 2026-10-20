@@ -10,22 +10,10 @@ import (
 
 type captureContextKey struct{}
 
-// Capture collects the untouched wire bodies of one logical LLM call. The
-// Recorder creates it and puts it on the context; the HTTP transport that norma
-// dials through (agent.quotaAwareTransport) finds it there and fills it in.
-//
-// This exists because everything the Recorder itself sees is already normalized:
-// llm.CompletionRequest is re-serialized rather than the body buildBody() sent,
-// and the response arrives as decoded StreamEvents, not the SSE frames. For
-// debugging a live provider, the bytes on the wire are the only ground truth.
-//
-// norma's doStream retries the request-establishment phase, so one Stream can
-// issue several HTTP attempts. Each attempt is kept: the discarded ones (see
-// norma/llm/retry.go, which closes non-final bodies unread) are exactly what
-// makes rate-limit and gateway failures diagnosable.
-//
-// The transport writes from norma's stream-reading goroutine while the Recorder
-// snapshots at stream end, so all state is mutex-guarded.
+// Capture retains the legacy raw recording interface for historical records and
+// tests. A transport must explicitly opt in; the OpenAI Responses transport does
+// not, because wire bodies can contain opaque replay state and credentials.
+// State is mutex-guarded for readers and writers on different goroutines.
 type Capture struct {
 	mu       sync.Mutex
 	request  string

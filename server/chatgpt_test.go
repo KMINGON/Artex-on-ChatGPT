@@ -18,10 +18,10 @@ import (
 
 func TestDisconnectedChatGPTStaysSelectedWithoutAPIFallback(t *testing.T) {
 	s := &Server{chatGPTDir: t.TempDir()}
-	cfg := agent.ConfigFrom("openai", "test-model", "https://example.invalid", "never-use-this-key", "")
+	cfg := agent.ConfigFrom("openai", "test-model", "", "never-use-this-key", "")
 	s.configureChatGPT(&cfg, &db.LLMProfile{AuthMode: "chatgpt_plan", ChatGPTAccountID: "disconnected"})
 	defer s.chatGPT.Close()
-	if cfg.APIKey != "" || cfg.BaseURL != "" || !cfg.Stream || cfg.Provider() != "openai-responses" {
+	if cfg.APIKey != "" || cfg.Provider() != "openai-responses" {
 		t.Fatal("unsupported API configuration retained")
 	}
 	provider, err := cfg.NewProvider()

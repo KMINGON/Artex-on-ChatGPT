@@ -18,7 +18,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 
 	id, err := d.SaveProfile(&LLMProfile{
 		Name: "t-maxtok", Format: "openai", Model: "m", APIKey: "k",
-		MaxTokens: 8192, MaxTokensField: "max_completion_tokens",
+		MaxTokens: 8192,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -30,7 +30,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if err != nil || p == nil {
 		t.Fatalf("ProfileByID: %v, p=%v", err, p)
 	}
-	if p.MaxTokens != 8192 || p.MaxTokensField != "max_completion_tokens" {
+	if p.MaxTokens != 8192 || p.MaxTokensField != "" {
 		t.Fatalf("keyed load: max_tokens=%d field=%q", p.MaxTokens, p.MaxTokensField)
 	}
 
@@ -48,7 +48,7 @@ func TestProfileMaxTokensRoundTrip(t *testing.T) {
 	if found == nil {
 		t.Fatal("profile missing from ListProfiles")
 	}
-	if found.MaxTokens != 8192 || found.MaxTokensField != "max_completion_tokens" {
+	if found.MaxTokens != 8192 || found.MaxTokensField != "" {
 		t.Fatalf("list load: max_tokens=%d field=%q", found.MaxTokens, found.MaxTokensField)
 	}
 

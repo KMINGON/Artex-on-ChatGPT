@@ -34,6 +34,7 @@ type outputItem struct {
 }
 
 type response struct {
+	ID     string            `json:"id"`
 	Status string            `json:"status"`
 	Output []json.RawMessage `json:"output"`
 	Usage  struct {
@@ -59,23 +60,38 @@ type streamEvent struct {
 }
 
 type streamState struct {
-	items     map[string]outputItem
-	done      map[string]json.RawMessage
-	indexes   map[string]int
-	indexIDs  map[int]string
-	text      map[string]*strings.Builder
-	arguments map[string]*strings.Builder
-	size      int
+	items        map[string]outputItem
+	done         map[string]json.RawMessage
+	indexes      map[string]int
+	indexIDs     map[int]string
+	text         map[string]*strings.Builder
+	arguments    map[string]*strings.Builder
+	size         int
+	allowPartial bool
 }
 
 // Tools stay private until the terminal response validates. Norma otherwise
 // starts executing a tool when the next normalized event arrives.
 func consume(resp *http.Response, names map[string]string, yield func(llm.StreamEvent, error) bool) error {
+	return consumeWithOptions(resp, names, false, yield)
+}
+
+func consumeWithOptions(resp *http.Response, names map[string]string, allowPartial bool, yield func(llm.StreamEvent, error) bool) (resultErr error) {
 	state := streamState{
 		items: map[string]outputItem{}, done: map[string]json.RawMessage{},
 		indexes: map[string]int{}, indexIDs: map[int]string{},
 		text: map[string]*strings.Builder{}, arguments: map[string]*strings.Builder{},
+		allowPartial: allowPartial,
 	}
+	var lastEvent, responseID string
+	defer func() {
+		if e, ok := resultErr.(*Error); ok {
+			e.Stage, e.EventType = "stream", safeToken(lastEvent)
+			if e.ResponseID == "" {
+				e.ResponseID = safeToken(responseID)
+			}
+		}
+	}()
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64<<10), 16<<20)
 	var data strings.Builder
@@ -88,6 +104,7 @@ func consume(resp *http.Response, names map[string]string, yield func(llm.Stream
 		}
 		raw := strings.TrimSuffix(data.String(), "\n")
 		data.Reset()
+		lastEvent = eventName
 		if raw == "[DONE]" {
 			return false, failure("interrupted_stream", "완료 확인 전에 응답이 끝났습니다", nil)
 		}
@@ -97,6 +114,13 @@ func consume(resp *http.Response, names map[string]string, yield func(llm.Stream
 		}
 		if event.Type == "" {
 			event.Type = eventName
+		}
+		lastEvent = event.Type
+		var identity struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(event.Response, &identity) == nil && identity.ID != "" {
+			responseID = identity.ID
 		}
 		eventName = ""
 		state.size += len(raw)
@@ -161,7 +185,22 @@ func consume(resp *http.Response, names map[string]string, yield func(llm.Stream
 			return false, err
 		case "response.incomplete":
 			var final response
-			_ = json.Unmarshal(event.Response, &final)
+			if json.Unmarshal(event.Response, &final) != nil {
+				return false, failure("invalid_completion", "미완료 응답이 올바르지 않습니다", nil)
+			}
+			if allowPartial && final.Status == "incomplete" && final.Incomplete.Reason == "max_output_tokens" {
+				events, err := state.finish(final, names)
+				if err != nil {
+					return false, err
+				}
+				for _, ev := range events {
+					if !yield(ev, nil) {
+						stopped = true
+						break
+					}
+				}
+				return true, nil
+			}
 			err := failure("incomplete_response", "응답이 완성되지 않았습니다", nil)
 			err.StatusCode = resp.StatusCode
 			err.Param, err.Body, err.RequestID = final.Incomplete.Reason, append([]byte(nil), event.Response...), resp.Header.Get("X-Request-Id")
@@ -255,7 +294,7 @@ func (s *streamState) recordItem(event streamEvent) error {
 		if !exists || s.done[item.ID] != nil || !sameItemIdentity(prior, item) {
 			return failure("invalid_stream", "완료 항목 식별자가 올바르지 않습니다", nil)
 		}
-		if item.Status != "" && item.Status != "completed" {
+		if item.Status != "" && item.Status != "completed" && !(s.allowPartial && item.Status == "incomplete" && item.Type != "function_call") {
 			return failure("invalid_completion", "출력 항목이 완성되지 않았습니다", nil)
 		}
 		// Keep the original object, including phase and opaque reasoning fields.
@@ -296,6 +335,14 @@ func (s *streamState) completedOutput() ([]json.RawMessage, error) {
 }
 
 func (s *streamState) finish(final response, names map[string]string) ([]llm.StreamEvent, error) {
+	partial := final.Status == "incomplete"
+	if partial {
+		for _, item := range s.items {
+			if item.Type == "function_call" {
+				return nil, failure("incomplete_response", "미완료 도구 호출은 실행하지 않습니다", nil)
+			}
+		}
+	}
 	if len(final.Output) == 0 {
 		var err error
 		final.Output, err = s.completedOutput()
@@ -312,7 +359,7 @@ func (s *streamState) finish(final response, names map[string]string) ([]llm.Str
 		if json.Unmarshal(raw, &item) != nil || item.ID == "" || seenIDs[item.ID] {
 			return nil, failure("invalid_completion", "완료 항목 ID가 올바르지 않습니다", nil)
 		}
-		if item.Status != "" && item.Status != "completed" {
+		if item.Status != "" && item.Status != "completed" && !(partial && item.Status == "incomplete" && item.Type != "function_call") {
 			return nil, failure("invalid_completion", "출력 항목이 완성되지 않았습니다", nil)
 		}
 		seenIDs[item.ID] = true
@@ -357,6 +404,9 @@ func (s *streamState) finish(final response, names map[string]string) ([]llm.Str
 				hasContent = hasContent || text != ""
 			}
 		case "function_call":
+			if partial {
+				return nil, failure("incomplete_response", "미완료 도구 호출은 실행하지 않습니다", nil)
+			}
 			name, ok := names[item.Name]
 			if !ok || item.Namespace != "artex" || item.CallID == "" || seenCalls[item.CallID] || !validArguments([]byte(item.Arguments)) {
 				return nil, failure("invalid_tool_call", "완료된 도구 호출이 올바르지 않습니다", nil)
@@ -401,12 +451,18 @@ func (s *streamState) finish(final response, names map[string]string) ([]llm.Str
 	if !hasContent {
 		return nil, failure("empty_response", "모델이 빈 응답을 반환했습니다", nil)
 	}
-	if err := attachReplayState(&message, final.Output); err != nil {
-		return nil, err
+	if !partial {
+		if err := attachReplayState(&message, final.Output); err != nil {
+			return nil, err
+		}
 	}
 	stop := "end_turn"
 	if hasTool {
 		stop = "tool_use"
+	} else if partial {
+		// A truncated text continuation is usable, but incomplete opaque state
+		// must not be promoted to completed replay data.
+		stop = "max_tokens"
 	}
 	usage := llm.Usage{InputTokens: final.Usage.Input, OutputTokens: final.Usage.Output, CacheReadTokens: final.Usage.Details.Cached}
 	events = append(events, llm.StreamEvent{Type: llm.SEMessageFinal, FinalMessage: &message}, llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: stop, Usage: usage}, llm.StreamEvent{Type: llm.SEMessageStop})

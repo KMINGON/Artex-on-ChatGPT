@@ -136,7 +136,9 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 				finished = true
 			}
 		case llm.SEMessageStop:
-			finished = true
+			if !finished {
+				return "", errJudgeOutputRejected
+			}
 		}
 	}
 	if !finished || ctx.Err() != nil {
