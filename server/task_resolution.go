@@ -3,8 +3,10 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
 )
 
@@ -46,18 +48,30 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 		result.Reason = reason
 		return result
 	}
+	mode := p.AuthMode
+	if mode == "" {
+		mode = "api_key"
+	}
+	if err := chatgptllm.ValidateOptions(p.Model, mode, p.ReasoningEffort, p.AccessProgramCyber); err != nil {
+		result.Reason = err.Error()
+		return result
+	}
 	if _, err := agent.ChatGPTHTTPClient(p.Proxy); err != nil {
 		result.Reason = "LLM 프록시 설정을 확인해 주세요"
 		return result
 	}
 	if p.AuthMode == "chatgpt_plan" {
 		profiles := s.chatGPTProfileDTOs([]*db.LLMProfile{p})
+		if profiles[0].PlanBlocked {
+			result.Reason = "ChatGPT 사용 한도를 확인한 뒤 한도 재확인을 실행해 주세요"
+			return result
+		}
 		if !profiles[0].Connected {
 			result.Reason = "ChatGPT 계정을 다시 연결해 주세요"
 			return result
 		}
 	}
-	if p.AuthMode != "chatgpt_plan" && p.APIKey == "" {
+	if p.AuthMode != "chatgpt_plan" && strings.TrimSpace(p.APIKey) == "" {
 		result.Reason = reasonLLMProfileNoAPIKey
 		return result
 	}
@@ -86,10 +100,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 			return taskLLMResolution{}, fmt.Errorf("load agent LLM profile: %w", err)
 		}
 		if p != nil {
-			resolved := s.resolutionFromProfile(p, "agent_binding")
-			if resolved.Available || p.AuthMode == "chatgpt_plan" || p.UnsupportedReason() != "" {
-				return resolved, nil
-			}
+			return s.resolutionFromProfile(p, "agent_binding"), nil
 		}
 	}
 	state := t.llmStateSnapshot()
@@ -108,10 +119,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 		return taskLLMResolution{}, fmt.Errorf("load global LLM profile: %w", err)
 	}
 	if p != nil {
-		resolved := s.resolutionFromProfile(p, "global_profile")
-		if resolved.Available || p.AuthMode == "chatgpt_plan" || p.UnsupportedReason() != "" {
-			return resolved, nil
-		}
+		return s.resolutionFromProfile(p, "global_profile"), nil
 	}
 	s.cfgMu.Lock()
 	on, name, cfg := s.llmOn, s.llmProf, s.llmCfg

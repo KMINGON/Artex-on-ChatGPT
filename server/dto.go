@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/traffic"
 )
@@ -586,20 +587,23 @@ func agentDTOs(in []*db.Agent) []AgentDTO {
 // ---- LLMProfile (frontend "LLMProfile") — string id ----
 
 type LLMProfileDTO struct {
-	ConfigurationError string  `json:"configuration_error,omitempty"`
-	AuthMode           string  `json:"auth_mode"`
-	ChatGPTAccountID   string  `json:"chatgpt_account_id,omitempty"`
-	Connected          bool    `json:"connected"`
-	ID                 string  `json:"id"`
-	Name               string  `json:"name"`
-	Proxy              string  `json:"proxy,omitempty"`
-	Model              string  `json:"model"`
-	APIKeyHint         string  `json:"api_key_hint,omitempty"`
-	RatePerSecond      float64 `json:"rate_per_second"`
-	RatePerMinute      float64 `json:"rate_per_minute"`
-	ContextWindowK     int     `json:"context_window_k"`
-	ReasoningEffort    string  `json:"reasoning_effort"`
-	IsDefault          bool    `json:"is_default"`
+	ConfigurationError string                       `json:"configuration_error,omitempty"`
+	AuthMode           string                       `json:"auth_mode"`
+	ChatGPTAccountID   string                       `json:"chatgpt_account_id,omitempty"`
+	AccessProgramCyber string                       `json:"access_program_cyber,omitempty"`
+	Capabilities       chatgptllm.ModelCapabilities `json:"capabilities"`
+	Connected          bool                         `json:"connected"`
+	PlanBlocked        bool                         `json:"plan_blocked,omitempty"`
+	ID                 string                       `json:"id"`
+	Name               string                       `json:"name"`
+	Proxy              string                       `json:"proxy,omitempty"`
+	Model              string                       `json:"model"`
+	APIKeyHint         string                       `json:"api_key_hint,omitempty"`
+	RatePerSecond      float64                      `json:"rate_per_second"`
+	RatePerMinute      float64                      `json:"rate_per_minute"`
+	ContextWindowK     int                          `json:"context_window_k"`
+	ReasoningEffort    string                       `json:"reasoning_effort"`
+	IsDefault          bool                         `json:"is_default"`
 	// 轮询(故障转移)参数：priority 越大越先被选中(激活配置恒为链首)；
 	// pool_exclude=true 则不作为故障转移目标，但仍可被 agent/任务显式绑定。
 	Priority    int              `json:"priority"`
@@ -611,6 +615,8 @@ type LLMProfileDTO struct {
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 	return LLMProfileDTO{
 		ConfigurationError: p.UnsupportedReason(),
+		AccessProgramCyber: p.AccessProgramCyber,
+		Capabilities:       chatgptllm.Capabilities(p.Model, p.AuthMode),
 		AuthMode:           p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: p.APIKeySet || p.APIKeyHint != "" || p.APIKey != "",
 		ID:              i64s(p.ID),
 		Name:            p.Name,

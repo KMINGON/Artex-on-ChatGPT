@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -26,6 +27,17 @@ func acceptsRawInput(t tool.CoreTool) bool {
 // executor's goroutines (read-only access to loop config; permission/hook
 // callbacks are the host's responsibility to make safe).
 func (l *loop) execOne(use llm.ContentBlock, emitProgress func(tool.ProgressInfo)) (llm.ContentBlock, []llm.Message) {
+	ctx := l.toolCtx
+	if ctx == nil {
+		ctx = l.ctx
+	}
+	return l.execOneContext(ctx, use, emitProgress)
+}
+
+func (l *loop) execOneContext(ctx context.Context, use llm.ContentBlock, emitProgress func(tool.ProgressInfo)) (llm.ContentBlock, []llm.Message) {
+	if err := ctx.Err(); err != nil {
+		return llm.ToolResultText(use.ID, "tool execution interrupted", true), nil
+	}
 	t, ok := l.in.Tools.Get(use.Name)
 	if !ok {
 		return llm.ToolResultText(use.ID, fmt.Sprintf("Error: unknown tool %q", use.Name), true), nil
@@ -54,11 +66,11 @@ func (l *loop) execOne(use llm.ContentBlock, emitProgress func(tool.ProgressInfo
 		Allowed:    l.in.Allowed,
 		Disallowed: l.in.Disallowed,
 	}
-	dec := permission.Evaluate(l.ctx, permission.Request{
+	dec := permission.Evaluate(ctx, permission.Request{
 		ToolName:     use.Name,
 		Input:        input,
 		IsReadOnly:   t.IsReadOnly(input),
-		ToolDecision: t.CheckPermissions(l.ctx, input, pc),
+		ToolDecision: t.CheckPermissions(ctx, input, pc),
 		Ctx:          pc,
 		Ask:          l.in.CanUseTool,
 	})
@@ -75,7 +87,7 @@ func (l *loop) execOne(use llm.ContentBlock, emitProgress func(tool.ProgressInfo
 
 	// Pre-tool hook.
 	if l.in.Hooks != nil {
-		if block, msg, updated := l.in.Hooks.PreToolUse(l.ctx, use.Name, input); block {
+		if block, msg, updated := l.in.Hooks.PreToolUse(ctx, use.Name, input); block {
 			return llm.ToolResultText(use.ID, "Blocked by hook: "+msg, true), nil
 		} else if len(updated) > 0 {
 			input = updated
@@ -95,7 +107,10 @@ func (l *loop) execOne(use llm.ContentBlock, emitProgress func(tool.ProgressInfo
 	// toolCtx carries the run's MaxDuration deadline, so a tool that overruns the
 	// wall-clock budget is interrupted here (the turn loop then enters wrap-up). During
 	// the wrap-up phase toolCtx is the live parent ctx, so settlement tools run freely.
-	res, err := t.Call(l.toolCtx, input, tc)
+	if err := ctx.Err(); err != nil {
+		return llm.ToolResultText(use.ID, "tool execution interrupted", true), nil
+	}
+	res, err := t.Call(ctx, input, tc)
 	if err != nil {
 		res = tool.Errorf("Error: " + err.Error())
 	}
@@ -103,7 +118,7 @@ func (l *loop) execOne(use llm.ContentBlock, emitProgress func(tool.ProgressInfo
 	// built-in, MCP, custom, host — is bounded here regardless of whether it
 	// remembered to Capture itself, so no tool can overflow the context window
 	// (the failure mode that motivated this net). CaptureOnce is idempotent:
-	// output a tool already spilled/truncated carries a marker and is left
+	// output captured by this same ToolContext is recognized and left
 	// untouched, so this never double-truncates or double-spills.
 	res = capOutput(tc, res)
 

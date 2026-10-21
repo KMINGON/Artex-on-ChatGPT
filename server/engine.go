@@ -1182,7 +1182,11 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// 试过但没真正做完、需换角度，而非当成已覆盖永久跳过）；出错→blocked；正常→done。
 	state := "done"
 	switch {
+	case reason == harness.ReasonOutputLimit:
+		state = "exhausted"
 	case err != nil:
+		state = "blocked"
+	case reason == harness.ReasonStorageError:
 		state = "blocked"
 	case reason == harness.ReasonMaxTurns:
 		state = "exhausted"

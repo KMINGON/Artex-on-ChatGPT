@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/chatgptauth"
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
@@ -137,8 +139,11 @@ type Server struct {
 	// free slots off the same snapshot and over-promote past the limit.
 	concMu sync.Mutex
 
-	cfgMu     sync.Mutex
-	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
+	// Serializes profile writes with their hot-apply; an older request must not
+	// overwrite the connection installed by a newer selection.
+	profileUpdateMu sync.Mutex
+	cfgMu           sync.Mutex
+	chatAgent       *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
 	// llmProv is the fully-decorated global provider (recorder + failover chain)
 	// installed by applyLLM. Task routers use it after an explicit chain is cleared.
 	llmProv   llm.Provider
@@ -166,18 +171,20 @@ type Server struct {
 	// counts in-flight runs per agent (replaces a boolean drain flag); a run's
 	// completion decrements it and re-pumps to fill the freed slot. triggerCfg caches
 	// the agent's last-read策略 so the pump never queries the DB while holding queueMu.
-	// Distinct agents always run concurrently. Queue is in-memory (matches chatBusy); a
-	// restart drops pending fires — the scheduler re-fires from watermarks next tick.
-	queueMu       sync.Mutex
-	triggerQ      map[string][]triggeredRun
-	triggerActive map[string]int
-	triggerCfg    map[string]triggerBehavior
+	// Distinct agents run concurrently. This memory queue mirrors durable pending
+	// deliveries; claimed runs are marked interrupted instead of replayed at restart.
+	queueMu          sync.Mutex
+	triggerQueuedIDs map[int64]bool
+	triggerQ         map[string][]triggeredRun
+	triggerActive    map[string]int
+	triggerCfg       map[string]triggerBehavior
 
 	// profChatAgents caches a per-profile ChatAgent (chat page), keyed by profile id.
 	// Built lazily on first use; invalidated when any profile is saved/activated/deleted
 	// so edits take effect.
 	profMu         sync.Mutex
 	profChatAgents map[int64]*agent.ChatAgent // per-profile ChatAgent cache (chat page)
+	profCacheGen   uint64                     // guarded by profMu; invalidated with provider generation
 
 	// provByProfile caches ONE provider per LLM profile id so every agent bound or
 	// pinned to the same profile shares a single provider instance — hence one rate
@@ -221,13 +228,14 @@ type provEntry struct {
 // taskID + mergeable let the drainer coalesce several event triggers (finding/goal)
 // from the SAME task into one conversation before it starts (interval fires don't merge).
 type triggeredRun struct {
-	agentKey  string
-	title     string
-	message   string // 事件正文(触发语 + 工具/入参/返回等);不含任务描述/目标头
-	taskID    int64  // source task for finding/goal triggers; 0 for interval/none
-	taskDesc  string // 任务描述(任务级,同任务相同);合并时只渲染一次
-	taskGoal  string // 任务目标(任务级,同任务相同);合并时只渲染一次
-	mergeable bool   // true for finding/goal event triggers (merge by taskID)
+	deliveryIDs []int64
+	agentKey    string
+	title       string
+	message     string // 事件正文(触发语 + 工具/入参/返回等);不含任务描述/目标头
+	taskID      int64  // source task for finding/goal triggers; 0 for interval/none
+	taskDesc    string // 任务描述(任务级,同任务相同);合并时只渲染一次
+	taskGoal    string // 任务目标(任务级,同任务相同);合并时只渲染一次
+	mergeable   bool   // true for finding/goal event triggers (merge by taskID)
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
@@ -440,16 +448,8 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
-	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
-	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
-	cfg.ContextWindowK = p.ContextWindowK
-	cfg.ReasoningEffort = p.ReasoningEffort
-	cfg.MaxTokens = p.MaxTokens
-	s.applyProfileRetry(&cfg, p)
-	s.configureChatGPT(&cfg, p)
-	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" && p.UnsupportedReason() == "" {
-		return cfg, false
-	}
+	cfg := s.configForProfile(p)
+	// An existing but unavailable selection must not preserve a previous connection.
 	s.cfgMu.Lock()
 	s.llmProf = p.Name
 	s.cfgMu.Unlock()
@@ -477,7 +477,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
 		ID: id, Name: "default", Format: "openai-responses", Model: cfg.Model, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
-		ContextWindowK: cfg.ContextWindowK, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
+		ContextWindowK: cfg.ContextWindowK, ReasoningEffort: cfg.ReasoningEffort, AccessProgramCyber: cfg.AccessProgramCyber, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude,
 		MaxTokens: maxTokens,
 		Retry:     retry,
@@ -488,19 +488,62 @@ func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	return s.m.pg.SetActiveProfile(newID)
 }
 
-// reapplyActiveProfile hot-reloads the engine from the active DB profile so that
-// saving or activating a profile takes effect without a restart. Best-effort:
-// logs on failure and leaves the running engine untouched.
-func (s *Server) reapplyActiveProfile() {
-	cfg, ok := s.loadLLMConfig()
-	if !ok {
-		return
+// reapplyActiveProfile is called with profileUpdateMu held by runtime mutations.
+// If the committed selection cannot be read, subsequent requests must not use
+// the previous connection. Requests already holding a provider are unaffected.
+func (s *Server) reapplyActiveProfile() error {
+	p, err := s.m.pg.ActiveProfile()
+	if err != nil {
+		return s.blockProfileReload()
+	}
+	s.cfgMu.Lock()
+	cfg, on := s.llmCfg, s.llmOn
+	if p != nil {
+		s.llmProf = p.Name
+	}
+	s.cfgMu.Unlock()
+	if p != nil {
+		cfg = s.configForProfile(p)
+	} else if !on {
+		return nil
 	}
 	if err := s.applyLLM(cfg); err != nil {
-		log.Printf("[engine] reapply active profile failed: %v", err)
-		return
+		return s.blockProfileReload()
 	}
 	log.Printf("[engine] LLM reapplied from active profile: %s / %s", cfg.Provider(), cfg.Model)
+	return nil
+}
+
+type profileReloadError struct{}
+
+func (profileReloadError) Error() string {
+	return "저장된 LLM 설정을 적용할 수 없습니다. 데이터베이스 연결을 확인한 뒤 다시 저장하거나 활성화해 주세요"
+}
+func (profileReloadError) NoFallback() bool { return true }
+func (profileReloadError) NoReplay() bool   { return true }
+func (e profileReloadError) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	return llm.Message{}, "", llm.Usage{}, e
+}
+func (e profileReloadError) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) { yield(llm.StreamEvent{}, e) }
+}
+
+func (s *Server) blockProfileReload() error {
+	s.invalidateProfileAgents()
+	failure := profileReloadError{}
+	s.cfgMu.Lock()
+	// Keep a selected, unavailable provider: nil would enable unrelated fallbacks.
+	s.llmProv, s.llmDirect, s.llmOn = failure, failure, true
+	s.chatAgent = agent.NewChatAgent(failure, s.llmCfg.Model, s.m.dir,
+		transcript.NewStore(filepath.Join(s.m.dir, "transcripts")), s.llmCfg.CompactionWindow())
+	s.cfgMu.Unlock()
+	return failure
+}
+
+func (s *Server) reapplyLLMSettings() error {
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
+	return s.reapplyActiveProfile()
 }
 
 // webSearchFor gates the global web-search opts (backend/key) by an agent's own
@@ -586,30 +629,33 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 }
 
 // loadProfileConfig builds an agent.Config from a specific profile id (with its key).
-// ok=false when the profile is missing or has no api key.
+// ok=false only when the profile cannot be read. Unavailable selections fail closed.
 func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	p, err := s.m.pg.ProfileByID(id)
 	if err != nil || p == nil {
 		return agent.Config{}, false
 	}
+	cfg := s.configForProfile(p)
+	return cfg, true
+}
+
+// configForProfile keeps all fields from one profile read, including its account.
+func (s *Server) configForProfile(p *db.LLMProfile) agent.Config {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ReasoningEffort = p.ReasoningEffort
+	cfg.AccessProgramCyber = p.AccessProgramCyber
 	cfg.MaxTokens = p.MaxTokens
 	s.applyProfileRetry(&cfg, p)
 	s.configureChatGPT(&cfg, p)
-	if cfg.AuthMode != "chatgpt_plan" && cfg.APIKey == "" && p.UnsupportedReason() == "" {
-		return cfg, false
-	}
-	return cfg, true
+	return cfg
 }
 
 // effectiveProfileForAgent resolves the LLM profile id an agent should run on, by
 // precedence: agent binding (agents.llm_profile_id) → pin (task/conversation) → nil
 // (caller falls back to the global active profile). A binding to a deleted profile
-// can't happen (FK ON DELETE SET NULL); an otherwise-invalid one is dropped downstream
-// by loadProfileConfig, letting the caller fall back.
+// can't happen (FK ON DELETE SET NULL). Existing unavailable selections fail closed.
 func (s *Server) effectiveProfileForAgent(agentKey string, pinID *int64) *int64 {
 	if s.m.pg != nil && agentKey != "" {
 		if a, _ := s.m.pg.GetAgentByKey(agentKey); a != nil && a.LLMProfileID != nil {
@@ -691,34 +737,41 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 }
 
 // chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
-// per profile id. Returns nil if the profile is missing or has no API key.
+// per profile id. Returns nil if the profile cannot be read.
 func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
-	s.profMu.Lock()
-	cached := s.profChatAgents[id]
-	s.profMu.Unlock()
-	if cached != nil {
-		return cached
+	for {
+		s.profMu.Lock()
+		cached := s.profChatAgents[id]
+		generation := s.profCacheGen
+		s.profMu.Unlock()
+		if cached != nil {
+			return cached
+		}
+		prov, cfg, ok := s.providerForProfile(id)
+		if !ok {
+			return nil
+		}
+		tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
+		ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
+		ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+		ca.SetWebSearch(s.m.WebSearchOpts())
+		ca.SetGuard(s.chatGuard())
+		ca.SetConnectionIdentity(cfg.ConnectionIdentity)
+		ca.SetMaxTokens(maxTokensResolver(cfg))
+		ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
+		s.profMu.Lock()
+		if generation != s.profCacheGen {
+			s.profMu.Unlock()
+			continue
+		}
+		if ex := s.profChatAgents[id]; ex != nil { // lost the race → keep the winner
+			ca = ex
+		} else {
+			s.profChatAgents[id] = ca
+		}
+		s.profMu.Unlock()
+		return ca
 	}
-	prov, cfg, ok := s.providerForProfile(id)
-	if !ok {
-		return nil
-	}
-	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
-	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
-	ca.SetWebSearch(s.m.WebSearchOpts())
-	ca.SetGuard(s.chatGuard())
-	ca.SetConnectionIdentity(cfg.ConnectionIdentity)
-	ca.SetMaxTokens(maxTokensResolver(cfg))
-	ca.SetNoaEnabled(s.m.NoaCompactionEnabled) // 实验功能:noa 上下文压缩(每 run 读)
-	s.profMu.Lock()
-	if ex := s.profChatAgents[id]; ex != nil { // lost the race → keep the winner
-		ca = ex
-	} else {
-		s.profChatAgents[id] = ca
-	}
-	s.profMu.Unlock()
-	return ca
 }
 
 // invalidateProfileAgents drops the per-profile ChatAgent + provider caches so a profile
@@ -726,12 +779,13 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 // (and re-resolves each agent's bound model) on their next round.
 func (s *Server) invalidateProfileAgents() {
 	s.profMu.Lock()
-	s.profChatAgents = map[int64]*agent.ChatAgent{}
-	s.profMu.Unlock()
 	s.provCacheMu.Lock()
+	s.profCacheGen++
+	s.profChatAgents = map[int64]*agent.ChatAgent{}
 	s.provCacheGen++
 	s.provByProfile = map[int64]*provEntry{}
 	s.provCacheMu.Unlock()
+	s.profMu.Unlock()
 	s.invalidateTaskAgents()
 }
 
@@ -831,6 +885,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/chatgpt/status", s.chatGPTStatus)
 	mux.HandleFunc("POST /api/chatgpt/login", s.chatGPTLogin)
 	mux.HandleFunc("POST /api/chatgpt/logout", s.chatGPTLogout)
+	mux.HandleFunc("POST /api/chatgpt/recheck", s.chatGPTRecheck)
 	mux.HandleFunc("GET /api/chatgpt/models", s.chatGPTModels)
 	mux.HandleFunc("GET /api/llm", s.getLLM)
 	mux.HandleFunc("POST /api/llm", s.setLLM)
@@ -1387,35 +1442,39 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 	writeJSON(w, 200, map[string]any{
-		"configured":       s.llmOn,
-		"provider":         s.llmCfg.Provider(),
-		"model":            s.llmCfg.Model,
-		"proxy":            s.llmCfg.Proxy,
-		"key_set":          s.llmCfg.APIKey != "",
-		"rate_per_second":  s.llmCfg.RatePerSecond,
-		"rate_per_minute":  s.llmCfg.RatePerMinute,
-		"context_window_k": s.llmCfg.ContextWindowK,
-		"reasoning_effort": s.llmCfg.ReasoningEffort,
+		"configured":           s.llmOn,
+		"provider":             s.llmCfg.Provider(),
+		"model":                s.llmCfg.Model,
+		"proxy":                s.llmCfg.Proxy,
+		"key_set":              s.llmCfg.APIKey != "",
+		"rate_per_second":      s.llmCfg.RatePerSecond,
+		"rate_per_minute":      s.llmCfg.RatePerMinute,
+		"context_window_k":     s.llmCfg.ContextWindowK,
+		"reasoning_effort":     s.llmCfg.ReasoningEffort,
+		"access_program_cyber": s.llmCfg.AccessProgramCyber,
 	})
 }
 
 // setLLM configures the LLM at runtime. A blank api_key keeps the existing key.
 func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AuthMode        string  `json:"auth_mode"`
-		Provider        string  `json:"provider"`
-		Model           string  `json:"model"`
-		Proxy           string  `json:"proxy"`
-		APIKey          string  `json:"api_key"`
-		RatePerSecond   float64 `json:"rate_per_second"`
-		RatePerMinute   float64 `json:"rate_per_minute"`
-		ContextWindowK  int     `json:"context_window_k"`
-		ReasoningEffort string  `json:"reasoning_effort"`
+		AuthMode           string  `json:"auth_mode"`
+		Provider           string  `json:"provider"`
+		Model              string  `json:"model"`
+		Proxy              string  `json:"proxy"`
+		APIKey             string  `json:"api_key"`
+		RatePerSecond      float64 `json:"rate_per_second"`
+		RatePerMinute      float64 `json:"rate_per_minute"`
+		ContextWindowK     int     `json:"context_window_k"`
+		ReasoningEffort    string  `json:"reasoning_effort"`
+		AccessProgramCyber string  `json:"access_program_cyber"`
 	}
 	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
 	if req.AuthMode == "chatgpt_plan" {
 		writeErr(w, 400, "ChatGPT 연결은 LLM 프로필 설정에서 수정해 주세요")
 		return
@@ -1426,6 +1485,11 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	cfg := agent.ConfigFrom(req.Provider, req.Model, "", req.APIKey, req.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = req.RatePerSecond, req.RatePerMinute
 	cfg.ReasoningEffort = req.ReasoningEffort
+	cfg.AccessProgramCyber = req.AccessProgramCyber
+	if err := chatgptllm.ValidateOptions(cfg.Model, "api_key", cfg.ReasoningEffort, cfg.AccessProgramCyber); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	if k := req.ContextWindowK; k > 0 { // 0 = keep default (200K); cap at 1M
 		if k > 1000 {
 			k = 1000
@@ -1454,12 +1518,8 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateProfileAgents()
-	if _, ok := s.loadLLMConfig(); !ok {
-		writeErr(w, 500, "saved provider is unavailable")
-		return
-	}
-	if err := s.applyLLM(cfg); err != nil {
-		writeErr(w, 400, "provider init failed: "+err.Error())
+	if err := s.reapplyActiveProfile(); err != nil {
+		writeErr(w, 503, err.Error())
 		return
 	}
 	log.Printf("[engine] LLM configured via UI: %s / %s", cfg.Provider(), cfg.Model)
@@ -1469,14 +1529,15 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 // testLLM makes a real minimal completion to verify the config works.
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Provider         string `json:"provider"`
-		Model            string `json:"model"`
-		Proxy            string `json:"proxy"`
-		APIKey           string `json:"api_key"`
-		AuthMode         string `json:"auth_mode"`
-		ChatGPTAccountID string `json:"chatgpt_account_id"`
-		ReasoningEffort  string `json:"reasoning_effort"`
-		ProfileID        *int64 `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
+		Provider           string `json:"provider"`
+		Model              string `json:"model"`
+		Proxy              string `json:"proxy"`
+		APIKey             string `json:"api_key"`
+		AuthMode           string `json:"auth_mode"`
+		ChatGPTAccountID   string `json:"chatgpt_account_id"`
+		ReasoningEffort    string `json:"reasoning_effort"`
+		AccessProgramCyber string `json:"access_program_cyber"`
+		ProfileID          *int64 `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
 	}
 	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1489,6 +1550,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
 	cfg.ReasoningEffort = req.ReasoningEffort
+	cfg.AccessProgramCyber = req.AccessProgramCyber
 	if req.ProfileID != nil {
 		p, err := s.m.pg.ProfileByID(*req.ProfileID)
 		if err != nil || p == nil {
@@ -1530,7 +1592,9 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		}
 		s.configureChatGPT(&cfg, &db.LLMProfile{AuthMode: req.AuthMode, ChatGPTAccountID: req.ChatGPTAccountID})
 	}
-	lat, reply, err := agent.TestConnection(r.Context(), cfg)
+	var observed chatgptllm.ResponseMetadata
+	testCtx := chatgptllm.WithResponseObserver(r.Context(), func(meta chatgptllm.ResponseMetadata) { observed = meta })
+	lat, reply, err := agent.TestConnection(testCtx, cfg)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
 		return
@@ -1538,6 +1602,8 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// 回传模型实际回复，让"测试通过"有据可查：看得见它确实说了话，而不只是 HTTP 200。
 	writeJSON(w, 200, map[string]any{
 		"ok": true, "latency_ms": lat.Milliseconds(), "model": cfg.Model, "reply": truncateReply(reply),
+		"actual_model": observed.Model, "actual_access_program_cyber": observed.AccessProgramCyber,
+		"access_programs_present": observed.AccessProgramsPresent,
 	})
 }
 
@@ -3662,14 +3728,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if changed {
 		// rebuild agents so the new proxy/tools/prompt/web-search take hold (only if LLM configured).
-		s.cfgMu.Lock()
-		cfg, on := s.llmCfg, s.llmOn
-		s.cfgMu.Unlock()
-		if on {
-			if err := s.applyLLM(cfg); err != nil {
-				writeErr(w, 500, err.Error())
-				return
-			}
+		if err := s.reapplyLLMSettings(); err != nil {
+			writeErr(w, 503, err.Error())
+			return
 		}
 	}
 	writeJSON(w, 200, s.settingsPayload())

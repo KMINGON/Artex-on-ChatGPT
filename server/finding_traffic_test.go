@@ -378,10 +378,10 @@ func TestFindingTrafficFailedReportDoesNotTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A nil server makes any attempted trigger fail this test immediately.
+	// A failed report must be consumed without creating a delivery.
 	scheduler := &Scheduler{pg: s.m.pg}
 	scheduler.fireToolCalls([]*db.AgentTrigger{{OnToolCall: true, ToolNames: []string{"report_finding"}, AgentKey: "reporter"}})
-	if got := scheduler.mustState(schedKeyLastToolCall); got != strconv.FormatInt(id, 10) {
+	if got, err := scheduler.lastID(schedKeyLastToolCall); err != nil || got != id {
 		t.Fatal("failed finding must still advance watermark", got)
 	}
 }

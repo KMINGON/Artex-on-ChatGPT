@@ -23,7 +23,12 @@ func (c Config) ConnectionIdentity() string {
 	if mode == "chatgpt_plan" {
 		credential = c.ChatGPTAccountID
 	}
-	raw, _ := json.Marshal([]string{mode, credential, c.Model})
+	identity := []string{mode, credential, c.Model}
+	// Keep pre-Daybreak bindings unchanged unless an explicit program is selected.
+	if c.AccessProgramCyber != "" {
+		identity = append(identity, c.AccessProgramCyber)
+	}
+	raw, _ := json.Marshal(identity)
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:])
 }

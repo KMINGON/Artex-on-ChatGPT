@@ -8,17 +8,22 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api } from "@/lib/api";
-import type { ChatGPTAccount, ChatGPTStatus } from "@/lib/types";
+import { chatGPTAccountLabel } from "@/lib/chatgpt";
+import type { ChatGPTAccount, ChatGPTStatus, LLMProfile } from "@/lib/types";
 
 const MAX_LOGIN_WAIT_MS = 10 * 60 * 1000;
 
 export function ChatGPTAccountCard({
   onAccounts,
   onChanged,
+  profiles = [],
 }: {
   onAccounts: (accounts: ChatGPTAccount[]) => void;
   onChanged: () => Promise<void>;
+  profiles?: LLMProfile[];
 }) {
   const [status, setStatus] = React.useState<ChatGPTStatus>({ accounts: [], pending: false });
   const [loading, setLoading] = React.useState(true);
@@ -26,6 +31,7 @@ export function ChatGPTAccountCard({
   const [error, setError] = React.useState("");
   const [loginUrl, setLoginUrl] = React.useState("");
   const [deadline, setDeadline] = React.useState(0);
+  const [probeProfiles, setProbeProfiles] = React.useState<Record<string, string>>({});
 
   const acceptStatus = React.useCallback(
     (next: ChatGPTStatus) => {
@@ -156,6 +162,21 @@ export function ChatGPTAccountCard({
     }
   }
 
+  async function recheck(profileId: string) {
+    if (busy || !profileId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.chatgptRecheck(profileId);
+      await refresh();
+      if (!result.ok) setError(result.error ?? "사용 한도를 재확인할 수 없습니다.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const waiting = deadline > 0;
   return (
     <Card>
@@ -203,21 +224,85 @@ export function ChatGPTAccountCard({
         {!loading && status.accounts.length === 0 && (
           <p className="text-muted-foreground text-sm">연결된 계정이 없습니다.</p>
         )}
-        {status.accounts.map((account) => (
-          <div key={account.id} className="flex flex-wrap items-center gap-2 rounded-lg border p-3">
-            <span className="min-w-0 flex-1 break-all text-sm">{account.email || account.id}</span>
-            <Badge variant="outline">
-              {!account.connected && "다시 연결 필요"}
-              {account.connected && (account.plan_enabled ? "연결됨" : "요금제 사용 불가")}
-            </Badge>
-            <Button size="sm" variant="outline" onClick={() => void login(account.id)} disabled={busy || waiting}>
-              다시 연결
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => void logout(account.id)} disabled={busy || waiting}>
-              연결 해제
-            </Button>
-          </div>
-        ))}
+        {status.accounts.map((account) => {
+          const candidates = profiles.filter(
+            (profile) =>
+              profile.auth_mode === "chatgpt_plan" &&
+              profile.chatgpt_account_id === account.id &&
+              !profile.configuration_error,
+          );
+          const profileId = probeProfiles[account.id] ?? candidates[0]?.id ?? "";
+          const label = chatGPTAccountLabel(account);
+          return (
+            <fieldset
+              key={account.id}
+              aria-label={label}
+              className="flex flex-wrap items-center gap-2 rounded-lg border p-3"
+            >
+              <span className="min-w-0 flex-1 break-all text-sm">{label}</span>
+              <Badge variant="outline">
+                {!account.connected && "다시 연결 필요"}
+                {account.connected && account.plan_blocked && "한도 재확인 필요"}
+                {account.connected && !account.plan_blocked && (account.plan_enabled ? "연결됨" : "요금제 사용 불가")}
+              </Badge>
+              <Button size="sm" variant="outline" onClick={() => void login(account.id)} disabled={busy || waiting}>
+                다시 연결
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => void logout(account.id)} disabled={busy || waiting}>
+                연결 해제
+              </Button>
+              {account.plan_blocked && (
+                <div className="grid w-full gap-2 border-t pt-3">
+                  <p className="text-sm">
+                    이 등록의 새 모델 요청이 사용 한도로 중지되었습니다. 로그인만으로 한도가 초기화되지는 않습니다.{" "}
+                    <a className="underline" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">
+                      ChatGPT 사용량 확인
+                    </a>
+                  </p>
+                  {account.plan_blocked_at && (
+                    <p className="text-muted-foreground text-xs">확인 시점: {account.plan_blocked_at}</p>
+                  )}
+                  <Label htmlFor={`recheck-${account.id}`}>재확인에 사용할 저장 프로필</Label>
+                  <Select
+                    value={profileId || "_none"}
+                    onValueChange={(value) => setProbeProfiles((previous) => ({ ...previous, [account.id]: value }))}
+                  >
+                    <SelectTrigger id={`recheck-${account.id}`}>
+                      <SelectValue placeholder="프로필을 먼저 저장해 주세요" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {candidates.length === 0 && <SelectItem value="_none">사용 가능한 저장 프로필 없음</SelectItem>}
+                      {candidates.map((profile) => (
+                        <SelectItem key={profile.id} value={profile.id}>
+                          {profile.name} · {profile.model}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-muted-foreground text-xs">
+                    선택한 모델에 실제 요청 한 번을 보내며 구독 사용량이 발생할 수 있습니다. 성공하면 이 등록의 새
+                    요청을 다시 허용합니다.
+                  </p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void recheck(profileId)}
+                    disabled={
+                      busy ||
+                      waiting ||
+                      account.rechecking ||
+                      !account.connected ||
+                      !account.plan_enabled ||
+                      !candidates.some((profile) => profile.id === profileId)
+                    }
+                  >
+                    한도 재확인
+                  </Button>
+                </div>
+              )}
+            </fieldset>
+          );
+        })}
       </CardContent>
     </Card>
   );

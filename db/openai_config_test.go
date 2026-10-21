@@ -128,3 +128,64 @@ func TestRetryPolicyEditPreservesRetiredSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestProfileAccessProgramRoundTrip(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	id, err := d.SaveProfile(&LLMProfile{Name: "access-program-roundtrip", Model: "existing-model", APIKey: "fixture-key", AuthMode: "api_key", AccessProgramCyber: "daybreak_blue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id) })
+	p, err := d.ProfileByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.AccessProgramCyber != "daybreak_blue" {
+		t.Fatal("keyed profile lost access program")
+	}
+	listed, err := d.ListProfiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range listed {
+		if entry.ID == id {
+			found = true
+			if entry.AccessProgramCyber != "daybreak_blue" || entry.APIKey != "" {
+				t.Fatal("public profile lost program or exposed key")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("profile missing from list")
+	}
+	p.AccessProgramCyber = "standard"
+	p.APIKey = ""
+	if _, err = d.SaveProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	p, err = d.ProfileByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.AccessProgramCyber != "standard" || p.APIKey != "fixture-key" || p.ID != id || p.Model != "existing-model" {
+		t.Fatal("editing program changed connection identity fields or discarded key")
+	}
+	p.AccessProgramCyber = ""
+	if _, err = d.SaveProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	p, err = d.ProfileByID(id)
+	if err != nil || p.AccessProgramCyber != "" {
+		t.Fatal("default did not omit explicit program")
+	}
+	for _, entry := range []LLMProfile{{AuthMode: "chatgpt_plan", ChatGPTAccountID: "saved", AccessProgramCyber: "daybreak_blue"}, {AuthMode: "api_key", AccessProgramCyber: "invented"}} {
+		if _, err = d.SaveProfile(&entry); err == nil {
+			t.Fatal("unsupported program persisted")
+		}
+	}
+}

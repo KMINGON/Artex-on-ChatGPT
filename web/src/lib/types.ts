@@ -1033,6 +1033,10 @@ export interface ChatGPTAccount {
   email: string;
   connected: boolean;
   plan_enabled: boolean;
+  plan_blocked?: boolean;
+  plan_block_reason?: string;
+  plan_blocked_at?: string;
+  rechecking?: boolean;
   expires_at?: string;
 }
 
@@ -1042,10 +1046,20 @@ export interface ChatGPTStatus {
   error?: string;
 }
 
+export interface ModelCapabilities {
+  known: boolean;
+  reasoning_efforts?: string[];
+  access_programs_cyber?: string[];
+  daybreak_available: boolean;
+  source_url?: string;
+  checked_at?: string;
+}
+
 export interface ChatGPTModel {
   id: string;
   name: string;
   context_window?: number;
+  capabilities?: ModelCapabilities;
 }
 
 export interface LLMProfile {
@@ -1058,10 +1072,13 @@ export interface LLMProfile {
   auth_mode?: LLMAuthMode;
   chatgpt_account_id?: string;
   connected?: boolean;
+  plan_blocked?: boolean;
   rate_per_second: number;
   rate_per_minute: number;
   context_window_k?: number;
   reasoning_effort?: string;
+  access_program_cyber?: string;
+  capabilities?: ModelCapabilities;
   is_default: boolean;
   priority?: number;
   pool_exclude?: boolean;

@@ -1,14 +1,15 @@
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
+import { chatGPTAccountLabel } from "@/lib/chatgpt";
 import type { ChatGPTAccount } from "@/lib/types";
 
 import { ChatGPTAccountCard } from "./chatgpt-account-card";
 
 vi.mock("@/lib/api", () => ({
-  api: { chatgptStatus: vi.fn(), chatgptLogin: vi.fn(), chatgptLogout: vi.fn() },
+  api: { chatgptStatus: vi.fn(), chatgptLogin: vi.fn(), chatgptLogout: vi.fn(), chatgptRecheck: vi.fn() },
 }));
 vi.mock("sonner", () => ({ toast: { warning: vi.fn() } }));
 
@@ -60,7 +61,7 @@ describe("ChatGPT account connection", () => {
     await act(async () => vi.advanceTimersByTimeAsync(2000));
     expect(onAccounts).toHaveBeenLastCalledWith([account]);
     expect(onChanged).toHaveBeenCalledOnce();
-    expect(screen.getByText(account.email)).toBeInTheDocument();
+    expect(screen.getByText(chatGPTAccountLabel(account))).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "로그인 화면 열기" })).not.toBeInTheDocument();
 
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
@@ -106,6 +107,54 @@ describe("ChatGPT account connection", () => {
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "연결 해제" })));
     expect(api.chatgptLogout).toHaveBeenCalledWith(account.id);
     expect(onChanged).toHaveBeenCalledOnce();
-    expect(screen.queryByText(account.email)).not.toBeInTheDocument();
+    expect(screen.queryByText(chatGPTAccountLabel(account))).not.toBeInTheDocument();
+  });
+  it("distinguishes equal emails and disconnects only the selected registration", async () => {
+    const other = { ...account, id: "second-registration" };
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [account, other], pending: false });
+    vi.mocked(api.chatgptLogout).mockResolvedValue({ ok: true });
+    await showCard();
+    expect(screen.getByRole("group", { name: chatGPTAccountLabel(account) })).toBeInTheDocument();
+    const second = within(screen.getByRole("group", { name: chatGPTAccountLabel(other) }));
+    await act(async () => fireEvent.click(second.getByRole("button", { name: "연결 해제" })));
+    expect(api.chatgptLogout).toHaveBeenCalledExactlyOnceWith(other.id);
+  });
+
+  it("requires an explicit single probe for a blocked account and shows its model and cost", async () => {
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [{ ...account, plan_blocked: true }], pending: false });
+    vi.mocked(api.chatgptRecheck).mockResolvedValue({ ok: true });
+    await act(async () =>
+      render(
+        <ChatGPTAccountCard
+          onAccounts={vi.fn()}
+          onChanged={vi.fn().mockResolvedValue(undefined)}
+          profiles={[
+            {
+              id: "31",
+              name: "재확인 프로필",
+              model: "chosen-account-model",
+              auth_mode: "chatgpt_plan",
+              chatgpt_account_id: account.id,
+              rate_per_second: 0,
+              rate_per_minute: 0,
+              is_default: false,
+            },
+          ]}
+        />,
+      ),
+    );
+    expect(api.chatgptRecheck).not.toHaveBeenCalled();
+    expect(screen.getByText(/실제 요청 한 번/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ChatGPT 사용량 확인" })).toHaveAttribute(
+      "href",
+      "https://chatgpt.com/settings/usage",
+    );
+    expect(screen.getByRole("combobox", { name: "재확인에 사용할 저장 프로필" })).toHaveTextContent(
+      "chosen-account-model",
+    );
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [account], pending: false });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "한도 재확인" })));
+    expect(api.chatgptRecheck).toHaveBeenCalledExactlyOnceWith("31");
+    expect(screen.queryByRole("button", { name: "한도 재확인" })).not.toBeInTheDocument();
   });
 });

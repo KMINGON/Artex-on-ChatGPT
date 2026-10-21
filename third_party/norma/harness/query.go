@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"strconv"
@@ -313,6 +314,11 @@ func (l *loop) recordNewBoundary() {
 		return
 	}
 	if i := llm.LastBoundaryIndex(l.messages); i >= 0 {
+		if r, ok := l.in.Recorder.(interface{ RecordCheckpoint([]llm.Message) }); ok {
+			r.RecordCheckpoint(l.messages[i:])
+			l.boundaryCount = c
+			return
+		}
 		if meta, ok := llm.ParseBoundaryMeta(l.messages[i]); ok {
 			l.in.Recorder.RecordBoundary(meta)
 		}
@@ -343,6 +349,9 @@ func countBoundaries(msgs []llm.Message) int {
 }
 
 func (l *loop) finish(reason TerminalReason, err error, text string) {
+	if storageErr := l.storageError(); storageErr != nil {
+		reason, err = ReasonStorageError, storageErr
+	}
 	l.yield(Event{Kind: KindResult, Terminal: &Terminal{
 		Reason:   reason,
 		Err:      err,
@@ -388,6 +397,10 @@ func (l *loop) run() {
 	}
 	iterations := 0
 	for {
+		if err := l.storageError(); err != nil {
+			l.finish(ReasonStorageError, err, "")
+			return
+		}
 		if l.ctx.Err() != nil {
 			l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 			return
@@ -403,10 +416,22 @@ func (l *loop) run() {
 
 		// Non-destructive proactive compaction (MicroCompact → AutoCompact).
 		if l.in.Compactor != nil {
+			if c, ok := l.in.Compactor.(interface{ SetInputOverhead(int) }); ok {
+				schemaJSON, _ := json.Marshal(schemas)
+				c.SetInputOverhead((len(strings.Join(l.in.System, "\n")) + len(l.in.SystemReminder) + len(schemaJSON) + 2) / 3)
+			}
+			before := countBoundaries(l.messages)
 			l.messages = l.in.Compactor.Pre(l.ctx, l.messages, l.lastInputTokens)
+			if countBoundaries(l.messages) > before {
+				l.lastInputTokens = 0
+			}
 			l.recordNewBoundary()
 		}
 
+		if err := l.storageError(); err != nil {
+			l.finish(ReasonStorageError, err, "")
+			return
+		}
 		usageBefore := l.usage
 		asst, exec, stopReason, streamErr, consumerStopped, aborted := l.streamAndExecute(schemas)
 		if consumerStopped {
@@ -422,6 +447,7 @@ func (l *loop) run() {
 				l.hasAttemptedReactiveCompact = true
 				if msgs, ok := l.in.Compactor.Reactive(l.ctx, l.messages); ok {
 					l.messages = msgs
+					l.lastInputTokens = 0
 					l.recordNewBoundary()
 					l.lastContinue = ContinueReactiveCompactRetry
 					continue
@@ -446,6 +472,10 @@ func (l *loop) run() {
 				return
 			}
 		}
+		if err := l.storageError(); err != nil {
+			l.finish(ReasonStorageError, err, asst.Text())
+			return
+		}
 		toolUses := asst.ToolUses()
 
 		// max_tokens truncation with no tool calls → escalate / resume-recovery.
@@ -455,7 +485,8 @@ func (l *loop) run() {
 			if l.handleMaxOutputTokens() {
 				continue
 			}
-			// recovery exhausted: surface the truncated turn as completion.
+			l.finish(ReasonOutputLimit, nil, asst.Text())
+			return
 		} else {
 			l.maxOutputTokensOverride = 0
 		}
@@ -519,6 +550,10 @@ func (l *loop) run() {
 		// Surface any background-task completions that landed during this turn so
 		// the next model round sees them alongside the tool results.
 		l.injectTaskNotifications()
+		if stopReason == "max_tokens" {
+			l.finish(ReasonOutputLimit, nil, asst.Text())
+			return
+		}
 		// Parent-ctx cancellation (pause / planner kill / shutdown) → real abort, no wrap-up.
 		if l.ctx.Err() != nil {
 			l.finish(ReasonAbortedTools, l.ctx.Err(), "")
@@ -778,6 +813,9 @@ func (l *loop) requestMessages() []llm.Message {
 
 func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	l.maybeInjectTodoReminder()
+	if e := l.storageError(); e != nil {
+		return asst, nil, "", e, false, false
+	}
 	msgs := l.requestMessages()
 	if l.in.SystemReminder != "" {
 		msgs = append([]llm.Message{llm.UserText(l.in.SystemReminder)}, msgs...)
@@ -794,9 +832,11 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		return l.completeAndExecute(req)
 	}
 	exec = newStreamExec(l)
+	defer exec.stop()
 	acc := llm.NewAccumulator()
 
 	var building bool
+	var rejectCurrent bool
 	var curID, curName string
 	var curInput strings.Builder
 	finalizeTool := func() bool { // false = consumer stopped
@@ -806,14 +846,20 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		building = false
 		raw := strings.TrimSpace(curInput.String())
 		curInput.Reset()
-		if raw == "" || !jsonValid(raw) {
+		invalid := raw == "" || !json.Valid([]byte(raw))
+		if invalid {
 			raw = "{}"
 		}
 		block := llm.ContentBlock{Type: llm.BlockToolUse, ID: curID, Name: curName, Input: []byte(raw)}
 		if !l.emit(Event{Kind: KindToolUse, ToolUse: &block}) {
 			return false
 		}
-		exec.add(block)
+		if invalid || rejectCurrent {
+			exec.reject(block, "tool input was incomplete; no execution occurred")
+		} else {
+			exec.add(block)
+		}
+		rejectCurrent = false
 		return exec.drain()
 	}
 
@@ -828,6 +874,9 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			}
 			acc.Add(ev)
 			continue
+		}
+		if ev.StopReason == "max_tokens" {
+			rejectCurrent = true
 		}
 		if !finalizeTool() {
 			return asst, exec, "", nil, true, false
@@ -872,11 +921,12 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 // emission, and recorder all see identical numbers.
 func (l *loop) completeAndExecute(req llm.CompletionRequest) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	exec = newStreamExec(l)
+	defer exec.stop()
 	msg, sr, usage, cerr := l.deps.CallModelSync(l.ctx, req)
+	l.usage.Add(usage)
 	if cerr != nil {
 		return asst, exec, "", cerr, false, false
 	}
-	l.usage.Add(usage)
 	asst = msg
 	stopReason = sr
 	for _, b := range msg.Content {
@@ -894,7 +944,11 @@ func (l *loop) completeAndExecute(req llm.CompletionRequest) (asst llm.Message, 
 			if !l.emit(Event{Kind: KindToolUse, ToolUse: &block}) {
 				return asst, exec, stopReason, nil, true, false
 			}
-			exec.add(block)
+			if sr == "max_tokens" {
+				exec.reject(block, "output limit interrupted the tool call; no execution occurred")
+			} else {
+				exec.add(block)
+			}
 			if !exec.drain() { // surface any results ready so far (FIFO)
 				return asst, exec, stopReason, nil, true, false
 			}

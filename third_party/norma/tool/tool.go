@@ -8,6 +8,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
@@ -42,6 +43,8 @@ type ToolContext struct {
 	// unchanged. Used e.g. to route child-command HTTP through a proxy + trust a
 	// CA, without affecting the agent's own process.
 	Env []string
+	// Only output captured by this invocation may bypass the final cap.
+	captured sync.Map // SHA-256 of bounded output -> struct{}
 }
 
 func (tc *ToolContext) progress(msg string) {

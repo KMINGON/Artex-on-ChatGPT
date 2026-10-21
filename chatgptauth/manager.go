@@ -25,11 +25,15 @@ var (
 const planScope = "chatgpt.tokens.use.direct"
 
 type AccountState struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	Connected   bool   `json:"connected"`
-	PlanEnabled bool   `json:"plan_enabled"`
-	ExpiresAt   string `json:"expires_at"`
+	ID              string `json:"id"`
+	Email           string `json:"email"`
+	Connected       bool   `json:"connected"`
+	PlanEnabled     bool   `json:"plan_enabled"`
+	ExpiresAt       string `json:"expires_at"`
+	PlanBlocked     bool   `json:"plan_blocked"`
+	PlanBlockReason string `json:"plan_block_reason,omitempty"`
+	PlanBlockedAt   string `json:"plan_blocked_at,omitempty"`
+	Rechecking      bool   `json:"rechecking"`
 }
 
 type State struct {
@@ -44,10 +48,12 @@ type LoginStart struct {
 }
 
 type account struct {
-	op            sync.Mutex // Serializes refresh and revocation for this renewable session.
-	ctx           context.Context
-	cancel        context.CancelFunc
-	disconnecting bool
+	op              sync.Mutex // Serializes refresh and revocation for this renewable session.
+	ctx             context.Context
+	cancel          context.CancelFunc
+	disconnecting   bool
+	rechecking      bool
+	blockGeneration uint64
 }
 
 // Options are deliberately private: production callers cannot redirect credentials.
@@ -131,7 +137,12 @@ func (m *Manager) Snapshot() State {
 		if !r.ExpiresAt.IsZero() {
 			expiry = r.ExpiresAt.UTC().Format(time.RFC3339)
 		}
-		s.Accounts = append(s.Accounts, AccountState{ID: id, Email: r.Email, Connected: connected, PlanEnabled: connected && hasScope(r.Scopes, planScope), ExpiresAt: expiry})
+		state := AccountState{ID: id, Email: r.Email, Connected: connected, PlanEnabled: connected && hasScope(r.Scopes, planScope), ExpiresAt: expiry,
+			PlanBlocked: r.PlanBlockReason != "", PlanBlockReason: r.PlanBlockReason, Rechecking: m.accounts[id].rechecking}
+		if !r.PlanBlockedAt.IsZero() {
+			state.PlanBlockedAt = r.PlanBlockedAt.UTC().Format(time.RFC3339)
+		}
+		s.Accounts = append(s.Accounts, state)
 	}
 	sort.Slice(s.Accounts, func(i, j int) bool { return s.Accounts[i].ID < s.Accounts[j].ID })
 	return s
@@ -146,6 +157,15 @@ func (m *Manager) connectedLocked(id string, r record) bool {
 // Authorize returns a request context canceled when this account is disconnected.
 // Its cancel function must be called after the request (including its stream) ends.
 func (m *Manager) Authorize(ctx context.Context, id string) (context.Context, context.CancelFunc, string, error) {
+	return m.authorize(ctx, id, true)
+}
+
+// AuthorizeCatalog does not consume inference usage or bypass the inference gate.
+func (m *Manager) AuthorizeCatalog(ctx context.Context, id string) (context.Context, context.CancelFunc, string, error) {
+	return m.authorize(ctx, id, false)
+}
+
+func (m *Manager) authorize(ctx context.Context, id string, inference bool) (context.Context, context.CancelFunc, string, error) {
 	m.mu.Lock()
 	r, ok := m.store.Accounts[id]
 	if m.closed {
@@ -161,6 +181,15 @@ func (m *Manager) Authorize(ctx context.Context, id string) (context.Context, co
 		return nil, nil, "", ErrPlanDisabled
 	}
 	a := m.accounts[id]
+	recheck := false
+	if inference {
+		var err error
+		recheck, err = m.admitPlanLocked(ctx, id, a)
+		if err != nil {
+			m.mu.Unlock()
+			return nil, nil, "", err
+		}
+	}
 	m.wg.Add(1)
 	defer m.wg.Done()
 	session := a.ctx
@@ -182,6 +211,13 @@ func (m *Manager) Authorize(ctx context.Context, id string) (context.Context, co
 	if err = reqCtx.Err(); err != nil {
 		cleanup()
 		return nil, nil, "", err
+	}
+	m.mu.Lock()
+	blocked := inference && !recheck && m.store.Accounts[id].PlanBlockReason != ""
+	m.mu.Unlock()
+	if blocked {
+		cleanup()
+		return nil, nil, "", ErrPlanBlocked
 	}
 	return reqCtx, cleanup, token, nil
 }
@@ -250,6 +286,8 @@ func (m *Manager) authorizeLocked(ctx context.Context, id string, a *account, se
 	}
 	// Save the latest rotating refresh token even if disconnect began meanwhile;
 	// Disconnect waits on a.op and revokes this latest token before clearing it.
+	latest := m.store.Accounts[id]
+	next.PlanBlockReason, next.PlanBlockedAt = latest.PlanBlockReason, latest.PlanBlockedAt
 	m.store.Accounts[id] = next
 	if err := m.saveLocked(); err != nil {
 		m.clearLocked(id)

@@ -91,8 +91,8 @@ func TestReviewDecisionPreservesValidActionsAndAPIHints(t *testing.T) {
 			if err != nil || got.Action != action || got.ModelFallback || got.Message != intercept.ParseVerdict(text).Reason {
 				t.Fatalf("valid verdict changed: %+v %v", got, err)
 			}
-			if p.request.Temperature == nil || *p.request.Temperature != 0 || p.request.MaxTokens != 1024 || p.request.Thinking != "disabled" {
-				t.Fatal("existing API mode hints changed")
+			if p.request.Temperature != nil || p.request.MaxTokens != 1024 || p.request.Thinking != "disabled" {
+				t.Fatal("Judge must omit temperature while retaining the output limit and helper mode")
 			}
 			if !strings.HasPrefix(p.request.System[0], "CUSTOM POLICY") || !strings.Contains(p.request.System[0], intercept.JudgeOutputContract) || !strings.Contains(p.request.System[0], judgeResponseContract) {
 				t.Fatal("custom policy or explicit output contract lost")

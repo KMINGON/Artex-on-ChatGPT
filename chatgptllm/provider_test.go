@@ -275,7 +275,11 @@ func TestTerminalFailuresAreAtomicAndNeverExecuteTools(t *testing.T) {
 				t.Fatalf("missing protected error: %v", terminalErr)
 			}
 			msg, _, usage, err := p.Complete(t.Context(), req)
-			if err == nil || len(msg.Content) != 0 || usage != (llm.Usage{}) || calls.Load() != 2 {
+			wantUsage := llm.Usage{}
+			if terminal == "malformed-tool" {
+				wantUsage = llm.Usage{InputTokens: 20, OutputTokens: 7, CacheReadTokens: 5}
+			}
+			if err == nil || len(msg.Content) != 0 || usage != wantUsage || calls.Load() != 2 {
 				t.Fatalf("non-atomic result: %+v %+v %v calls=%d", msg, usage, err, calls.Load())
 			}
 		})

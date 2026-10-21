@@ -22,6 +22,8 @@ type record struct {
 	Scopes           []string  `json:"scopes,omitempty"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
+	PlanBlockReason  string    `json:"plan_block_reason,omitempty"`
+	PlanBlockedAt    time.Time `json:"plan_blocked_at,omitempty"`
 }
 
 type diskState struct {

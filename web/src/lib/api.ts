@@ -929,6 +929,10 @@ export const api = {
   chatgptStatus: () => get<ChatGPTStatus>("/chatgpt/status"),
   chatgptLogin: (account_id?: string) => post<{ url: string; expires_at: string }>("/chatgpt/login", { account_id }),
   chatgptLogout: (account_id: string) => post<{ ok: boolean; warning?: string }>("/chatgpt/logout", { account_id }),
+  chatgptRecheck: (profile_id: string) =>
+    post<{ ok: boolean; error?: string; model?: string; reply?: string }>("/chatgpt/recheck", {
+      profile_id: Number(profile_id),
+    }),
   chatgptModels: (account_id: string) =>
     get<{ models: ChatGPTModel[] }>(`/chatgpt/models?account_id=${encodeURIComponent(account_id)}`).then((r) =>
       arr(r.models),
@@ -943,6 +947,7 @@ export const api = {
       rate_per_second?: number;
       rate_per_minute?: number;
       context_window_k?: number;
+      access_program_cyber?: string;
       reasoning_effort?: string;
     }>("/llm"),
   setLLM: (
@@ -958,11 +963,22 @@ export const api = {
     model: string;
     api_key?: string;
     proxy?: string;
+    access_program_cyber?: string;
     reasoning_effort?: string;
     profile_id?: number;
     auth_mode?: LLMAuthMode;
     chatgpt_account_id?: string;
-  }) => post<{ ok: boolean; error?: string; latency_ms?: number; model?: string; reply?: string }>("/llm/test", params),
+  }) =>
+    post<{
+      ok: boolean;
+      error?: string;
+      latency_ms?: number;
+      model?: string;
+      reply?: string;
+      actual_model?: string;
+      actual_access_program_cyber?: string;
+      access_programs_present?: boolean;
+    }>("/llm/test", params),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
     id?: number; // omit/0 = create; set = update that profile
@@ -975,6 +991,7 @@ export const api = {
     rate_per_second?: number;
     rate_per_minute?: number;
     context_window_k?: number;
+    access_program_cyber?: string;
     reasoning_effort?: string; // ""(不发送)|"low"|"medium"|"high"|"xhigh"|"max"
     priority?: number; // 轮询顺位，越大越先用
     pool_exclude?: boolean; // true=不作为故障转移目标
@@ -991,7 +1008,7 @@ export const api = {
   llmRetryPolicy: () => get<LLMRetryPolicy>("/llm/retry-policy"),
   saveLLMRetryPolicy: (p: LLMRetryPolicy) => post<LLMRetryPolicy>("/llm/retry-policy", p),
   fetchLLMModels: (api_key: string, proxy = "", profile_id?: number) =>
-    post<{ ok: boolean; error?: string; models?: string[] }>("/llm/models", {
+    post<{ ok: boolean; error?: string; models?: string[]; model_details?: ChatGPTModel[] }>("/llm/models", {
       api_key,
       proxy,
       profile_id,

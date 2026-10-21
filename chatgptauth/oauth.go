@@ -334,9 +334,11 @@ func (m *Manager) completeLogin(p *pendingLogin, q url.Values) error {
 	if m.closed || m.pending != p || p.ctx.Err() != nil || a.disconnecting {
 		return errLogin
 	}
+	latest := m.store.Accounts[id]
+	next.PlanBlockReason, next.PlanBlockedAt = latest.PlanBlockReason, latest.PlanBlockedAt
 	m.store.Accounts[id] = next
 	if err := m.saveLocked(); err != nil {
-		m.store.Accounts[id] = r
+		m.store.Accounts[id] = latest
 		return errStorage
 	}
 	a.cancel()

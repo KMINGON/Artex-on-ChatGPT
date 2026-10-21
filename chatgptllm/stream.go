@@ -34,10 +34,12 @@ type outputItem struct {
 }
 
 type response struct {
-	ID     string            `json:"id"`
-	Status string            `json:"status"`
-	Output []json.RawMessage `json:"output"`
-	Usage  struct {
+	ID             string            `json:"id"`
+	Status         string            `json:"status"`
+	Output         []json.RawMessage `json:"output"`
+	Model          string            `json:"model"`
+	AccessPrograms json.RawMessage   `json:"access_programs"`
+	Usage          *struct {
 		Input   int `json:"input_tokens"`
 		Output  int `json:"output_tokens"`
 		Details struct {
@@ -77,6 +79,10 @@ func consume(resp *http.Response, names map[string]string, yield func(llm.Stream
 }
 
 func consumeWithOptions(resp *http.Response, names map[string]string, allowPartial bool, yield func(llm.StreamEvent, error) bool) (resultErr error) {
+	return consumeObserved(resp, names, allowPartial, nil, nil, yield)
+}
+
+func consumeObserved(resp *http.Response, names map[string]string, allowPartial bool, observe func(ResponseMetadata), onError func(*Error), yield func(llm.StreamEvent, error) bool) (resultErr error) {
 	state := streamState{
 		items: map[string]outputItem{}, done: map[string]json.RawMessage{},
 		indexes: map[string]int{}, indexIDs: map[int]string{},
@@ -126,6 +132,35 @@ func consumeWithOptions(resp *http.Response, names map[string]string, allowParti
 		state.size += len(raw)
 		if state.size > 64<<20 {
 			return false, failure("response_too_large", "응답이 처리 한도를 초과했습니다", nil)
+		}
+		// A quota denial must latch even if the consumer cancels while receiving
+		// the terminal usage event or cancellation races with the parsed failure.
+		if onError != nil && (event.Type == "response.failed" || event.Type == "error") {
+			body := event.Response
+			if len(body) == 0 {
+				body = json.RawMessage(raw)
+			}
+			e := responseFailure(body)
+			e.StatusCode, e.RequestID = resp.StatusCode, safeToken(resp.Header.Get("X-Request-Id"))
+			e.ResponseID, e.EventType, e.Stage = safeToken(responseID), safeToken(event.Type), "stream"
+			onError(e)
+		}
+		// Meter terminal usage independently of output acceptance. Rejected output
+		// must not discard billed tokens or accidentally commit a tool.
+		switch event.Type {
+		case "response.completed", "response.incomplete", "response.failed", "error":
+			var terminal response
+			if json.Unmarshal(event.Response, &terminal) == nil {
+				if observe != nil {
+					observe(terminal.metadata())
+				}
+				if terminal.Usage != nil && !yield(llm.StreamEvent{Type: llm.SEMessageDelta, Usage: terminal.usage()}, nil) {
+					stopped = true
+					return true, nil
+				}
+			} else if observe != nil {
+				observe(ResponseMetadata{})
+			}
 		}
 		switch event.Type {
 		case "response.output_item.added", "response.output_item.done":
@@ -464,7 +499,6 @@ func (s *streamState) finish(final response, names map[string]string) ([]llm.Str
 		// must not be promoted to completed replay data.
 		stop = "max_tokens"
 	}
-	usage := llm.Usage{InputTokens: final.Usage.Input, OutputTokens: final.Usage.Output, CacheReadTokens: final.Usage.Details.Cached}
-	events = append(events, llm.StreamEvent{Type: llm.SEMessageFinal, FinalMessage: &message}, llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: stop, Usage: usage}, llm.StreamEvent{Type: llm.SEMessageStop})
+	events = append(events, llm.StreamEvent{Type: llm.SEMessageFinal, FinalMessage: &message}, llm.StreamEvent{Type: llm.SEMessageDelta, StopReason: stop}, llm.StreamEvent{Type: llm.SEMessageStop})
 	return events, nil
 }

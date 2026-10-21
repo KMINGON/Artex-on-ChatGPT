@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-artex}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${ARTEX_PG_PORT:-5433}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-artex} -d ${POSTGRES_DB:-artex}"]
       interval: 5s
@@ -15,9 +17,11 @@ services:
     restart: unless-stopped
 
   artex:
-    # 원본 artex-global 이미지 예제입니다. 이 포크의 OpenAI 변경은 포함되지 않습니다.
-    # 개인 PC에서 이 포크를 실행하려면 README의 소스 빌드 절차를 따르세요.
-    image: ghcr.io/jiwoochris/artex-global:${ARTEX_TAG:-latest}
+    # 앱 컨테이너는 미지원입니다. 기본 compose 실행은 DB만 시작합니다.
+    # 검증한 로컬 이미지를 명시한 경우에만 개발용 프로필로 실행할 수 있습니다.
+    profiles: [experimental-app]
+    image: ${ARTEX_IMAGE:-artex-chatgpt-local:unreleased}
+    pull_policy: never
     depends_on:
       postgres:
         condition: service_healthy

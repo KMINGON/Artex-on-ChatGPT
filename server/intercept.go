@@ -95,18 +95,16 @@ func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, inp
 	return streamCollectText(ctx, prov, prompt, string(user))
 }
 
-// API providers may honor these sampling/token hints; SIWC does not. Local
+// API requests may honor this output-token hint; SIWC does not. Local
 // output validation and a received-byte cap apply independently of those hints.
 func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	temp := 0.0
 	req := llm.CompletionRequest{
-		System:      []string{system},
-		Messages:    []llm.Message{llm.UserText(user)},
-		MaxTokens:   1024,
-		Temperature: &temp,
-		Thinking:    "disabled",
+		System:    []string{system},
+		Messages:  []llm.Message{llm.UserText(user)},
+		MaxTokens: 1024,
+		Thinking:  "disabled",
 	}
 	var sb strings.Builder
 	received := 0

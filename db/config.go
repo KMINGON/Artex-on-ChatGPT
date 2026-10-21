@@ -17,6 +17,7 @@ type LLMProfile struct {
 	APIKeySet          bool    `json:"-"`
 	AuthMode           string  `json:"auth_mode"`
 	ChatGPTAccountID   string  `json:"chatgpt_account_id,omitempty"`
+	AccessProgramCyber string  `json:"access_program_cyber,omitempty"`
 	ID                 int64   `json:"id"`
 	Name               string  `json:"name"`
 	Format             string  `json:"-"`
@@ -68,8 +69,8 @@ type RetryOverride struct {
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
 const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(COALESCE(api_key,'') <> '')`
-const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(COALESCE(api_key,'') <> '')`
+const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(TRIM(COALESCE(api_key,'')) <> ''),access_program_cyber`
+const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(TRIM(COALESCE(api_key,'')) <> ''),access_program_cyber`
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
@@ -79,7 +80,7 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
 		&p.Retry.Empty.Attempts, &p.Retry.Empty.IntervalMS,
-		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS, &p.AuthMode, &p.ChatGPTAccountID, &p.APIKeySet)
+		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS, &p.AuthMode, &p.ChatGPTAccountID, &p.APIKeySet, &p.AccessProgramCyber)
 	p.ConfigurationError = p.UnsupportedReason()
 	return err
 }
@@ -87,6 +88,15 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 // UnsupportedReason keeps legacy rows visible without sending their credentials
 // to a different provider. Explicitly saving a replacement preserves the row ID.
 func (p *LLMProfile) UnsupportedReason() string {
+	if p.AuthMode == "chatgpt_plan" && p.AccessProgramCyber != "" {
+		return "ChatGPT 구독의 Daybreak 요청 설정은 공식 지원이 확인되지 않았습니다. 기본값을 사용해 주세요"
+	}
+	switch p.AccessProgramCyber {
+	case "", "standard", "daybreak_blue", "daybreak_red":
+	default:
+		return "지원하지 않는 OpenAI 액세스 프로그램입니다"
+	}
+
 	if p.AuthMode != "" && p.AuthMode != "api_key" && p.AuthMode != "chatgpt_plan" {
 		return "지원하지 않는 인증 방식입니다. OpenAI API 또는 ChatGPT 계정을 다시 선택해 주세요"
 	}
@@ -188,9 +198,9 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	r := p.Retry.Clamped()
 	if p.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,max_tokens,retry_connect_attempts,retry_connect_interval_ms,auth_mode,chatgpt_account_id)
-VALUES ($1,'openai-responses',NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
-			p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID).Scan(&id)
+		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,max_tokens,retry_connect_attempts,retry_connect_interval_ms,auth_mode,chatgpt_account_id,access_program_cyber)
+VALUES ($1,'openai-responses',NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+			p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.AccessProgramCyber).Scan(&id)
 		return id, err
 	}
 	// Retired option columns are intentionally untouched. The user explicitly
@@ -199,8 +209,8 @@ VALUES ($1,'openai-responses',NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7
  api_key=CASE WHEN $4='' AND $15='api_key' THEN api_key ELSE NULLIF($4,'') END,
  api_key_hint=CASE WHEN $4='' AND $15='api_key' THEN api_key_hint ELSE NULLIF($5,'') END,
  rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,max_tokens=$12,
- retry_connect_attempts=$13,retry_connect_interval_ms=$14,auth_mode=$15,chatgpt_account_id=$16 WHERE id=$17`,
-		p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.ID)
+ retry_connect_attempts=$13,retry_connect_interval_ms=$14,auth_mode=$15,chatgpt_account_id=$16,access_program_cyber=$18 WHERE id=$17`,
+		p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.ID, p.AccessProgramCyber)
 	return p.ID, err
 }
 

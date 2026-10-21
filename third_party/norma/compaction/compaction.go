@@ -77,7 +77,11 @@ type Compactor struct {
 	summarize Summarizer
 	failures  int
 	tripped   bool
+	overhead  int
 }
+
+// SetInputOverhead reserves system/reminder/tool-schema tokens outside messages.
+func (c *Compactor) SetInputOverhead(tokens int) { c.overhead = max(0, tokens) }
 
 // New builds a Compactor. summarize may be nil to disable AutoCompact.
 func New(cfg Config, summarize Summarizer) *Compactor {
@@ -118,16 +122,11 @@ func (c *Compactor) predictiveOver(tok int) bool {
 	return tok+c.maxTurnGrowth() > c.effectiveWindow()
 }
 
-// count returns the token count of the API view (post-boundary). When
-// lastInputTokens > 0 (the total token size the previous model response
-// reported), it is preferred over local estimation — mirroring claude-code's
-// tokenCountWithEstimation. After a working-set mutation, callers pass 0 to force
-// a fresh per-block estimate.
+// count uses both the last measured size and the current visible context. New
+// tool results and fixed prompt/schema overhead must not disappear behind a
+// stale positive usage value. After compaction callers invalidate that value.
 func (c *Compactor) count(msgs []llm.Message, lastInputTokens int) int {
-	if lastInputTokens > 0 {
-		return lastInputTokens
-	}
-	return EstimateTokens(llm.MessagesForAPI(msgs)) * 4 / 3
+	return max(lastInputTokens, EstimateTokens(llm.MessagesForAPI(msgs))*4/3+c.overhead)
 }
 
 // EstimateTokens approximates the token footprint of messages (~4 chars/token),
@@ -227,6 +226,24 @@ func IsOverflow(err error) bool {
 func (c *Compactor) workingBounds(msgs []llm.Message) (start, tailStart int) {
 	start = llm.LastBoundaryIndex(msgs) + 1
 	tailStart = max(lastNNonMarkerStart(msgs, c.cfg.KeepRecent), start)
+	// A result in the kept tail must retain its whole assistant tool-call turn.
+	uses := make(map[string]int)
+	for i := start; i < len(msgs); i++ {
+		for _, b := range msgs[i].Content {
+			if b.Type == llm.BlockToolUse {
+				uses[b.ID] = i
+			}
+		}
+	}
+	for i := len(msgs) - 1; i >= tailStart; i-- {
+		for _, b := range msgs[i].Content {
+			if b.Type == llm.BlockToolResult {
+				if at, ok := uses[b.ToolUseID]; ok && at < tailStart {
+					tailStart = at
+				}
+			}
+		}
+	}
 	return
 }
 

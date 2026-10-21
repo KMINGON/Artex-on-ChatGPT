@@ -28,6 +28,7 @@ type Error struct {
 	Attempts      int
 	OutputEmitted bool
 	APIKeyMode    bool
+	Metadata      ResponseMetadata
 	Shape         RequestShape
 	Body          []byte `json:"-"`
 	Message       string
@@ -90,9 +91,9 @@ func (e *Error) Diagnostics() map[string]any {
 		"event_type": safeToken(e.EventType), "error_class": safeToken(e.ErrorClass),
 		"attempts": e.Attempts, "retries": max(e.Attempts-1, 0),
 		"retry_layer": "provider", "output_emitted": e.OutputEmitted,
-		// Failed responses never contribute usage events in this adapter.
-		"usage_received": false,
-		"auth_mode":      mode, "request_shape": e.Shape,
+		"usage_received":    e.Metadata.UsageReceived,
+		"response_metadata": e.Metadata,
+		"auth_mode":         mode, "request_shape": e.Shape,
 	}
 }
 
@@ -106,7 +107,7 @@ func (p *provider) annotate(err error, stage string, shape RequestShape, attempt
 		e = failure("transport_error", "OpenAI에 연결할 수 없습니다", err)
 	}
 	e.APIKeyMode, e.Attempts, e.OutputEmitted, e.Shape = p.cfg.APIKey != "", attempts, emitted, shape
-	if e.Code == "authorization_failed" || e.Code == "not_connected" {
+	if e.Code == "authorization_failed" || e.Code == "not_connected" || e.Code == "plan_usage_blocked" {
 		e.Stage = "authorization"
 	}
 	if e.Stage == "" {
@@ -206,6 +207,12 @@ func responseFailure(body []byte) *Error {
 		e.Message = "ChatGPT 사용 가능 여부를 일시적으로 확인할 수 없습니다"
 	case "context_length_exceeded":
 		e.Message = "입력이 모델 문맥 한도를 초과했습니다 (context_length_exceeded)"
+	case "invalid_access_program":
+		e.Message = "선택한 모델과 Daybreak 프로그램의 조합을 확인해 주세요"
+	case "unsupported_access_program":
+		e.Message = "이 모델에서 선택한 Daybreak 프로그램을 지원하지 않습니다"
+	case "access_program_not_enabled":
+		e.Message = "API 키의 조직 승인과 프로젝트 Daybreak 접근 설정을 확인해 주세요"
 	case "invalid_api_key":
 		e.Message = "OpenAI API 키를 확인해 주세요"
 	}

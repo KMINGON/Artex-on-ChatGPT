@@ -106,6 +106,9 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 	}
 	// Only API-key requests may carry token and sampling controls.
 	body := map[string]any{"model": cfg.Model, "input": input, "store": false, "stream": true, "instructions": strings.Join(req.System, "\n\n")}
+	if cfg.AccessProgramCyber != "" {
+		body["access_programs"] = map[string]string{"cyber": cfg.AccessProgramCyber}
+	}
 	if cfg.APIKey != "" {
 		if req.MaxTokens > 0 {
 			body["max_output_tokens"] = req.MaxTokens

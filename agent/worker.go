@@ -501,7 +501,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// restarting from scratch.
 	alreadyRecorded := false
 	if w.tx != nil {
-		_ = s.Resume(opts.SessionID)
+		if err := s.Resume(opts.SessionID); err != nil {
+			return harness.ReasonStorageError, tsx.Writes(), err
+		}
 		alreadyRecorded = requestID != "" && hasWorkerChatMessage(s.Messages(), requestID)
 		if len(s.Messages()) > 0 && message == "" {
 			seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
@@ -529,5 +531,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// still settles (no external hard-timeout backstop needed). ctx itself carries only
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
 	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
+	if closeErr := s.Close(); closeErr != nil {
+		return harness.ReasonStorageError, tsx.Writes(), closeErr
+	}
 	return reason, tsx.Writes(), err
 }

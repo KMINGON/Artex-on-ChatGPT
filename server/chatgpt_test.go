@@ -112,7 +112,7 @@ func TestChatGPTMutationRequiresLocalSameOrigin(t *testing.T) {
 
 func TestChatGPTRoutesRequireArtexLogin(t *testing.T) {
 	s := &Server{}
-	for _, path := range []string{"status", "login", "logout", "models"} {
+	for _, path := range []string{"status", "login", "logout", "models", "recheck"} {
 		called := false
 		h := s.requireAuth(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
 		w := httptest.NewRecorder()

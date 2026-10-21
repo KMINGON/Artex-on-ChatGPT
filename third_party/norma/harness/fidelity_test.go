@@ -52,8 +52,8 @@ func TestMaxOutputTokensRecoveryLimit(t *testing.T) {
 	// Always truncates → must stop after 3 recoveries (no infinite loop).
 	in := QueryInput{Messages: []llm.Message{llm.UserText("go")}, Tools: tool.NewRegistry(), PermissionMode: permission.ModeBypass, MaxTurns: 20}
 	term := drain(t, in, QueryDeps{CallModel: alwaysModel(maxTokensTurn("x"))})
-	if term.Reason != ReasonCompleted {
-		t.Fatalf("should complete after recovery limit, got %v", term.Reason)
+	if term.Reason != ReasonOutputLimit {
+		t.Fatalf("should remain incomplete after recovery limit, got %v", term.Reason)
 	}
 	resumes := 0
 	for _, msg := range term.Messages {

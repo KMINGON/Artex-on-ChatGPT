@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,11 +29,16 @@ var spillSeq atomic.Int64
 // to a head+tail truncation (the overflow is discarded). Tools that produce
 // potentially large output should return Capture(tc, output) rather than the raw
 // string.
-func Capture(tc *ToolContext, s string) string {
+func Capture(tc *ToolContext, s string) (out string) {
 	max := maxOut(tc)
 	if len(s) <= max {
 		return s
 	}
+	defer func() {
+		if tc != nil {
+			tc.captured.Store(sha256.Sum256([]byte(out)), struct{}{})
+		}
+	}()
 	if tc != nil && tc.OutputDir != "" {
 		if path, err := spillOutput(tc.OutputDir, s); err == nil {
 			ref := path
@@ -50,26 +56,13 @@ func Capture(tc *ToolContext, s string) string {
 	return truncate(s, max)
 }
 
-// alreadyCaptured reports whether s already carries a marker Capture leaves
-// behind — a spill pointer or a head+tail truncation notice. It is how a global
-// post-tool net recognises output a tool already ran through Capture itself.
-//
-// A false negative (legitimate text that happens to contain a marker) only means
-// the guard fails to re-cap already-large output; it never corrupts. The markers
-// are distinctive enough that this is vanishingly rare.
-func alreadyCaptured(s string) bool {
-	return strings.Contains(s, "<persisted-output>") || strings.Contains(s, "characters truncated]")
-}
-
-// CaptureOnce is Capture with an idempotency guard: output a tool already ran
-// through Capture (so it carries a spill pointer or truncation notice) is
-// returned unchanged. This lets a single post-tool net cap every tool's output
-// without re-truncating or re-spilling what built-in / MCP / custom tools
-// already handled themselves. Output within the limit is a no-op either way,
-// since Capture returns it unchanged.
+// CaptureOnce trusts only bounded outputs recorded on this ToolContext, never
+// markers in tool-provided text. Reusing the same context preserves spill links.
 func CaptureOnce(tc *ToolContext, s string) string {
-	if alreadyCaptured(s) {
-		return s
+	if tc != nil {
+		if _, ok := tc.captured.Load(sha256.Sum256([]byte(s))); ok {
+			return s
+		}
 	}
 	return Capture(tc, s)
 }

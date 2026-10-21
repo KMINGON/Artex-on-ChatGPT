@@ -17,7 +17,7 @@ func TestReasonHintCoversEveryTerminalReason(t *testing.T) {
 		harness.ReasonCompleted, harness.ReasonBlockingLimit, harness.ReasonImageError,
 		harness.ReasonModelError, harness.ReasonAbortedStreaming, harness.ReasonAbortedTools,
 		harness.ReasonPromptTooLong, harness.ReasonStopHookPrevented, harness.ReasonHookStopped,
-		harness.ReasonMaxTurns, harness.ReasonTimeout,
+		harness.ReasonMaxTurns, harness.ReasonTimeout, harness.ReasonOutputLimit, harness.ReasonStorageError,
 	}
 	for _, reason := range all {
 		if strings.TrimSpace(reasonHint[reason]) == "" {

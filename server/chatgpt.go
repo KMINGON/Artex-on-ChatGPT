@@ -64,6 +64,7 @@ func (s *Server) chatGPTProfileDTOs(ps []*db.LLMProfile) []LLMProfileDTO {
 		for _, a := range state.Accounts {
 			if a.ID == out[i].ChatGPTAccountID {
 				out[i].Connected = a.Connected && a.PlanEnabled
+				out[i].PlanBlocked = a.PlanBlocked
 				break
 			}
 		}
@@ -173,7 +174,7 @@ func (s *Server) chatGPTModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	models, err := chatgptllm.Models(ctx, func(ctx context.Context) (context.Context, context.CancelFunc, string, error) {
-		return m.Authorize(ctx, id)
+		return m.AuthorizeCatalog(ctx, id)
 	}, client)
 	if err != nil {
 		writeErr(w, 502, err.Error())
@@ -181,4 +182,46 @@ func (s *Server) chatGPTModels(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"models": models})
+}
+
+// Rechecking is an explicit, single inference using the selected saved profile.
+// A successful catalog request is not evidence that inference usage is available.
+func (s *Server) chatGPTRecheck(w http.ResponseWriter, r *http.Request) {
+	if !localChatGPTMutation(w, r) {
+		return
+	}
+	var body struct {
+		ProfileID int64 `json:"profile_id"`
+	}
+	if err := decode(r, &body); err != nil || body.ProfileID <= 0 {
+		writeErr(w, 400, "재확인에 사용할 저장 프로필을 선택해 주세요")
+		return
+	}
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	p, err := pg.ProfileByID(body.ProfileID)
+	if err != nil || p == nil || p.AuthMode != "chatgpt_plan" || p.UnsupportedReason() != "" {
+		writeErr(w, 400, "사용 가능한 ChatGPT 저장 프로필을 선택해 주세요")
+		return
+	}
+	cfg := s.configForProfile(p)
+	m, err := s.chatGPTManager()
+	if err != nil {
+		writeErr(w, 503, "ChatGPT 연결 저장소를 열 수 없습니다")
+		return
+	}
+	var reply string
+	err = m.Recheck(r.Context(), p.ChatGPTAccountID, func(ctx context.Context) error {
+		var probeErr error
+		_, reply, probeErr = agent.TestConnection(ctx, cfg)
+		return probeErr
+	})
+	w.Header().Set("Cache-Control", "no-store")
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "model": cfg.Model, "reply": truncateReply(reply)})
 }

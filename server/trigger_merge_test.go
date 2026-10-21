@@ -1,9 +1,23 @@
 package server
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestMergedTriggersKeepEveryDurableDelivery(t *testing.T) {
+	items := sameTaskFires(3)
+	for i := range items {
+		items[i].deliveryIDs = []int64{int64(i + 1)}
+	}
+	for _, merge := range []func([]triggeredRun) triggeredRun{mergeTriggeredRuns, mergeAllRuns} {
+		merged := merge(items)
+		if !reflect.DeepEqual(merged.deliveryIDs, []int64{1, 2, 3}) {
+			t.Fatalf("merged delivery IDs=%v", merged.deliveryIDs)
+		}
+	}
+}
 
 // A long task goal repeated per event was the dominant bloat. These tests pin the
 // fix: the task-context header (description + goal) is rendered ONCE per task, no

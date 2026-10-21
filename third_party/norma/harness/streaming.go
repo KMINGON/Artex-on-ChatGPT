@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"sync"
 
 	"github.com/Autumn-27/norma/llm"
@@ -18,6 +19,9 @@ type streamExec struct {
 	mu     sync.Mutex
 	tools  []*tracked
 	notify chan struct{} // pinged when a tool completes or emits progress
+	ctx    context.Context
+	cancel context.CancelFunc
+	closed bool
 }
 
 type toolStatus int
@@ -39,7 +43,19 @@ type tracked struct {
 }
 
 func newStreamExec(l *loop) *streamExec {
-	return &streamExec{l: l, notify: make(chan struct{}, 1)}
+	ctx := l.toolCtx
+	if ctx == nil {
+		ctx = l.ctx
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	return &streamExec{l: l, notify: make(chan struct{}, 1), ctx: ctx, cancel: cancel}
+}
+
+func (e *streamExec) stop() {
+	e.mu.Lock()
+	e.closed = true
+	e.mu.Unlock()
+	e.cancel()
 }
 
 func (e *streamExec) ping() {
@@ -61,6 +77,13 @@ func (e *streamExec) add(block llm.ContentBlock) {
 	e.processQueue()
 }
 
+func (e *streamExec) reject(block llm.ContentBlock, message string) {
+	e.mu.Lock()
+	e.tools = append(e.tools, &tracked{block: block, status: stCompleted,
+		result: llm.ToolResultText(block.ID, message, true)})
+	e.mu.Unlock()
+}
+
 // canStartLocked reports whether a tool with the given safety may start now.
 func (e *streamExec) canStartLocked(safe bool) bool {
 	for _, t := range e.tools {
@@ -75,6 +98,10 @@ func (e *streamExec) canStartLocked(safe bool) bool {
 // tool that cannot start blocks the tools behind it.
 func (e *streamExec) processQueue() {
 	e.mu.Lock()
+	if e.closed || e.ctx.Err() != nil {
+		e.mu.Unlock()
+		return
+	}
 	var start []*tracked
 	for _, t := range e.tools {
 		if t.status != stQueued {
@@ -94,15 +121,31 @@ func (e *streamExec) processQueue() {
 }
 
 func (e *streamExec) run(t *tracked) {
-	e.l.sem <- struct{}{} // bound concurrent tool execution
+	select {
+	case <-e.ctx.Done():
+		return
+	case e.l.sem <- struct{}{}:
+	}
 	defer func() { <-e.l.sem }()
-	res, extra := e.l.execOne(t.block, func(p tool.ProgressInfo) {
+	e.mu.Lock()
+	active := !e.closed && t.status == stExecuting && e.ctx.Err() == nil
+	e.mu.Unlock()
+	if !active {
+		return
+	}
+	res, extra := e.l.execOneContext(e.ctx, t.block, func(p tool.ProgressInfo) {
 		e.mu.Lock()
-		t.prog = append(t.prog, p.Message)
+		if !e.closed {
+			t.prog = append(t.prog, p.Message)
+		}
 		e.mu.Unlock()
 		e.ping()
 	})
 	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
 	t.result = res
 	t.extra = extra
 	t.status = stCompleted
@@ -167,7 +210,7 @@ func (e *streamExec) finish() (consumerStopped, aborted bool) {
 		// run's own MaxDuration deadline firing on an in-flight tool. Either way we
 		// synthesize interrupted results and report aborted; the turn loop then decides
 		// (parent-cancel → abort, budget-only → wrap-up) via ctx vs toolCtx.
-		if e.l.toolCtx.Err() != nil {
+		if e.ctx.Err() != nil {
 			return !e.drainSynthetic("tool execution interrupted"), true
 		}
 		if !e.pending() {
@@ -178,7 +221,7 @@ func (e *streamExec) finish() (consumerStopped, aborted bool) {
 		}
 		select {
 		case <-e.notify:
-		case <-e.l.toolCtx.Done():
+		case <-e.ctx.Done():
 		}
 	}
 }
@@ -186,6 +229,7 @@ func (e *streamExec) finish() (consumerStopped, aborted bool) {
 // drainSynthetic marks every not-yet-yielded tool with a synthetic error result
 // and emits it. Returns consumer-not-stopped.
 func (e *streamExec) drainSynthetic(msg string) bool {
+	e.stop()
 	e.mu.Lock()
 	var evs []Event
 	for _, t := range e.tools {

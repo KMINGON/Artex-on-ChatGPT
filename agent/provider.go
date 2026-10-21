@@ -39,7 +39,8 @@ type Config struct {
 	// used to size compaction thresholds. 0 = default; see CompactionWindow.
 	ContextWindowK int
 	// ReasoningEffort is omitted when empty, preserving the selected model's default.
-	ReasoningEffort string
+	ReasoningEffort    string
+	AccessProgramCyber string
 	// MaxTokens is the API output cap. Subscription requests omit this server option.
 	MaxTokens  int
 	configErr  error
@@ -164,10 +165,17 @@ func (c Config) NewProvider() (llm.Provider, error) {
 			return unavailableProvider{err: errors.New("LLM 프록시 설정을 확인해 주세요")}, nil
 		}
 	}
-	cfg := chatgptllm.Config{Model: c.Model, HTTPClient: client, ReasoningEffort: c.ReasoningEffort,
+	cfg := chatgptllm.Config{Model: c.Model, HTTPClient: client, ReasoningEffort: c.ReasoningEffort, AccessProgramCyber: c.AccessProgramCyber,
 		MaxRetries: c.Retry.ConnectAttempts, RetryInterval: c.Retry.ConnectInterval}
 	switch c.AuthMode {
 	case "chatgpt_plan":
+		cfg.OnError = func(err *chatgptllm.Error) {
+			if c.ChatGPTAuth != nil && err.Code == chatgptauth.PlanUsageLimitCode {
+				if blockErr := c.ChatGPTAuth.BlockPlan(c.ChatGPTAccountID, err.Code); blockErr != nil {
+					log.Printf("[chatgpt] 한도 중지 상태 저장 실패: %v", blockErr)
+				}
+			}
+		}
 		cfg.Authorize = func(ctx context.Context) (context.Context, context.CancelFunc, string, error) {
 			if c.ChatGPTAuth == nil {
 				return ctx, func() {}, "", chatgptauth.ErrLoginRequired

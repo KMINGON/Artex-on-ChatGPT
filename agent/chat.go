@@ -181,7 +181,9 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// reload prior conversation so the agent has context across turns (each Chat is
 	// a fresh session). First turn: no file yet → Resume loads nothing and proceeds.
 	if c.tx != nil {
-		_ = s.Resume(boundSession)
+		if err := s.Resume(boundSession); err != nil {
+			return "", err
+		}
 	}
 	// re-unlock skill-gated MCPs from prior Skill() calls in the reloaded history so
 	// revealed tools stay callable across the fresh session.
@@ -192,5 +194,8 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 			emit(r)
 		}
 	})
+	if closeErr := s.Close(); closeErr != nil {
+		return text, closeErr
+	}
 	return text, err
 }

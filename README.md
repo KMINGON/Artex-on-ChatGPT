@@ -4,24 +4,23 @@
 
 한국어 기반판 [artex-global](https://github.com/jiwoochris/artex-global)에 OpenAI의 공식 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) 연결을 추가하고, 모델 통신을 **OpenAI Responses**로 통합했습니다. 기존 Norma 엔진의 작업·도구·MCP·대화 압축을 유지합니다. ChatGPT 연결에는 Codex 설치나 API 키가 필요하지 않습니다.
 
-> 현재 안내는 **개인 PC의 Linux·WSL 로컬 실행** 기준입니다. 1차 변경은 `KMINGON/openai-migration` 브랜치에 있습니다. ARTEX 관리자 로그인과 ChatGPT 계정 연결은 별개입니다.
+> 현재 안내는 **개인 PC의 Linux·WSL 로컬 실행** 기준입니다. 아래 기능은 `master` 브랜치에 통합되어 있습니다. ARTEX 관리자 로그인과 ChatGPT 계정 연결은 별개입니다.
 
-[빠른 시작](#빠른-시작) · [ChatGPT 연결](#chatgpt-구독으로-연결) · [API 키 연결](#openai-api-키로-연결) · [인증별 차이](#인증별-차이) · [원본 사용법](https://github.com/jiwoochris/artex-global/blob/main/README.ko.md)
+[빠른 시작](#빠른-시작) · [ChatGPT 연결](#chatgpt-구독으로-연결) · [API 키 연결](#openai-api-키로-연결) · [상세 변경점·인증 차이](docs/changes.md) · [원본 사용법](https://github.com/jiwoochris/artex-global/blob/main/README.ko.md)
 
 ## 원본 대비 주요 변경점
 
-| 구분 | 원본·기존 경로 | 이 포크 |
-| --- | --- | --- |
-| 개인 계정 | 제공자 API 키 | **ChatGPT 구독 로그인 추가**, OpenAI API 키도 유지 |
-| 모델 연결 | Claude·OpenAI 등 여러 제공자와 프로토콜 | **OpenAI 두 인증 방식 + Responses**로 통합. Claude·Chat Completions·임의 LLM 주소·전용 설정 제거 |
-| OpenAI 컨텍스트 | 텍스트·도구 이력은 유지하지만 기존 API 어댑터에서 opaque reasoning·`phase` 누락 | 구독 경로의 **암호화 추론·응답 단계·항목 순서 보존을 API에도 적용**. 도구 왕복과 저장·재개에서 재전송 |
-| 대화 압축 | 일반 압축·Noa는 공급자 공통 기능 | 기존 구조 유지. **잘린 요약을 성공으로 저장하지 않도록 보완**, 요약 실패 시 기존 그래프 요약 보존 |
-| 완료·도구 판정 | 제공자별 처리 | 정상 완료와 도구 인수 검증 뒤 함수 호출 확정. 불완전한 도구·Judge 응답 차단 |
-| 오류 진단 | HTTP 200 내부 실패가 일반 오류로만 표시되는 경우 | SSE 오류 코드·단계·요청 ID·요청 크기 등을 안전하게 기록. 출력·도구 실행 후 전체 작업을 자동 재실행하지 않음 |
-| 연결 변경 | 같은 대화 이력을 다시 사용하는 경로 | 관측한 계정·API 키·모델 변경 시 새 컨텍스트 시작. 이전 대화 파일과 작업 데이터 보존 |
-| 실행 기능 | Norma 기반 작업·로컬 도구·MCP·Skills | 유지. 검색은 DDGS·Brave·Tavily 유지, DeepSeek 전용 검색 제거 |
+| 변경 | 핵심 내용 |
+| --- | --- |
+| **ChatGPT 개인 계정** | 공식 구독 로그인 추가. OpenAI API 키도 함께 지원 |
+| **OpenAI 전용 연결** | Claude와 관련 설정 제거, 두 인증을 Responses로 통합 |
+| **컨텍스트 보존** | OpenAI API에도 reasoning·`phase` 보존 적용. 도구 결과 압축과 저장·재개 오류 수정 |
+| **실행 안정성** | 취소 뒤 대기 도구 차단, 부분 출력을 미완료로 표시, 실패 사용량과 구독 한도 처리 개선 |
+| **설정·자동화** | 프로필 적용 경합 수정, 트리거 대기열 저장, API Daybreak 선택 및 구독 모델 선택 보완 |
 
-**컨텍스트 개선은 모델 자체의 성능 향상을 보장하는 기능이 아닙니다.** 원형 메시지의 서버 반환 상태를 보존하는 수정입니다. 압축·편집으로 내용이 바뀌면 해당 opaque 상태를 제거하며, 과거에 저장하지 않은 상태나 Claude 추론을 복원하지 않습니다. 기존 API에서도 일반 대화 압축과 Noa는 동작했습니다.
+**[원본과의 비교, 상세 개선점, Daybreak 및 인증별 제약 →](docs/changes.md)**
+
+기존 API에도 일반 대화 압축·Noa가 있었습니다. 이번 개선은 누락된 응답 상태와 실행 결함을 보완하며, 모델 자체의 성능 향상을 보장하지 않습니다. Noa 기능은 유지합니다.
 
 ## 빠른 시작
 
@@ -30,11 +29,11 @@
 ### 1. 소스 받기
 
 ```sh
-git clone --branch KMINGON/openai-migration https://github.com/KMINGON/Artex-on-ChatGPT.git
+git clone --branch master https://github.com/KMINGON/Artex-on-ChatGPT.git
 cd Artex-on-ChatGPT
 ```
 
-이미 해당 브랜치의 워크트리에 있다면 그 폴더에서 이어서 진행합니다. 기존 원본 배포 이미지에는 이 변경이 포함되어 있지 않습니다.
+이미 최신 `master` 소스가 있다면 해당 폴더에서 이어서 진행합니다. 기존 원본 배포 이미지에는 이 변경이 포함되어 있지 않습니다.
 
 ### 2. PostgreSQL 준비
 
@@ -80,7 +79,7 @@ ARTEX_LANG=ko ./start.sh
 
 추론용 access token과 refresh token은 브라우저나 PostgreSQL에 저장하지 않고 OS 사용자 설정 폴더에 저장합니다. Linux·WSL의 기본 경로는 `~/.config/artex-on-chatgpt/`이며 `XDG_CONFIG_HOME` 설정을 따릅니다. 폴더는 `0700`, 자격증명 파일은 `0600` 권한입니다. 연결 관리는 서버와 브라우저가 **같은 PC**에 있는 구성을 지원합니다.
 
-인증 만료 시 **다시 연결**, 사용 중단 시 **연결 해제**를 누릅니다. 원격 세션 폐기 실패가 안내되면 ChatGPT 설정에서도 앱 접근을 해제하세요. [OpenAI 계정·세션 안내](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
+인증 만료 시 **다시 연결**, 사용 중단 시 **연결 해제**를 누릅니다. 한도에 도달하면 Usage 설정을 확인한 후 **한도 재확인**을 실행합니다. 재확인은 실제 요청 1회로 사용량이 발생할 수 있습니다. 원격 세션 폐기 실패가 안내되면 ChatGPT 설정에서도 앱 접근을 해제하세요. [OpenAI 계정·세션 안내](https://developers.openai.com/siwc/token-sharing-open-source/profiles-and-sessions)
 
 ## OpenAI API 키로 연결
 
@@ -99,38 +98,13 @@ ARTEX_LANG=ko ./start.sh
 
 이 과정도 모델 사용량을 소비합니다. 기억값 응답만으로 opaque 상태 보존을 검증할 수는 없으며, 자동 테스트에서는 다음 요청에 포함된 항목·순서·도구 ID도 검사합니다. 프로젝트·작업 생성과 상세 도구 사용법은 [원본 한국어 안내](https://github.com/jiwoochris/artex-global/blob/main/README.ko.md)를 참고하세요.
 
-## 인증별 차이
+## Daybreak와 인증별 차이
 
-| 항목 | OpenAI API 키 | ChatGPT 구독 |
-| --- | --- | --- |
-| 사용량·과금 | API 계정의 과금·한도 | 연결한 ChatGPT 계정·요금제의 한도 |
-| `temperature` | 내부 요청값을 지원 모델에 전달. 모델별 지원 조건 적용 | 전송하지 않음. 동일 응답·무작위성 제어를 로컬에서 복원할 수 없음 |
-| `max_output_tokens` | 서버 출력 상한 전달. 일반 텍스트의 상한 종료는 기존 이어쓰기 경로 사용 | 서버 출력 상한 미지원. 보조 요청에 간결한 출력 지시와 로컬 수신 제한 적용 |
-| 추론 강도 | 선택 모델이 지원하는 effort | 계정에서 제공하는 모델이 지원하는 effort |
-| 응답 전송 | SSE 스트리밍; 내부 `Complete`도 SSE 결과를 모아 반환 | 동일 |
-| 도구·입력 | 텍스트·로컬 function·MCP 도구 | 동일. 현재 포크는 이미지·파일 직접 입력과 OpenAI 호스팅 도구를 구현하지 않음 |
-| 추론 상태 | 완료 응답의 reasoning·`phase`·항목 순서 보존 | 동일한 어댑터·v1 저장 형식 사용 |
-| 오류 시 인증 전환 | 기존 명시적 API 프로필 전환 정책 유지. opaque 상태가 있으면 다른 연결로 자동 재전송 차단 | 유료 API 키 경로로 자동 전환하지 않음 |
+API 프로필은 **모델 + API 액세스 프로그램(`standard`/`daybreak_blue`/`daybreak_red`)**을 따로 선택합니다. 서버 기본값은 필드 생략이며 Daybreak를 끈다는 뜻이 아닙니다. 조직·프로젝트의 승인이 필요합니다.
 
-구독의 보조 요청 제한은 **도구가 없고 호출자가 추론 비활성화와 출력 토큰 수를 요청한 경우**에 적용합니다. 요청 시간은 90초, 수신 텍스트·추론 요약은 요청 크기에 따라 8–64KiB로 제한합니다. 이는 서버의 생성 토큰·사용량 상한이나 추론 완전 비활성화를 보장하지 않습니다. [OpenAI 미리보기 제한사항](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+구독은 **연결 계정의 모델 목록**을 기준으로 선택합니다. 목록에 제공된 Daybreak ID는 그대로 사용하지만, 구독 요청의 명시적 프로그램 토글은 공개 SIWC 계약에서 확인되지 않아 전송하지 않습니다. [선택 방법과 확인 범위](docs/changes.md#daybreak-선택)
 
-계정·API 키·모델 변경이 관측되면 세션의 로컬 연결 기록을 기준으로 새 컨텍스트를 시작합니다. 변경 전 파일·작업 데이터는 남지만 모델의 이전 대화 기억은 이어지지 않습니다. 연결 기록이 없는 과거 v1 이력의 원래 계정은 추정하지 않습니다. API 풀에서 다른 연결로 전환한 응답은 표시용 내용·도구 이력만 유지하며 opaque 상태를 제거합니다.
-
-HTTP 200이라도 SSE의 `response.failed`·`error` 이벤트로 모델 요청이 실패할 수 있습니다. 이 경우 오류 코드·요청 ID 등 진단 정보를 확인하세요. `Output too large` 파일 저장 안내만으로 컨텍스트 초과를 뜻하지는 않습니다. 원본 HTTP 본문·암호화 추론·자격증명은 두 인증 모두 디버그 녹화에 남기지 않습니다.
-
-## 검증 범위
-
-변경 경로는 모의 OpenAI SSE를 사용해 두 인증의 요청 형식, 추론 상태 왕복, 긴 도구 결과, 실패·미완료·취소, 실제 로컬 Shell 실행과 저장·재개를 검사합니다. DB 검사는 패키지별로 분리한 PostgreSQL 테스트 환경을 사용합니다.
-
-1차 구현 검증 결과:
-
-- 루트 Go 전체 테스트·`go vet` 및 패키지별 격리 DB 통합 검사 통과
-- 변경 경로의 race 검사, 웹 테스트 24개·타입/정적 빌드·i18n·한자 누출·린트 검사 통과
-- Linux 실행 파일 빌드 및 별도 포트·DB에서 관리자 로그인·설정 API·내장 웹 페이지 응답 확인
-
-Norma 전체 검사에는 변경 전 코드에서도 재현되는 **Noa·noaadapter 테스트 실패 7건**이 남아 있습니다. 이번 범위에서 수정한 LLM·도구·세션·압축 검사는 통과했으며, Noa 알고리즘과 문맥 크기 조정은 후속 범위로 남깁니다.
-
-이번 변경 후 실제 ChatGPT 계정·API 키로 하는 유료/구독 모델 호출과 장시간 실사용 시험은 별도 확인이 필요합니다. 정량 성능 향상이나 특정 모델의 접근 권한을 보장하지 않습니다. Daybreak 토글·모델 업그레이드·Noa 문맥 크기 조정·중국어 내부 프롬프트 번역은 이번 변경에 포함하지 않았습니다.
+구독은 `temperature`·`max_output_tokens`를 전송하지 않으며 로컬 수신 제한이 서버의 생성 비용 상한을 대체하지 않습니다. [API·구독 차이표](docs/changes.md#api와-구독의-차이) · [업데이트·백업](docs/changes.md#업데이트데이터-보존) · [테스트와 남은 한계](docs/changes.md#검증-범위)
 
 ## 출처와 라이선스
 

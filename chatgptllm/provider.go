@@ -25,11 +25,15 @@ const modelsURL = "https://api.openai.com/v1/models"
 type Authorize func(context.Context) (context.Context, context.CancelFunc, string, error)
 
 type Config struct {
-	Model           string
-	HTTPClient      *http.Client
-	Authorize       Authorize
-	APIKey          string // Mutually exclusive with Authorize.
-	ReasoningEffort string
+	Model              string
+	HTTPClient         *http.Client
+	Authorize          Authorize
+	APIKey             string // Mutually exclusive with Authorize.
+	ReasoningEffort    string
+	AccessProgramCyber string
+	// OnError observes failures before cancellation can hide an upstream quota
+	// denial. It must not retry or issue another inference request.
+	OnError func(*Error)
 	// Zero uses two plan retries or three API retries; negative disables retries.
 	// One budget covers HTTP
 	// admission and known transient SSE failures before any output is exposed.
@@ -49,6 +53,9 @@ func New(cfg Config) (llm.Provider, error) {
 		e := failure("invalid_config", "모델과 하나의 OpenAI API 키 또는 ChatGPT 연결이 필요합니다", nil)
 		e.APIKeyMode = cfg.APIKey != ""
 		return nil, e
+	}
+	if err := ValidateOptions(cfg.Model, authMode(cfg.APIKey), cfg.ReasoningEffort, cfg.AccessProgramCyber); err != nil {
+		return nil, err
 	}
 	if cfg.APIKey != "" {
 		key := cfg.APIKey
@@ -104,6 +111,7 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 			yield(llm.StreamEvent{}, p.annotate(err, "encoding", shape, 0, false))
 			return
 		}
+		var observed ResponseMetadata
 		for attempt := 0; ; attempt++ {
 			resp, release, err := p.open(ctx, body)
 			attempts := attempt
@@ -111,12 +119,26 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 			if resp != nil || (errors.As(err, &admissionErr) && admissionErr.Attempts > 0) {
 				attempts++
 			}
-			emitted, stopped := false, false
+			emitted, stopped, errorObserved := false, false, false
+			if err != nil && p.cfg.OnError != nil {
+				p.cfg.OnError(p.annotate(err, "admission", shape, attempts, false))
+				errorObserved = true
+			}
 			stage := "admission"
 			if err == nil {
 				stage = "stream"
 				var budgetErr error
-				err = consumeWithOptions(resp, names, p.cfg.APIKey != "" && !auxiliaryRequest(req), func(ev llm.StreamEvent, err error) bool {
+				err = consumeObserved(resp, names, p.cfg.APIKey != "" && !auxiliaryRequest(req), func(metadata ResponseMetadata) {
+					known := observed.UsageReceived || metadata.UsageReceived
+					observed = metadata
+					observed.UsageReceived = known
+					observeResponse(ctx, metadata)
+				}, func(e *Error) {
+					if p.cfg.OnError != nil {
+						p.cfg.OnError(p.annotate(e, "stream", shape, attempts, emitted))
+					}
+					errorObserved = true
+				}, func(ev llm.StreamEvent, err error) bool {
 					if !budget.accept(ev) {
 						budgetErr = failure("auxiliary_output_limit", "판정·요약 출력이 로컬 길이 제한을 초과했습니다", nil)
 						return false
@@ -147,9 +169,13 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 				err = failure("canceled", "요청이 취소되었습니다", ctx.Err())
 			}
 			e := p.annotate(err, stage, shape, attempts, emitted)
+			e.Metadata = observed
 			if resp != nil {
 				e.StatusCode = resp.StatusCode
 				e.RequestID = safeToken(resp.Header.Get("X-Request-Id"))
+			}
+			if p.cfg.OnError != nil && !errorObserved {
+				p.cfg.OnError(e)
 			}
 			if ctx.Err() != nil || emitted || attempt >= p.cfg.MaxRetries || !retryable(e) {
 				yield(llm.StreamEvent{}, e)
@@ -165,7 +191,9 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				yield(llm.StreamEvent{}, p.annotate(failure("canceled", "요청이 취소되었습니다", ctx.Err()), "backoff", shape, attempt+1, false))
+				e := p.annotate(failure("canceled", "요청이 취소되었습니다", ctx.Err()), "backoff", shape, attempt+1, false)
+				e.Metadata = observed
+				yield(llm.StreamEvent{}, e)
 				return
 			case <-timer.C:
 			}
@@ -189,7 +217,7 @@ func (p *provider) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	acc := llm.NewAccumulator()
 	for ev, err := range p.Stream(ctx, req) {
 		if err != nil {
-			return llm.Message{}, "", llm.Usage{}, err
+			return llm.Message{}, "", acc.Usage, err
 		}
 		acc.Add(ev)
 	}
@@ -225,6 +253,10 @@ func authorizedRequest(ctx context.Context, authorize Authorize, client *http.Cl
 		if release != nil {
 			release()
 		}
+		var blocked interface{ ChatGPTPlanBlocked() bool }
+		if errors.As(err, &blocked) && blocked.ChatGPTPlanBlocked() {
+			return nil, nil, failure("plan_usage_blocked", "이 ChatGPT 연결의 사용 한도가 중지되어 있습니다. Usage 설정을 확인한 뒤 한도 재확인을 실행해 주세요", err)
+		}
 		return nil, nil, failure("authorization_failed", "ChatGPT 연결을 확인해 주세요", err)
 	}
 	if release == nil {
@@ -256,9 +288,10 @@ func authorizedRequest(ctx context.Context, authorize Authorize, client *http.Cl
 }
 
 type Model struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	ContextWindow int    `json:"context_window,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	ContextWindow int               `json:"context_window,omitempty"`
+	Capabilities  ModelCapabilities `json:"capabilities"`
 }
 
 // Models returns account-visible models in server order, without API-key or
@@ -287,7 +320,7 @@ func Models(ctx context.Context, authorize Authorize, client *http.Client) ([]Mo
 	out := make([]Model, 0, len(catalog.Models))
 	for _, model := range catalog.Models {
 		if model.Visibility == "list" && model.Slug != "" {
-			out = append(out, Model{ID: model.Slug, Name: model.DisplayName, ContextWindow: model.ContextWindow})
+			out = append(out, Model{ID: model.Slug, Name: model.DisplayName, ContextWindow: model.ContextWindow, Capabilities: Capabilities(model.Slug, "chatgpt_plan")})
 		}
 	}
 	return out, nil

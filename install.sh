@@ -32,30 +32,7 @@ ensure_docker(){
 
 # ── ① 전부 Docker ──────────────────────────────
 install_docker(){
-  ensure_docker
-  if [ ! -f .env ]; then
-    cp .env.example .env 2>/dev/null || true
-    local pw key
-    pw="$(ask 'Postgres 비밀번호 (엔터를 누르면 무작위 생성)' "$(rand)")"
-    key="$(ask 'ANTHROPIC_API_KEY (비워 둬도 되며 나중에 UI 에서 설정)' '')"
-    sed -i.bak "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${pw}|" .env
-    sed -i.bak "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${key}|" .env
-    rm -f .env.bak
-    ok ".env 파일을 생성했습니다 (POSTGRES_PASSWORD 설정 완료)"
-  else
-    info "이미 있는 .env 파일을 그대로 사용합니다"
-  fi
-  info "이미지를 받아 기동합니다…"
-  docker compose pull || true
-  if ! docker compose up -d; then
-    warn "이미지 ghcr.io/jiwoochris/artex-global 를 받거나 기동하지 못했습니다(.env 의 ARTEX_TAG 가 발행된 태그인지, 네트워크가 되는지 확인하세요)"
-    warn "이 스크립트를 다시 실행해 \"2) 로컬 실행 (go 컴파일)\" 을 고르거나, README \"소스에서 단일 바이너리 컴파일\" 경로로 빌드할 수도 있습니다"
-    die "Docker Compose(전부 Docker) 기동에 실패했습니다"
-  fi
-  ok "기동을 완료했습니다 → http://localhost:8787"
-  info "첫 접속 시 /setup 화면에서 \"설정 토큰\"을 입력해야 관리자 비밀번호를 만들 수 있습니다"
-  info "설정 토큰 확인: docker compose logs artex | grep -F '[auth]'   (기본 게시 주소는 127.0.0.1 이며 .env 의 ARTEX_BIND 로 바꿉니다)"
-  info "로그 확인: docker compose logs -f artex"
+  die "이 포크의 Docker 앱 배포는 아직 지원하지 않습니다. 2) 로컬 실행 또는 README의 설치 방법을 사용하세요."
 }
 
 # ── ② 로컬 컴파일 실행 ────────────────────────────
@@ -67,10 +44,10 @@ install_local(){
     2)
       ensure_docker
       local pw; pw="$(ask 'Postgres 비밀번호 (엔터를 누르면 무작위)' "$(rand)")"
-      docker run -d --name artex-pg -p 5432:5432 \
+      docker run -d --name artex-chatgpt-postgres -p 127.0.0.1:5433:5432 \
         -e POSTGRES_USER=artex -e POSTGRES_PASSWORD="$pw" -e POSTGRES_DB=artex \
-        -v artex-pg:/var/lib/postgresql/data postgres:16-alpine
-      DB_HOST=127.0.0.1 DB_PORT=5432 DB_USER=artex DB_PASS="$pw" DB_NAME=artex DB_SSL=disable ;;
+        -v artex-chatgpt-pg:/var/lib/postgresql/data postgres:16-alpine
+      DB_HOST=127.0.0.1 DB_PORT=5433 DB_USER=artex DB_PASS="$pw" DB_NAME=artex DB_SSL=disable ;;
     *)
       DB_HOST="$(ask '데이터베이스 주소' 127.0.0.1)"
       DB_PORT="$(ask '포트' 5432)"
@@ -118,10 +95,10 @@ JSON
 
 echo "=============================="
 echo "  ARTEX 설치"
-echo "  1) 전부 Docker 설치"
+echo "  1) Docker 앱 설치 (미지원)"
 echo "  2) 로컬 실행 (go 컴파일)"
 echo "=============================="
-case "$(ask '선택' 1)" in
+case "$(ask '선택' 2)" in
   1) install_docker ;;
   2) install_local ;;
   *) die "잘못된 선택입니다" ;;

@@ -23,8 +23,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,26 +33,32 @@ import (
 
 // Record is one line of a JSONL transcript.
 type Record struct {
-	UUID        string            `json:"uuid"`
-	ParentUUID  string            `json:"parent_uuid,omitempty"`
-	SessionID   string            `json:"session_id"`
-	AgentID     string            `json:"agent_id,omitempty"`
-	IsSidechain bool              `json:"is_sidechain,omitempty"`
-	Timestamp   string            `json:"timestamp"`
-	Type        string            `json:"type"` // "message" | "boundary"
-	Message     *llm.Message      `json:"message,omitempty"`
-	Usage       *llm.Usage        `json:"usage,omitempty"`    // assistant turns only
-	Boundary    *llm.BoundaryMeta `json:"boundary,omitempty"` // Type=="boundary"
+	UUID              string            `json:"uuid"`
+	ParentUUID        string            `json:"parent_uuid,omitempty"`
+	SessionID         string            `json:"session_id"`
+	AgentID           string            `json:"agent_id,omitempty"`
+	IsSidechain       bool              `json:"is_sidechain,omitempty"`
+	Timestamp         string            `json:"timestamp"`
+	Type              string            `json:"type"` // "message" | "boundary"
+	Message           *llm.Message      `json:"message,omitempty"`
+	Usage             *llm.Usage        `json:"usage,omitempty"`    // assistant turns only
+	Boundary          *llm.BoundaryMeta `json:"boundary,omitempty"` // Type=="boundary"
+	Checkpoint        *Checkpoint       `json:"checkpoint,omitempty"`
+	CheckpointMessage *llm.Message      `json:"checkpoint_message,omitempty"`
 }
 
 // Store is a directory of session transcripts.
 type Store struct {
-	dir string
-	mu  sync.Mutex // serializes appends across writers in this process
+	dir      string
+	mu       sync.Mutex // serializes appends across writers in this process
+	syncFile func(*os.File) error
+	syncDir  func(string) error
 }
 
 // NewStore returns a Store rooted at dir (created lazily on first write).
-func NewStore(dir string) *Store { return &Store{dir: dir} }
+func NewStore(dir string) *Store {
+	return &Store{dir: dir, syncFile: (*os.File).Sync, syncDir: syncDirectory}
+}
 
 // MainPath is the JSONL file for a top-level session.
 func (s *Store) MainPath(sessionID string) string {
@@ -95,35 +99,24 @@ func (s *Store) Append(path string, recs ...Record) error {
 			return err
 		}
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := s.syncFile(f); err != nil {
+		return err
+	}
+	return s.syncDir(filepath.Dir(path))
 }
 
 // Load reads all records from a transcript file. A missing file yields no
 // records and no error (a fresh session).
 func (s *Store) Load(path string) ([]Record, error) {
-	f, err := os.Open(path)
+	path, err := recoveryPath(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	defer f.Close()
-	var recs []Record
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 64*1024*1024) // tolerate large tool results
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var r Record
-		if err := json.Unmarshal(line, &r); err != nil {
-			return nil, fmt.Errorf("transcript: corrupt line: %w", err)
-		}
-		recs = append(recs, r)
-	}
-	return recs, sc.Err()
+	recs, _, err := loadRecords(path)
+	return recs, err
 }
 
 // Messages reconstructs the raw conversation and cumulative usage from records.
@@ -133,6 +126,9 @@ func Messages(recs []Record) ([]llm.Message, llm.Usage) {
 	var msgs []llm.Message
 	var total llm.Usage
 	for _, r := range recs {
+		if r.Type == "checkpoint_part" {
+			r.Message = r.CheckpointMessage
+		}
 		if r.Type == "boundary" || r.Message == nil {
 			continue
 		}
@@ -154,8 +150,7 @@ func LastUUID(recs []Record) string {
 
 // Writer binds a Store, a file path, and a session/agent identity, assigning a
 // UUID and parent link to each record. It satisfies harness.Recorder. Append
-// errors are retained (see Err) rather than panicking, so a failing disk
-// degrades to in-memory operation instead of crashing the agent loop.
+// errors are retained (see Err) and stop the session before another model call.
 type Writer struct {
 	store       *Store
 	path        string
@@ -179,6 +174,7 @@ func (s *Store) NewWriter(sessionID, agentID string) *Writer {
 		w.path = s.AgentPath(sessionID, agentID)
 		w.isSidechain = true
 	}
+	w.path, w.err = recoveryPath(w.path)
 	return w
 }
 
@@ -197,22 +193,25 @@ func (w *Writer) Err() error {
 	return w.err
 }
 
-func (w *Writer) write(r Record) {
+func (w *Writer) write(recs ...Record) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	r.SessionID = w.sessionID
-	r.AgentID = w.agentID
-	r.IsSidechain = w.isSidechain
-	r.UUID = newID()
-	r.ParentUUID = w.last
-	r.Timestamp = w.now().UTC().Format(time.RFC3339Nano)
-	if err := w.store.Append(w.path, r); err != nil {
-		if w.err == nil {
-			w.err = err
-		}
+	if w.err != nil {
 		return
 	}
-	w.last = r.UUID
+	last := w.last
+	for i := range recs {
+		r := &recs[i]
+		r.SessionID, r.AgentID, r.IsSidechain = w.sessionID, w.agentID, w.isSidechain
+		r.UUID, r.ParentUUID = newID(), last
+		r.Timestamp = w.now().UTC().Format(time.RFC3339Nano)
+		last = r.UUID
+	}
+	if err := w.store.Append(w.path, recs...); err != nil {
+		w.err = err
+		return
+	}
+	w.last = last
 }
 
 // RecordMessage persists a conversation message. usage is attributed to this

@@ -411,6 +411,9 @@ DROP TRIGGER IF EXISTS trg_llm_upd ON llm_profiles;
 CREATE TRIGGER trg_llm_upd BEFORE UPDATE ON llm_profiles
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 -- 轮询顺位/排除标记；补旧库。默认 0 / false = 全部配置都参与轮询。
+-- Explicit API access program; empty preserves the model/server default.
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS access_program_cyber TEXT NOT NULL DEFAULT '';
+
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS priority     INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS pool_exclude BOOLEAN NOT NULL DEFAULT false;
 -- 流式开关；补旧库。默认 true = 保持既有的流式行为，旧配置无感升级。

@@ -36,6 +36,8 @@ type TerminalReason string
 
 const (
 	ReasonCompleted         TerminalReason = "completed"           // model ended its turn
+	ReasonOutputLimit       TerminalReason = "output_limit"        // text continuation budget exhausted
+	ReasonStorageError      TerminalReason = "storage_error"       // durable transcript could not be preserved
 	ReasonBlockingLimit     TerminalReason = "blocking_limit"      // hard context limit hit pre-request
 	ReasonImageError        TerminalReason = "image_error"         // unsupported media (multimodal)
 	ReasonModelError        TerminalReason = "model_error"         // provider/API failure

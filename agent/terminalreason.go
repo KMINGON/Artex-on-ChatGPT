@@ -39,6 +39,8 @@ var reasonHint = map[harness.TerminalReason]string{
 	harness.ReasonMaxTurns:          "达到步数上限(MaxTurns)：SDK 已执行收尾并写回事实和资产，意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
 	harness.ReasonTimeout:           "达到单次运行的墙钟预算(MaxDuration)：到点会打断在跑的工具并就地进收尾，把已识别的事实和资产写回，意图会标记为 exhausted",
 	harness.ReasonModelError:        "이번 모델 호출을 완료하지 못했습니다. 구체 원인과 재시도 여부는 기록된 진단 정보로 확인하세요",
+	harness.ReasonOutputLimit:       "출력 상한과 이어쓰기 예산에 도달해 응답이 미완료로 끝났습니다. 생성된 내용은 남아 있지만 작업 완료를 뜻하지 않습니다",
+	harness.ReasonStorageError:      "실행 기록을 읽거나 저장하지 못했습니다. 기존 기록을 확인한 뒤 재개해야 하며 앞서 실행한 도구를 자동으로 다시 실행하지 않습니다",
 	harness.ReasonBlockingLimit:     "上下文长度达到硬上限，请求在发出前被拦截；应收窄意图粒度或压缩工具返回",
 	harness.ReasonPromptTooLong:     "提示词过长且上下文压缩重试已经用尽，无法继续执行",
 	harness.ReasonImageError:        "当前模型不支持本轮多模态内容；请切换支持视觉的模型或避免工具返回图片",
@@ -47,6 +49,14 @@ var reasonHint = map[harness.TerminalReason]string{
 	harness.ReasonAbortedStreaming:  "运行在模型输出流式生成阶段被取消",
 	harness.ReasonAbortedTools:      "运行在工具执行阶段被取消",
 }
+
+type outputLimitError struct{}
+
+func (outputLimitError) Error() string {
+	return "output_limit: " + reasonHint[harness.ReasonOutputLimit]
+}
+func (outputLimitError) NoReplay() bool   { return true }
+func (outputLimitError) NoFallback() bool { return true }
 
 // terminalText renders a terminal event with no final text into a compact summary
 // and a Markdown detail block.
@@ -76,6 +86,8 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 			stage = "工具执行阶段"
 		}
 		sum = "（运行被中断：" + short + "；停在" + stage + progressSuffix(term, tr) + "，未完成）"
+	} else if reason == harness.ReasonOutputLimit || reason == harness.ReasonStorageError {
+		sum = "실행 미완료 (" + string(reason) + "): " + terminalReasonHint(reason)
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		sum = "（达到运行预算上限(" + string(reason) + ")，已收尾写回事实" + progressSuffix(term, tr) + "；本次无文字总结）"
 	} else {
@@ -99,8 +111,8 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	if term.Err != nil {
 		fmt.Fprintf(&b, "- **底层错误**: `%v`\n", term.Err)
 	}
-	if aborted && strings.TrimSpace(term.Text) != "" {
-		b.WriteString("- **取消前已生成的部分输出**:\n\n")
+	if (aborted || reason == harness.ReasonOutputLimit || reason == harness.ReasonStorageError) && strings.TrimSpace(term.Text) != "" {
+		b.WriteString("- **종료 전 생성된 부분 출력**:\n\n")
 		b.WriteString(term.Text)
 		b.WriteString("\n\n")
 	}

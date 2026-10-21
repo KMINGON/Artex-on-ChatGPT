@@ -150,16 +150,18 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				}
 				flush() // flush any trailing thinking / non-final text
 				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" || ev.Terminal.Err != nil || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
+				if sum == "" || ev.Terminal.Err != nil || ev.Terminal.Reason == harness.ReasonOutputLimit || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
 					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
-				rec(failureActivity(ctx, db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
+				rec(failureActivity(ctx, db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil || reason == harness.ReasonOutputLimit,
 					Summary: firstLine(sum, 400), Detail: detail,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
 					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens}, ev.Terminal.Err, runID, s.SessionID(), lastTool, ev.Terminal.Turns))
 				if ev.Terminal.Err != nil {
 					rerr = protectRunOutput(ev.Terminal.Err, lastTool)
+				} else if reason == harness.ReasonOutputLimit {
+					rerr = outputLimitError{}
 				}
 			}
 		}

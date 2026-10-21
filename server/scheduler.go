@@ -28,7 +28,6 @@ type Scheduler struct {
 const (
 	schedKeyLastFinding    = "last_finding_id"    // watermark: max finding node id fired for
 	schedKeyFiredGoals     = "fired_goals"        // JSON array of goal node ids already fired
-	schedKeyLastTimeout    = "last_timeout_id"    // watermark: max task id fired for task timeout
 	schedKeyLastToolCall   = "last_toolcall_id"   // watermark: max activity id fired for tool call
 	schedKeyLastTaskCreate = "last_taskcreate_id" // watermark: max task id fired for task create
 )
@@ -42,7 +41,19 @@ func (sc *Scheduler) Run(ctx context.Context) {
 	if sc.pg == nil {
 		return
 	}
-	sc.init()
+	for {
+		if err := sc.init(); err == nil {
+			break
+		} else {
+			log.Printf("[scheduler] initialize: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(sc.tick):
+		}
+	}
+	sc.s.loadPendingTriggers()
 	t := time.NewTicker(sc.tick)
 	defer t.Stop()
 	for {
@@ -58,68 +69,63 @@ func (sc *Scheduler) Run(ctx context.Context) {
 
 // init seeds the watermarks on first run so pre-existing findings/goals don't all
 // fire at once — only events created AFTER the scheduler first starts count.
-func (sc *Scheduler) init() {
-	if sc.mustState(schedKeyLastFinding) == "" {
-		var maxID int64
-		if evs, err := sc.pg.NewFindingsSince(0); err == nil {
-			for _, e := range evs {
-				if e.NodeID > maxID {
-					maxID = e.NodeID
-				}
+func (sc *Scheduler) init() error {
+	for _, source := range []struct {
+		key   string
+		query func(int64) ([]db.TaskEvent, error)
+	}{
+		{schedKeyLastFinding, sc.pg.NewFindingsSince},
+		{schedKeyLastToolCall, sc.pg.NewToolCallsSince},
+		{schedKeyLastTaskCreate, sc.pg.NewTasksSince},
+	} {
+		raw, err := sc.pg.GetSchedState(source.key)
+		if err != nil {
+			return err
+		}
+		if raw != "" {
+			continue
+		}
+		events, err := source.query(0)
+		if err != nil {
+			return err
+		}
+		var last int64
+		for _, e := range events {
+			if e.NodeID > last {
+				last = e.NodeID
 			}
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastFinding, strconv.FormatInt(maxID, 10))
-	}
-	if sc.mustState(schedKeyFiredGoals) == "" {
-		set := map[int64]bool{}
-		if evs, err := sc.pg.MetGoals(); err == nil {
-			for _, e := range evs {
-				set[e.NodeID] = true
-			}
+		if err := sc.pg.SetSchedState(source.key, strconv.FormatInt(last, 10)); err != nil {
+			return err
 		}
-		sc.saveFiredGoalSet(set)
 	}
-	if sc.mustState(schedKeyLastTimeout) == "" {
-		var maxID int64
-		if evs, err := sc.pg.TimedOutTasksSince(0); err == nil {
-			for _, e := range evs {
-				if e.NodeID > maxID {
-					maxID = e.NodeID
-				}
-			}
+	raw, err := sc.pg.GetSchedState(schedKeyFiredGoals)
+	if err != nil {
+		return err
+	}
+	if raw == "" {
+		events, err := sc.pg.MetGoals()
+		if err != nil {
+			return err
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
-	}
-	if sc.mustState(schedKeyLastToolCall) == "" {
-		var maxID int64
-		if evs, err := sc.pg.NewToolCallsSince(0); err == nil {
-			for _, e := range evs {
-				if e.NodeID > maxID {
-					maxID = e.NodeID
-				}
-			}
+		ids := []int64{}
+		for _, e := range events {
+			ids = append(ids, e.NodeID)
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastToolCall, strconv.FormatInt(maxID, 10))
-	}
-	if sc.mustState(schedKeyLastTaskCreate) == "" {
-		var maxID int64
-		if evs, err := sc.pg.NewTasksSince(0); err == nil {
-			for _, e := range evs {
-				if e.NodeID > maxID {
-					maxID = e.NodeID
-				}
-			}
+		data, _ := json.Marshal(ids)
+		if err := sc.pg.SetSchedState(schedKeyFiredGoals, string(data)); err != nil {
+			return err
 		}
-		_ = sc.pg.SetSchedState(schedKeyLastTaskCreate, strconv.FormatInt(maxID, 10))
 	}
+	if err := sc.pg.SeedTimeoutEvents(); err != nil {
+		return err
+	}
+	return sc.pg.RecoverTriggerDeliveries()
 }
 
 func (sc *Scheduler) step() {
 	triggers, err := sc.pg.ListEnabledTriggers()
 	if err != nil {
-		return
-	}
-	if len(triggers) == 0 {
 		return
 	}
 	sc.fireIntervals(triggers)
@@ -128,6 +134,7 @@ func (sc *Scheduler) step() {
 	sc.fireTaskTimeouts(triggers)
 	sc.fireToolCalls(triggers)
 	sc.fireTaskCreates(triggers)
+	sc.s.loadPendingTriggers()
 }
 
 // fireIntervals fires triggers whose interval has elapsed since last_fire.
@@ -141,7 +148,6 @@ func (sc *Scheduler) fireIntervals(triggers []*db.AgentTrigger) {
 		if !due {
 			continue
 		}
-		_ = sc.pg.TouchTriggerFire(tr.ID)
 		// [F10/F19 경계 판정 · 두뇌 입력 보존] 이 파일의 트리거 합성부(정기·finding·목표·초과·
 		// 생성·도구 fire* 메서드)가 만드는 `【本次…触发】…` 컨텍스트 블록과 trunc 의 `…(已截断…)`
 		// 절단 표시는 번역하지 않는다. StartTriggeredRun 의 message 인자로 들어가
@@ -150,7 +156,14 @@ func (sc *Scheduler) fireIntervals(triggers []*db.AgentTrigger) {
 		// title 인자(`定时触发 · …` 등)는 ca.Chat 에 안 가는 표시 전용이나, 본문이 중국어로
 		// 고정되어 제목만 바꾸면 대화 안에서 언어가 섞이므로(F7·F8·F12) 함께 보존한다.
 		ctx := "\n\n【本次为定时触发】" + now.Format(" 2006-01-02 15:04:05 MST")
-		sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("定时触发 · %s", now.Format("15:04")), tr.IntervalMessage+ctx, 0, false, "", "")
+		eventKey := "interval:initial"
+		if tr.LastFire != nil {
+			eventKey = "interval:" + tr.LastFire.UTC().Format(time.RFC3339Nano)
+		}
+		sc.commit(db.TriggerBatch{IntervalID: tr.ID, Deliveries: []db.TriggerDelivery{{
+			TriggerID: tr.ID, EventKey: eventKey, AgentKey: tr.AgentKey,
+			Title: fmt.Sprintf("定时触发 · %s", now.Format("15:04")), Message: tr.IntervalMessage + ctx,
+		}}})
 	}
 }
 
@@ -163,7 +176,11 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 			want = append(want, tr)
 		}
 	}
-	last, _ := strconv.ParseInt(sc.mustState(schedKeyLastFinding), 10, 64)
+	last, err := sc.lastID(schedKeyLastFinding)
+	if err != nil {
+		log.Printf("[scheduler] cursor: %v", err)
+		return
+	}
 	events, err := sc.pg.NewFindingsSince(last)
 	if err != nil || len(events) == 0 {
 		return
@@ -171,6 +188,7 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 	// Advance the watermark whether or not any on_finding trigger is active: a
 	// finding fires only for triggers live at the moment it appears. Otherwise a
 	// trigger enabled later would replay the entire historical backlog at once.
+	batch := db.TriggerBatch{StateKey: schedKeyLastFinding}
 	maxID := last
 	for _, e := range events {
 		if e.NodeID > maxID {
@@ -182,10 +200,11 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 		msgCtx := fmt.Sprintf("\n\n【本次由任务发现 finding 触发】\n发现: [%s/%s] %s",
 			e.VulnClass, e.Severity, e.Summary)
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("finding 触发 · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "finding:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("finding 触发 · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e))
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastFinding, strconv.FormatInt(maxID, 10))
+	batch.StateValue = strconv.FormatInt(maxID, 10)
+	sc.commit(batch)
 }
 
 // fireGoals fires on_goal_met triggers for met goals not yet in the fired set.
@@ -202,7 +221,12 @@ func (sc *Scheduler) fireGoals(triggers []*db.AgentTrigger) {
 	}
 	// Mark goals as consumed whether or not a trigger is active, so enabling an
 	// on_goal_met trigger later doesn't replay every already-met goal.
-	fired := sc.firedGoalSet()
+	fired, err := sc.firedGoalSet()
+	if err != nil {
+		log.Printf("[scheduler] goals: %v", err)
+		return
+	}
+	batch := db.TriggerBatch{StateKey: schedKeyFiredGoals}
 	changed := false
 	for _, e := range events {
 		if fired[e.NodeID] {
@@ -215,43 +239,38 @@ func (sc *Scheduler) fireGoals(triggers []*db.AgentTrigger) {
 		}
 		msgCtx := fmt.Sprintf("\n\n【本次由任务完成目标触发】\n达成目标: %s", e.Summary)
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("目标触发 · task#%d", e.TaskID), tr.GoalMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "goal:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("目标触发 · task#%d", e.TaskID), tr.GoalMessage+msgCtx, e))
 		}
 	}
 	if changed {
-		sc.saveFiredGoalSet(fired)
+		ids := make([]int64, 0, len(fired))
+		for id := range fired {
+			ids = append(ids, id)
+		}
+		data, _ := json.Marshal(ids)
+		batch.StateValue = string(data)
+		sc.commit(batch)
 	}
 }
 
-// fireTaskTimeouts fires on_task_timeout triggers for tasks that newly reached
-// status='timeout' above the persisted watermark (task id → no double-fire).
+// fireTaskTimeouts observes completion occurrences, independent of task creation order.
 func (sc *Scheduler) fireTaskTimeouts(triggers []*db.AgentTrigger) {
-	var want []*db.AgentTrigger
-	for _, tr := range triggers {
-		if tr.OnTaskTimeout {
-			want = append(want, tr)
-		}
-	}
-	last, _ := strconv.ParseInt(sc.mustState(schedKeyLastTimeout), 10, 64)
-	events, err := sc.pg.TimedOutTasksSince(last)
+	events, err := sc.pg.UnseenTimeoutEvents()
 	if err != nil || len(events) == 0 {
 		return
 	}
-	// Advance the watermark even with no active trigger — see fireFindings.
-	maxID := last
+	batch := db.TriggerBatch{Timeouts: events}
 	for _, e := range events {
-		if e.NodeID > maxID {
-			maxID = e.NodeID
-		}
-		if len(want) == 0 {
-			continue
-		}
-		msgCtx := "\n\n【本次由任务超时触发】"
-		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+		for _, tr := range triggers {
+			if !tr.OnTaskTimeout {
+				continue
+			}
+			key := fmt.Sprintf("timeout:%d:%s", e.TaskID, e.OccurredAt.UTC().Format(time.RFC3339Nano))
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, key,
+				fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+"\n\n【本次由任务超时触发】", e))
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastTimeout, strconv.FormatInt(maxID, 10))
+	sc.commit(batch)
 }
 
 // fireTaskCreates fires on_task_create triggers for tasks newly created above the
@@ -263,12 +282,17 @@ func (sc *Scheduler) fireTaskCreates(triggers []*db.AgentTrigger) {
 			want = append(want, tr)
 		}
 	}
-	last, _ := strconv.ParseInt(sc.mustState(schedKeyLastTaskCreate), 10, 64)
+	last, err := sc.lastID(schedKeyLastTaskCreate)
+	if err != nil {
+		log.Printf("[scheduler] cursor: %v", err)
+		return
+	}
 	events, err := sc.pg.NewTasksSince(last)
 	if err != nil || len(events) == 0 {
 		return
 	}
 	// Advance the watermark even with no active trigger — see fireFindings.
+	batch := db.TriggerBatch{StateKey: schedKeyLastTaskCreate}
 	maxID := last
 	for _, e := range events {
 		if e.NodeID > maxID {
@@ -279,10 +303,11 @@ func (sc *Scheduler) fireTaskCreates(triggers []*db.AgentTrigger) {
 		}
 		msgCtx := "\n\n【本次由任务创建触发】"
 		for _, tr := range want {
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("任务创建触发 · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "create:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("任务创建触发 · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e))
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastTaskCreate, strconv.FormatInt(maxID, 10))
+	batch.StateValue = strconv.FormatInt(maxID, 10)
+	sc.commit(batch)
 }
 
 // fireToolCalls fires on_tool_call triggers for tool calls (tool_result rows) above
@@ -295,12 +320,17 @@ func (sc *Scheduler) fireToolCalls(triggers []*db.AgentTrigger) {
 			want = append(want, tr)
 		}
 	}
-	last, _ := strconv.ParseInt(sc.mustState(schedKeyLastToolCall), 10, 64)
+	last, err := sc.lastID(schedKeyLastToolCall)
+	if err != nil {
+		log.Printf("[scheduler] cursor: %v", err)
+		return
+	}
 	events, err := sc.pg.NewToolCallsSince(last)
 	if err != nil || len(events) == 0 {
 		return
 	}
 	// Advance the watermark even with no active trigger — see fireFindings.
+	batch := db.TriggerBatch{StateKey: schedKeyLastToolCall}
 	maxID := last
 	for _, e := range events {
 		if e.NodeID > maxID {
@@ -324,10 +354,11 @@ func (sc *Scheduler) fireToolCalls(triggers []*db.AgentTrigger) {
 			if !containsFold(tr.ToolNames, e.Tool) {
 				continue
 			}
-			sc.s.StartTriggeredRun(tr.AgentKey, fmt.Sprintf("工具触发 · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e.TaskID, true, e.TaskDesc, e.TaskGoal)
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "tool:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("工具触发 · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e))
 		}
 	}
-	_ = sc.pg.SetSchedState(schedKeyLastToolCall, strconv.FormatInt(maxID, 10))
+	batch.StateValue = strconv.FormatInt(maxID, 10)
+	sc.commit(batch)
 }
 
 // containsFold reports whether name is in set (case-insensitive).
@@ -349,33 +380,37 @@ func trunc(s string, max int) string {
 	return string(r[:max]) + fmt.Sprintf("…(已截断,共 %d 字)", len(r))
 }
 
-func (sc *Scheduler) mustState(key string) string {
-	v, _ := sc.pg.GetSchedState(key)
-	return v
+func (sc *Scheduler) lastID(key string) (int64, error) {
+	raw, err := sc.pg.GetSchedState(key)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(raw, 10, 64)
 }
 
-func (sc *Scheduler) firedGoalSet() map[int64]bool {
-	out := map[int64]bool{}
-	raw := sc.mustState(schedKeyFiredGoals)
-	if raw == "" {
-		return out
+func (sc *Scheduler) firedGoalSet() (map[int64]bool, error) {
+	raw, err := sc.pg.GetSchedState(schedKeyFiredGoals)
+	if err != nil {
+		return nil, err
 	}
 	var ids []int64
-	if json.Unmarshal([]byte(raw), &ids) == nil {
-		for _, id := range ids {
-			out[id] = true
-		}
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return nil, err
 	}
-	return out
+	out := map[int64]bool{}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
 }
 
-func (sc *Scheduler) saveFiredGoalSet(set map[int64]bool) {
-	ids := make([]int64, 0, len(set))
-	for id := range set {
-		ids = append(ids, id)
+func (sc *Scheduler) commit(batch db.TriggerBatch) {
+	if err := sc.pg.CommitTriggerBatch(batch); err != nil {
+		log.Printf("[scheduler] persist pending runs: %v", err)
 	}
-	b, _ := json.Marshal(ids)
-	if err := sc.pg.SetSchedState(schedKeyFiredGoals, string(b)); err != nil {
-		log.Printf("[scheduler] save fired goals failed: %v", err)
-	}
+}
+
+func delivery(tr *db.AgentTrigger, key, title, message string, e db.TaskEvent) db.TriggerDelivery {
+	return db.TriggerDelivery{TriggerID: tr.ID, EventKey: key, AgentKey: tr.AgentKey, Title: title, Message: message,
+		TaskID: e.TaskID, TaskDesc: e.TaskDesc, TaskGoal: e.TaskGoal, Mergeable: true}
 }

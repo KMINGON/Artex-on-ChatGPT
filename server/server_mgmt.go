@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -414,6 +415,8 @@ func (s *Server) agentByKey(w http.ResponseWriter, r *http.Request) (*db.DB, *db
 // pgSaveAgentConfig updates an agent's runtime config (currently max_turns) and
 // re-applies the live LLM so the change takes effect immediately.
 func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
 	pg, a, ok := s.agentByKey(w, r)
 	if !ok {
 		return
@@ -515,11 +518,9 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 	// web search). Rebuild them even when no global profile is configured.
 	s.invalidateTaskAgents()
 	// rebuild the live agents so the new max_turns/run_seconds/binding apply without a restart.
-	s.cfgMu.Lock()
-	cfg, on := s.llmCfg, s.llmOn
-	s.cfgMu.Unlock()
-	if on {
-		_ = s.applyLLM(cfg)
+	if err := s.reapplyActiveProfile(); err != nil {
+		writeErr(w, 503, err.Error())
+		return
 	}
 	resp := map[string]any{"ok": true}
 	if req.MaxTurns != nil {
@@ -1868,6 +1869,8 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
 	p := body.LLMProfile
 	p.Format = "openai-responses"
 	if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.Model) == "" {
@@ -1878,6 +1881,14 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		if previous, err := pg.ProfileByID(p.ID); err == nil && previous != nil {
 			p.AuthMode, p.ChatGPTAccountID = previous.AuthMode, previous.ChatGPTAccountID
 		}
+	}
+	if p.AuthMode == "" {
+		p.AuthMode = "api_key"
+	}
+	p.Model = strings.TrimSpace(p.Model)
+	if err := chatgptllm.ValidateOptions(p.Model, p.AuthMode, p.ReasoningEffort, p.AccessProgramCyber); err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	if p.AuthMode == "chatgpt_plan" {
 		m, err := s.chatGPTManager()
@@ -1919,12 +1930,12 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 404, "프로필을 찾을 수 없습니다")
 			return
 		}
-		if p.AuthMode != "chatgpt_plan" && body.APIKey == "" && (previous.UnsupportedReason() != "" || previous.AuthMode == "chatgpt_plan") {
+		if p.AuthMode != "chatgpt_plan" && strings.TrimSpace(body.APIKey) == "" && (previous.UnsupportedReason() != "" || previous.AuthMode == "chatgpt_plan") {
 			writeErr(w, 400, "새 OpenAI API 키를 입력해 주세요. 이전 연결의 키는 다른 인증에 재사용하지 않습니다")
 			return
 		}
 	}
-	p.APIKey = body.APIKey
+	p.APIKey = strings.TrimSpace(body.APIKey)
 	if p.MaxTokens < 0 {
 		p.MaxTokens = 0
 	}
@@ -1940,7 +1951,10 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	// Hot-apply. Not just when the ACTIVE profile changed: with failover on, any
 	// profile's key/model/priority/pool_exclude edit reshapes the chain, so the
 	// engine's provider has to be rebuilt either way.
-	s.reapplyActiveProfile()
+	if err := s.reapplyActiveProfile(); err != nil {
+		writeErr(w, 503, err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{"id": id})
 }
 
@@ -1967,13 +1981,18 @@ func (s *Server) pgSaveLLMRetryPolicy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
 	if err := pg.SetLLMRetryPolicy(pol); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	s.applyRetryPolicy()
 	s.invalidateProfileAgents()
-	s.reapplyActiveProfile()
+	if err := s.reapplyActiveProfile(); err != nil {
+		writeErr(w, 503, err.Error())
+		return
+	}
 	writeJSON(w, 200, pg.LLMRetryPolicy())
 }
 
@@ -1982,6 +2001,8 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
 	id, _ := pathInt(r, "id")
 	if err := pg.DeleteProfileContext(r.Context(), id); err != nil {
 		switch {
@@ -2003,7 +2024,10 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 	s.restoreTasksAfterProfileDelete(pg)
 	// Cache invalidation also removed the active profile's shared provider entry.
 	// Reapply after task-state sync so the wake-up observes the post-delete chain.
-	s.reapplyActiveProfile()
+	if err := s.reapplyActiveProfile(); err != nil {
+		writeErr(w, 503, err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
 
@@ -2039,12 +2063,30 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	s.profileUpdateMu.Lock()
+	defer s.profileUpdateMu.Unlock()
+	p, err := pg.ProfileByID(body.ID)
+	if err != nil {
+		writeErr(w, 500, "프로필을 읽을 수 없습니다")
+		return
+	}
+	if p == nil {
+		writeErr(w, 404, "프로필을 찾을 수 없습니다")
+		return
+	}
+	if resolved := s.resolutionFromProfile(p, "global_profile"); !resolved.Available {
+		writeErr(w, 400, resolved.Reason)
+		return
+	}
 	if err := pg.SetActiveProfile(body.ID); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	s.invalidateProfileAgents() // active change may affect pinned-task fallbacks
-	s.reapplyActiveProfile()    // switch the running engine to the newly activated profile
+	if err := s.reapplyActiveProfile(); err != nil {
+		writeErr(w, 503, err.Error())
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -2156,12 +2198,14 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	models := make([]string, 0, len(parsed.Data))
+	details := make([]chatgptllm.Model, 0, len(parsed.Data))
 	for _, model := range parsed.Data {
 		if model.ID != "" {
 			models = append(models, model.ID)
+			details = append(details, chatgptllm.Model{ID: model.ID, Name: model.ID, Capabilities: chatgptllm.Capabilities(model.ID, "api_key")})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "models": models})
+	writeJSON(w, 200, map[string]any{"ok": true, "models": models, "model_details": details})
 }
 
 // --- prompt template helpers (Go text/template + catalog 白名单) ---

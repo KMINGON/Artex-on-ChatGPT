@@ -32,6 +32,41 @@ jobs:
       - name: go test (DB 없음 — 통합 테스트는 스킵)
         run: go test ./... -count=1
 
+  norma:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: third_party/norma
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: third_party/norma/go.mod
+          cache-dependency-path: third_party/norma/go.sum
+      - run: go build ./...
+      - run: go vet ./...
+      - name: Norma core tests
+        run: |
+          packages="$(go list ./...)"
+          printf '%s\n' "$packages" | grep -Ev '/(noa|noaadapter)$' | xargs go test -count=1
+      - run: go test -race ./harness ./compaction ./transcript ./agentcore ./mcp ./tool
+
+  # Noa retains 7 upstream baseline failures; its algorithm is outside this change.
+  # Keep them visible without disguising them as passing core regression tests.
+  norma-noa-baseline:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: third_party/norma
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: third_party/norma/go.mod
+          cache-dependency-path: third_party/norma/go.sum
+      - run: go test ./noa ./noaadapter -count=1
+
   # 실제 PostgreSQL 이 있어야 도는 DB 통합 테스트(알림·증거·사용량 계량 등)를 맡는다.
   # 위 go job 이 스킵하는 경로(알림 채널 검증, 증거 저장, llm_usage 계량 등)를 실제
   # 데이터베이스로 강제해, DB 통합 경로에서만 드러나는 한국어화 회귀까지 머지 전에 잡는다.

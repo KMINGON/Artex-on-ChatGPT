@@ -1,11 +1,31 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDaybreakConnectionIdentityPreservesLegacyDefault(t *testing.T) {
+	cfg := Config{Model: "model", AuthMode: "api_key", APIKey: "fixture"}
+	digest := sha256.Sum256([]byte(`["api_key","fixture","model"]`))
+	legacy := hex.EncodeToString(digest[:])
+	if cfg.ConnectionIdentity() != legacy {
+		t.Fatal("default program changed existing session binding")
+	}
+	cfg.AccessProgramCyber = "daybreak_blue"
+	blue := cfg.ConnectionIdentity()
+	if blue == legacy {
+		t.Fatal("program change reused the old context")
+	}
+	cfg.AccessProgramCyber = "standard"
+	if cfg.ConnectionIdentity() == blue || cfg.ConnectionIdentity() == legacy {
+		t.Fatal("explicit program selections must have distinct bindings")
+	}
+}
 
 func TestConnectionChangeStartsNewContextAndKeepsLegacyHistory(t *testing.T) {
 	dir := t.TempDir()

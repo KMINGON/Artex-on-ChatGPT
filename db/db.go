@@ -20,6 +20,9 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed trigger_queue.sql
+var triggerQueueSQL string
+
 const schemaMigrationLockKey int64 = 7337741001
 
 // maxOpenConns 는 연결 풀 상한이다(`Open` 참조). PostgreSQL 기본 max_connections(100)
@@ -46,7 +49,7 @@ func isPostgresDeadlock(err error) bool {
 
 func applySchemaWithRetry(ctx context.Context, execer schemaExecer, sleep func(time.Duration)) error {
 	for attempt := 0; ; attempt++ {
-		if _, err := execer.ExecContext(ctx, schemaSQL); err != nil {
+		if _, err := execer.ExecContext(ctx, schemaSQL+"\n"+triggerQueueSQL); err != nil {
 			if !isPostgresDeadlock(err) || attempt >= len(schemaDeadlockRetryDelays) {
 				return err
 			}

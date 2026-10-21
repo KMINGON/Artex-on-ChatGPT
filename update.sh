@@ -14,7 +14,7 @@ ask(){  local p="$1" d="${2:-}" a; read -rp "$p${d:+ [$d]}: " a; echo "${a:-$d}"
 
 # ── 선택: 저장소를 최신 코드로 동기화합니다(compose·스크립트·로컬 컴파일 소스가 모두 이걸로 갱신됩니다) ───────
 sync_repo(){
-  [ -d .git ] && command -v git >/dev/null 2>&1 || { warn "git 작업 사본이 아니라 git pull 을 건너뜁니다"; return; }
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 && command -v git >/dev/null 2>&1 || { warn "git 작업 사본이 아니라 git pull 을 건너뜁니다"; return; }
   [ "$(ask '최신 코드를 받을까요 (git pull --ff-only)? (y/n)' y)" = y ] || return
   if ! git pull --ff-only; then
     warn "git pull 을 빨리 감기로 진행하지 못했습니다(로컬 변경이 있거나 브랜치가 갈라졌습니다). 직접 처리한 뒤 다시 시도하세요. 이번에는 현재 코드를 그대로 사용합니다"
@@ -23,34 +23,7 @@ sync_repo(){
 
 # ── ① Docker 업데이트 ───────────────────────────────
 update_docker(){
-  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 \
-    || die "docker / docker compose 를 찾을 수 없습니다. 먼저 ./install.sh 로 설치·배포하세요"
-  [ -f .env ] || die ".env 를 찾을 수 없습니다. 먼저 ./install.sh 로 최초 배포를 완료하세요"
-
-  # 선택: 지정한 버전 tag 로 업그레이드합니다(비워 두면 .env 의 ARTEX_TAG 를 따르고, 기본값은 latest 입니다)
-  local tag; tag="$(ask '대상 이미지 tag(엔터를 누르면 .env / latest 사용)' '')"
-  if [ -n "$tag" ]; then
-    if grep -q '^ARTEX_TAG=' .env; then
-      sed -i.bak "s|^ARTEX_TAG=.*|ARTEX_TAG=${tag}|" .env && rm -f .env.bak
-    else
-      printf '\nARTEX_TAG=%s\n' "$tag" >> .env
-    fi
-    ok "ARTEX_TAG 를 ${tag} 로 설정했습니다"
-  fi
-
-  # artex 만 건드립니다. postgres 는 16-alpine 로 고정이라 따라 올릴 필요가 없습니다(받아 봐야 대역폭 낭비이고,
-  # 메이저 버전이 바뀌면 호환성 위험도 있습니다). artex 는 depends_on postgres 를 선언하므로 서비스명을 붙여
-  # up 하면 pg 가 안 떠 있을 때 자동으로 띄우고, 이미 떠 있으면 그대로 두고 재구성하지 않습니다.
-  info "새 이미지를 받습니다(artex 만)…"
-  if ! docker compose pull artex; then
-    warn "이미지 ghcr.io/jiwoochris/artex-global 를 받지 못했습니다(지정한 tag 가 발행된 릴리스 태그인지, 네트워크가 되는지 확인하세요)"
-    die "이미지 업데이트에 실패했습니다. \"2) 로컬 업데이트(go 로 다시 컴파일)\" 로도 업데이트할 수 있습니다"
-  fi
-  info "재구성 후 시작합니다(artex 는 재시작 시 schema 를 자동으로 마이그레이션합니다)…"
-  docker compose up -d artex
-  ok "업데이트 완료 → http://localhost:8787"
-  info "로그 보기: docker compose logs -f artex"
-  info "오래된 이미지 정리(선택): docker image prune -f"
+  die "이 포크의 Docker 앱 업데이트는 아직 지원하지 않습니다. 2) 로컬 업데이트 또는 README의 소스 빌드 방법을 사용하세요."
 }
 
 # ── ② 로컬 컴파일 업데이트 ──────────────────────────────
@@ -75,11 +48,11 @@ update_local(){
 
 echo "=============================="
 echo "  ARTEX 업데이트"
-echo "  1) Docker 업데이트(새 이미지를 받아 재구성)"
+echo "  1) Docker 앱 업데이트 (미지원)"
 echo "  2) 로컬 업데이트(go 로 다시 컴파일)"
 echo "=============================="
-case "$(ask '선택' 1)" in
-  1) sync_repo; update_docker ;;
+case "$(ask '선택' 2)" in
+  1) update_docker ;;
   2) sync_repo; update_local ;;
   *) die "잘못된 선택입니다" ;;
 esac

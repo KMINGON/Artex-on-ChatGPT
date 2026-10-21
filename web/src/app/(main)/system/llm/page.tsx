@@ -28,6 +28,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { chatGPTAccountLabel } from "@/lib/chatgpt";
 import type {
   ChatGPTAccount,
   ChatGPTModel,
@@ -43,7 +44,7 @@ import { ChatGPTAccountCard } from "./_components/chatgpt-account-card";
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
 
 // Empty effort means the model default; the select uses a nonempty sentinel.
-const NONE = "none";
+const NONE = "_default";
 const fromStore = (v?: string) => (v ? v : NONE);
 const toStore = (v: string) => (v === NONE ? "" : v);
 
@@ -278,6 +279,7 @@ function ProfileSheet({
   const [rpm, setRpm] = React.useState("0");
   const [cw, setCw] = React.useState("0"); // 上下文窗口(K tokens);0=默认200K
   const [effort, setEffort] = React.useState(NONE);
+  const [accessProgram, setAccessProgram] = React.useState(NONE);
   const [priority, setPriority] = React.useState("0"); // 轮询顺位;越大越先
   const [poolExclude, setPoolExclude] = React.useState(false);
   const [maxTokens, setMaxTokens] = React.useState("0"); // 单次回复输出上限;0=不发送
@@ -292,15 +294,19 @@ function ProfileSheet({
   const selectedAccount = accounts.find((account) => account.id === accountId);
   const accountReady = Boolean(selectedAccount?.connected && selectedAccount.plan_enabled);
 
-  // Preserve the existing effort choices without introducing model-specific defaults.
-  const EFFORT_LEVELS: { value: string; label: string }[] = [
-    { value: NONE, label: t("profile.effort.opt.none") },
-    { value: "low", label: "low" },
-    { value: "medium", label: "medium" },
-    { value: "high", label: "high" },
-    { value: "xhigh", label: "xhigh" },
-    { value: "max", label: "max" },
-  ];
+  const capabilities =
+    models.find((item) => item.id === model)?.capabilities ??
+    (profile?.model === model && profile.auth_mode === authMode ? profile.capabilities : undefined);
+  const efforts = capabilities?.known
+    ? (capabilities.reasoning_efforts ?? [])
+    : ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const effortUnsupported = Boolean(capabilities?.known && effort !== NONE && !efforts.includes(effort));
+  const effortChoices = [...new Set([...efforts, ...(effort !== NONE ? [effort] : [])])];
+  const accessPrograms = capabilities?.access_programs_cyber ?? ["standard", "daybreak_blue", "daybreak_red"];
+  const accessUnsupported = isChatGPT
+    ? accessProgram !== NONE
+    : Boolean(capabilities?.known && accessProgram !== NONE && !accessPrograms.includes(accessProgram));
+  const accessChoices = [...new Set([...accessPrograms, ...(accessProgram !== NONE ? [accessProgram] : [])])];
 
   // 每次打开时从传入的 profile 灌一遍表单（新建则重置为默认值）。抽屉关掉再打开
   // 就是一次干净的开始，不会留下上一个配置的残影。
@@ -315,6 +321,7 @@ function ProfileSheet({
     setRpm(String(profile?.rate_per_minute ?? 0));
     setCw(String(profile?.context_window_k ?? 0));
     setEffort(fromStore(profile?.reasoning_effort));
+    setAccessProgram(fromStore(profile?.access_program_cyber));
     setPriority(String(profile?.priority ?? 0));
     setPoolExclude(profile?.pool_exclude ?? false);
     setMaxTokens(String(profile?.max_tokens ?? 0));
@@ -347,7 +354,7 @@ function ProfileSheet({
         ? { ok: true, models: await api.chatgptModels(accountId), error: undefined }
         : await api.fetchLLMModels(apiKey, proxy, profileId).then((result) => ({
             ...result,
-            models: result.models?.map((id) => ({ id, name: id })),
+            models: result.model_details ?? result.models?.map((id) => ({ id, name: id })),
           }));
       if (request !== modelRequest.current) return;
       if (r.ok && r.models && r.models.length > 0) {
@@ -366,7 +373,7 @@ function ProfileSheet({
   }
 
   async function testConnection() {
-    if (testing) return;
+    if (testing || effortUnsupported || accessUnsupported) return;
     setTesting(true);
     try {
       // 用配置实际会跑的思考参数来测，这样不支持该字段的模型在这里就失败，
@@ -376,6 +383,7 @@ function ProfileSheet({
         api_key: isChatGPT ? "" : apiKey,
         proxy,
         reasoning_effort: toStore(effort),
+        access_program_cyber: toStore(accessProgram),
         profile_id: profileId,
         auth_mode: authMode,
         chatgpt_account_id: isChatGPT ? accountId : undefined,
@@ -383,7 +391,15 @@ function ProfileSheet({
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
         toast.success(t("profile.toast.testOk", { latency: r.latency_ms ?? "?", model: r.model ?? model }), {
-          description: r.reply ? t("profile.toast.testReply", { reply: r.reply }) : undefined,
+          description: [
+            r.reply ? t("profile.toast.testReply", { reply: r.reply }) : "",
+            r.actual_model ? `응답 모델: ${r.actual_model}` : "",
+            !isChatGPT
+              ? `응답 액세스 프로그램: ${r.access_programs_present ? r.actual_access_program_cyber || "명시 없음" : "미제공"}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
         });
       else toast.error(t("profile.toast.testFailed", { error: r.error ?? t("profile.toast.unknown") }));
     } catch (e) {
@@ -402,7 +418,7 @@ function ProfileSheet({
       toast.error(t("profile.toast.nameModelRequired"));
       return;
     }
-    if (saving) return;
+    if (saving || effortUnsupported || accessUnsupported) return;
     setSaving(true);
     try {
       const { id } = await api.saveLLMProfile({
@@ -417,6 +433,7 @@ function ProfileSheet({
         rate_per_minute: Number(rpm) || 0,
         context_window_k: Number(cw) || 0,
         reasoning_effort: toStore(effort),
+        access_program_cyber: toStore(accessProgram),
         priority: isChatGPT ? 0 : Number(priority) || 0,
         pool_exclude: isChatGPT || poolExclude,
         max_tokens: isChatGPT ? 0 : Math.max(0, Number(maxTokens) || 0),
@@ -465,6 +482,7 @@ function ProfileSheet({
               value={authMode}
               onValueChange={(value) => {
                 setAuthMode(value as LLMAuthMode);
+                setAccessProgram(NONE);
                 if (value === "chatgpt_plan") {
                   setAccountId(accounts.find((account) => account.connected && account.plan_enabled)?.id ?? "");
                 }
@@ -509,7 +527,7 @@ function ProfileSheet({
                       value={account.id}
                       disabled={!account.connected || !account.plan_enabled}
                     >
-                      {account.email || account.id}
+                      {chatGPTAccountLabel(account)}
                       {account.connected && account.plan_enabled ? "" : " (연결 확인 필요)"}
                     </SelectItem>
                   ))}
@@ -692,17 +710,21 @@ function ProfileSheet({
           <div className="grid gap-3 rounded-lg border p-3">
             <div className={cn("flex items-center justify-between gap-4", !isChatGPT && "border-t pt-3")}>
               <div className="grid gap-0.5">
-                <Label className="text-sm">{t("profile.effort.label")}</Label>
+                <Label htmlFor="p-effort" className="text-sm">
+                  {t("profile.effort.label")}
+                </Label>
                 <p className="text-muted-foreground text-xs">{t("profile.effort.hint")}</p>
               </div>
               <Select value={effort} onValueChange={setEffort}>
-                <SelectTrigger className="w-32 shrink-0">
+                <SelectTrigger id="p-effort" className="w-32 shrink-0">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {EFFORT_LEVELS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
+                  <SelectItem value={NONE}>{t("profile.effort.opt.none")}</SelectItem>
+                  {effortChoices.map((value) => (
+                    <SelectItem key={value} value={value}>
+                      {value}
+                      {capabilities?.known && !efforts.includes(value) ? " (지원하지 않는 저장값)" : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -710,6 +732,68 @@ function ProfileSheet({
             </div>
           </div>
 
+          <p className="text-muted-foreground text-xs">
+            {capabilities?.known
+              ? "선택한 모델의 공식 기능 정보를 확인했습니다. 계정의 실제 사용 권한은 요청 시 확인됩니다."
+              : "모델 기능 호환성 미확인: 모델 목록을 새로고침해 확인하세요. 저장된 모델과 추론 강도는 자동 변경하지 않습니다."}
+            {capabilities?.source_url && (
+              <>
+                {" "}
+                <a className="underline" href={capabilities.source_url} target="_blank" rel="noreferrer">
+                  공식 기능 안내
+                </a>{" "}
+                ({capabilities.checked_at})
+              </>
+            )}
+          </p>
+          {effortUnsupported && (
+            <p role="alert" className="text-destructive text-xs">
+              이 모델은 저장된 추론 강도를 지원하지 않습니다. 기본값 또는 표시된 지원 값을 직접 선택해 주세요.
+            </p>
+          )}
+          <div className="grid gap-2 rounded-lg border p-3">
+            <Label htmlFor="p-access-program">API 액세스 프로그램</Label>
+            {isChatGPT ? (
+              <p className="text-muted-foreground text-xs">
+                ChatGPT 구독에서는 Daybreak 요청 옵션의 공식 지원이 확인되지 않아 전송하지 않습니다. 계정이 제공하는
+                모델을 그대로 사용합니다.
+              </p>
+            ) : (
+              <>
+                <Select value={accessProgram} onValueChange={setAccessProgram}>
+                  <SelectTrigger id="p-access-program">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE}>기본값 (필드 생략)</SelectItem>
+                    {accessChoices.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {value}
+                        {capabilities?.known && !accessPrograms.includes(value) ? " (지원하지 않는 저장값)" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-muted-foreground text-xs">
+                  Daybreak는 해당 OpenAI 조직·프로젝트의 승인이 필요합니다.{" "}
+                  {capabilities?.known
+                    ? "모델 지원과 계정 승인은 별개입니다."
+                    : "이 모델의 프로그램 호환성은 미확인입니다."}{" "}
+                  기본값은 서버의 선택을 따르며 명시적 standard와 다릅니다.
+                </p>
+              </>
+            )}
+            {accessUnsupported && (
+              <p role="alert" className="text-destructive text-xs">
+                현재 연결에서 지원하지 않는 액세스 프로그램입니다. API 연결과 지원 프로그램을 직접 선택해 주세요.{" "}
+                {isChatGPT && (
+                  <button type="button" className="underline" onClick={() => setAccessProgram(NONE)}>
+                    기본값 사용
+                  </button>
+                )}
+              </p>
+            )}
+          </div>
           <ProfileRetryFields value={retry} onChange={setRetry} />
         </div>
 
@@ -717,12 +801,16 @@ function ProfileSheet({
           <Button
             variant="outline"
             onClick={testConnection}
-            disabled={testing || (isChatGPT && (!accountReady || !model))}
+            disabled={testing || effortUnsupported || accessUnsupported || (isChatGPT && (!accountReady || !model))}
           >
             {testing ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
             {testing ? t("profile.testing") : t("profile.testConnection")}
           </Button>
-          <Button onClick={save} disabled={saving || (isChatGPT && (!accountReady || !model))} className="flex-1">
+          <Button
+            onClick={save}
+            disabled={saving || effortUnsupported || accessUnsupported || (isChatGPT && (!accountReady || !model))}
+            className="flex-1"
+          >
             {saving && <Loader2Icon className="animate-spin" />}
             {!saving && (isNew ? <PlusIcon /> : <SaveIcon />)}
             {isNew ? t("profile.create") : t("profile.save")}
@@ -753,6 +841,16 @@ export default function LLMPage() {
   // 一个配置在卡片上显示的「是否正常」。没填 Key 的配置根本发不出请求，比熔断更该先说。
   const healthOf = React.useCallback(
     (p: LLMProfile, m?: LLMPoolMember): Health => {
+      if (
+        p.auth_mode === "chatgpt_plan" &&
+        (p.plan_blocked || accounts.find((account) => account.id === p.chatgpt_account_id)?.plan_blocked)
+      ) {
+        return {
+          label: "한도 재확인 필요",
+          cls: "border-amber-500/50 text-amber-600",
+          hint: "ChatGPT 계정 연결 카드에서 사용 한도를 확인하고 명시적으로 재확인하세요.",
+        };
+      }
       if (p.configuration_error)
         return { label: "설정 재선택 필요", cls: "text-destructive", hint: p.configuration_error };
       if (p.auth_mode === "chatgpt_plan" && !p.connected) {
@@ -791,7 +889,7 @@ export default function LLMPage() {
         cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400",
       };
     },
-    [t],
+    [t, accounts],
   );
 
   const loadPool = React.useCallback(async () => {
@@ -870,7 +968,7 @@ export default function LLMPage() {
         </div>
       </div>
 
-      <ChatGPTAccountCard onAccounts={setAccounts} onChanged={load} />
+      <ChatGPTAccountCard onAccounts={setAccounts} onChanged={load} profiles={profiles} />
 
       <Tabs defaultValue="profiles" className="flex-1">
         <TabsList>
@@ -925,8 +1023,10 @@ export default function LLMPage() {
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-6 text-muted-foreground text-xs">
                       {p.auth_mode === "chatgpt_plan" ? (
                         <span>
-                          {accounts.find((account) => account.id === p.chatgpt_account_id)?.email ||
-                            p.chatgpt_account_id}
+                          {(() => {
+                            const account = accounts.find((item) => item.id === p.chatgpt_account_id);
+                            return account ? chatGPTAccountLabel(account) : p.chatgpt_account_id;
+                          })()}
                         </span>
                       ) : (
                         p.api_key_hint && <span>{p.api_key_hint}</span>
@@ -935,6 +1035,7 @@ export default function LLMPage() {
                         {p.rate_per_second}/s · {p.rate_per_minute}/min
                       </span>
                       {p.proxy && <span className="truncate">{t("card.proxy", { proxy: p.proxy })}</span>}
+                      {p.access_program_cyber && <span>{p.access_program_cyber}</span>}
                       {p.reasoning_effort && (
                         <span>
                           {t("card.thinking", {
@@ -957,7 +1058,7 @@ export default function LLMPage() {
                         size="sm"
                         variant="outline"
                         className="flex-1"
-                        disabled={p.is_default || (p.auth_mode === "chatgpt_plan" && !p.connected)}
+                        disabled={p.is_default || !p.connected || p.plan_blocked || Boolean(p.configuration_error)}
                         onClick={(e) => {
                           e.stopPropagation();
                           void activate(p.id, p.name);

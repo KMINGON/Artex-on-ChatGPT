@@ -6,11 +6,13 @@ package llmrec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"log"
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
@@ -156,6 +158,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			streamErr   error
 		)
 
+		var observed usageObservation
+		callCtx := chatgptllm.WithResponseObserver(ctx, observed.observe)
 		finished := false
 		finish := func(err error) {
 			if finished {
@@ -167,15 +171,15 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, observed.received(err))
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
-				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
+				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, observed.metadata)
 			}
 		}
 		defer func() { finish(ctx.Err()) }()
 
-		for ev, err := range r.inner.Stream(ctx, req) {
+		for ev, err := range r.inner.Stream(callCtx, req) {
 			if err != nil {
 				streamErr = err
 				finish(streamErr)
@@ -240,14 +244,16 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 		ctx, capt = NewCapture(ctx)
 	}
 
+	var observed usageObservation
+	ctx = chatgptllm.WithResponseObserver(ctx, observed.observe)
 	msg, stopReason, usage, err := r.inner.Complete(ctx, req)
 	status := "ok"
 	if err != nil {
 		status = "error"
 	}
-	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, observed.received(err))
 	if recordBodies {
-		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
+		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err, observed.metadata)
 	}
 	return msg, stopReason, usage, err
 }
@@ -264,7 +270,7 @@ func thinkingText(msg llm.Message) string {
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string) {
+func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string, usageReceived *bool) {
 	if r.pg == nil {
 		return
 	}
@@ -284,6 +290,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		CacheRead:     usage.CacheReadTokens,
 		CacheWrite:    usage.CacheWriteTokens,
 		Status:        status,
+		UsageReceived: usageReceived,
 	})
 	if err != nil {
 		log.Printf("[llmusage] insert: %v", err)
@@ -293,7 +300,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 // record persists one LLM call to PostgreSQL before the provider stream returns.
 // Keeping the write inside the owning task operation means task deletion can
 // drain calls and then remove records without a late async insert recreating one.
-func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error) {
+func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error, metadata *chatgptllm.ResponseMetadata) {
 	latency := int(time.Since(start).Milliseconds())
 	status := "ok"
 	errMsg := ""
@@ -312,6 +319,13 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 			"cache_read_tokens":  usage.CacheReadTokens,
 			"cache_write_tokens": usage.CacheWriteTokens,
 		},
+	}
+	if metadata != nil {
+		resp["response_metadata"] = metadata
+	}
+	var diagnostic interface{ Diagnostics() map[string]any }
+	if errors.As(streamErr, &diagnostic) {
+		resp["llm_error"] = diagnostic.Diagnostics()
 	}
 	if thinking != "" {
 		resp["thinking"] = thinking
@@ -395,4 +409,29 @@ func (r *Recorder) serializeRequest(req llm.CompletionRequest) string {
 	}
 	b, _ := json.Marshal(m)
 	return string(b)
+}
+
+// The sum contains only reported usage, never an estimate. A retry may report
+// some attempts and omit others; true means at least one server report exists.
+// Generic/legacy providers without this observation contract remain NULL.
+type usageObservation struct{ metadata *chatgptllm.ResponseMetadata }
+
+func (o *usageObservation) observe(m chatgptllm.ResponseMetadata) {
+	if o.metadata != nil {
+		m.UsageReceived = m.UsageReceived || o.metadata.UsageReceived
+	}
+	o.metadata = &m
+}
+func (o *usageObservation) received(err error) *bool {
+	if o.metadata != nil {
+		b := o.metadata.UsageReceived
+		return &b
+	}
+	var diagnostic interface{ Diagnostics() map[string]any }
+	if errors.As(err, &diagnostic) {
+		if b, ok := diagnostic.Diagnostics()["usage_received"].(bool); ok {
+			return &b
+		}
+	}
+	return nil
 }

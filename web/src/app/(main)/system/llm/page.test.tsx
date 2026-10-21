@@ -16,6 +16,8 @@ vi.mock("@/lib/api", () => ({
     chatgptModels: vi.fn(),
     saveLLMProfile: vi.fn(),
     testLLM: vi.fn(),
+    activateLLMProfile: vi.fn(),
+    fetchLLMModels: vi.fn(),
   },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -151,5 +153,112 @@ describe("ChatGPT model profile", () => {
     expect(dialog.getByRole("alert")).toHaveTextContent("OpenAI 모델과 인증을 다시 선택해 주세요");
     expect(dialog.getByLabelText("모델")).toHaveValue("");
     expect(api.saveLLMProfile).not.toHaveBeenCalled();
+  });
+  it("disables activation of an API draft without a key", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      {
+        id: "18",
+        name: "초안",
+        model: "saved-model",
+        auth_mode: "api_key",
+        connected: false,
+        rate_per_second: 0,
+        rate_per_minute: 0,
+        is_default: false,
+      },
+    ]);
+    await act(async () =>
+      render(
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <LLMPage />
+        </NextIntlClientProvider>,
+      ),
+    );
+    expect(screen.getByRole("button", { name: "활성으로 설정" })).toBeDisabled();
+    expect(api.activateLLMProfile).not.toHaveBeenCalled();
+  });
+
+  it("preserves the model and distinguishes explicit none effort and API Daybreak from defaults", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      {
+        id: "19",
+        name: "기능 확인 프로필",
+        model: "gpt-6-sol",
+        auth_mode: "api_key",
+        connected: true,
+        rate_per_second: 0,
+        rate_per_minute: 0,
+        is_default: false,
+        capabilities: {
+          known: true,
+          reasoning_efforts: ["none", "low", "high"],
+          access_programs_cyber: ["standard", "daybreak_blue"],
+          daybreak_available: true,
+        },
+      },
+    ]);
+    await act(async () =>
+      render(
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <LLMPage />
+        </NextIntlClientProvider>,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /기능 확인 프로필/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.keyDown(dialog.getByRole("combobox", { name: messages.llmPage.profile.effort.label }), {
+      key: "ArrowDown",
+    });
+    expect(screen.queryByRole("option", { name: "max" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("option", { name: "none" }));
+    fireEvent.keyDown(dialog.getByRole("combobox", { name: "API 액세스 프로그램" }), { key: "ArrowDown" });
+    expect(screen.queryByRole("option", { name: "daybreak_red" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("option", { name: "daybreak_blue" }));
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 19,
+          model: "gpt-6-sol",
+          reasoning_effort: "none",
+          access_program_cyber: "daybreak_blue",
+          api_key: "",
+        }),
+      ),
+    );
+  });
+
+  it("labels unknown model capabilities without replacing its model or effort", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      {
+        id: "20",
+        name: "미확인 모델",
+        model: "future-model",
+        reasoning_effort: "ultra",
+        auth_mode: "api_key",
+        connected: true,
+        rate_per_second: 0,
+        rate_per_minute: 0,
+        is_default: false,
+      },
+    ]);
+    await act(async () =>
+      render(
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <LLMPage />
+        </NextIntlClientProvider>,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /미확인 모델/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByText(/모델 기능 호환성 미확인/)).toBeInTheDocument();
+    expect(dialog.getByLabelText("모델")).toHaveValue("future-model");
+    expect(dialog.getByRole("combobox", { name: messages.llmPage.profile.effort.label })).toHaveTextContent("ultra");
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "future-model", reasoning_effort: "ultra" }),
+      ),
+    );
   });
 });

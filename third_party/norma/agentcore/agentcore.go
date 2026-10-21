@@ -230,6 +230,7 @@ type Session struct {
 	sessionID string
 	store     *transcript.Store
 	writer    *transcript.Writer
+	resumeErr error
 	tasks     *tool.Manager
 	unlock    *tool.UnlockSet // deferred-tool call gate (nil when no deferred tools)
 }
@@ -330,6 +331,12 @@ func (s *Session) Close() error {
 		s.tasks.Cleanup()
 		s.tasks = nil
 	}
+	if s.resumeErr != nil {
+		return s.resumeErr
+	}
+	if s.writer != nil && s.writer.Err() != nil {
+		return &harness.StorageError{Err: s.writer.Err()}
+	}
 	return nil
 }
 
@@ -356,10 +363,12 @@ func (s *Session) Resume(sessionID string) error {
 	if s.store == nil {
 		return errors.New("agentcore: Resume requires Options.Transcript")
 	}
-	recs, err := s.store.Load(s.store.MainPath(sessionID))
+	recs, err := s.store.ResumeRecords(sessionID)
 	if err != nil {
-		return err
+		s.resumeErr = &harness.StorageError{Err: err}
+		return s.resumeErr
 	}
+	s.resumeErr = nil
 	msgs, usage := transcript.Messages(recs)
 	s.messages = cleanResumed(msgs)
 	s.usage = usage
@@ -425,6 +434,11 @@ type hookFirer interface {
 // final event is KindResult; Session state is updated when the consumer reaches
 // it (FR-07.3).
 func (s *Session) Prompt(ctx context.Context, input string) iter.Seq2[harness.Event, error] {
+	if s.resumeErr != nil {
+		return func(yield func(harness.Event, error) bool) {
+			yield(harness.Event{Kind: harness.KindResult, Terminal: &harness.Terminal{Reason: harness.ReasonStorageError, Err: s.resumeErr, Messages: s.messages}}, nil)
+		}
+	}
 	// Auto-inject memories relevant to this prompt (Phase 4).
 	if s.opts.Memory != nil && s.opts.Memory.AutoInject && s.opts.Memory.Store != nil {
 		max := s.opts.Memory.MaxInject

@@ -5,22 +5,26 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 )
 
 // stdioCloser shuts down a spawned MCP server process and its pipes.
 type stdioCloser struct {
 	cmd   *exec.Cmd
 	stdin io.Closer
+	once  sync.Once
 }
 
 func (s *stdioCloser) Close() error {
-	if s.stdin != nil {
-		s.stdin.Close()
-	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
-		_ = s.cmd.Wait()
-	}
+	s.once.Do(func() {
+		if s.stdin != nil {
+			_ = s.stdin.Close()
+		}
+		if s.cmd != nil && s.cmd.Process != nil {
+			killProcessTree(s.cmd.Process)
+			_ = s.cmd.Wait()
+		}
+	})
 	return nil
 }
 
@@ -31,6 +35,7 @@ func (s *stdioCloser) Close() error {
 // applied on top of the parent process environment; pass nil for none.
 func NewStdioClient(ctx context.Context, server, command string, env map[string]string, args ...string) (*Client, error) {
 	cmd := exec.Command(command, args...)
+	isolateProcess(cmd)
 	if len(env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range env {
@@ -43,9 +48,12 @@ func NewStdioClient(ctx context.Context, server, command string, env map[string]
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = stdin.Close()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		_ = stdout.Close()
 		return nil, err
 	}
 	c := &Client{

@@ -9,7 +9,8 @@ import (
 // LLMUsage is one lightweight LLM-call metering row — the always-on usage ledger,
 // distinct from llm_records (which stores full request/response bodies and is a
 // gated debug feature). One row per completion call, written on both success and
-// error, so token accounting is complete even for interrupted/failed runs. Carries
+// error. Tokens include server-reported usage only; UsageReceived distinguishes
+// missing usage from an explicit zero, including interrupted/failed runs. Carries
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
 type LLMUsage struct {
@@ -23,7 +24,8 @@ type LLMUsage struct {
 	OutputTokens  int    `json:"output_tokens"`
 	CacheRead     int    `json:"cache_read"`
 	CacheWrite    int    `json:"cache_write"`
-	Status        string `json:"status"` // ok | error
+	UsageReceived *bool  `json:"usage_received"` // nil: legacy/unknown; false: no server usage; true: known usage (including zero).
+	Status        string `json:"status"`         // ok | error
 }
 
 const llmUsageSchema = `
@@ -40,8 +42,10 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     output_tokens  INTEGER NOT NULL DEFAULT 0,
     cache_read     INTEGER NOT NULL DEFAULT 0,
     cache_write    INTEGER NOT NULL DEFAULT 0,
-    status         TEXT
+    status         TEXT,
+    usage_received BOOLEAN
 );
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS usage_received BOOLEAN;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -71,10 +75,10 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, usage_received)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.UsageReceived)
 	return err
 }
 

@@ -265,9 +265,8 @@ func (s *Server) pgDeleteConversation(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.cancelConversation(c.ID)
 	s.cancelSideWhere(func(p sidequestion.Parent) bool { return p.ConversationID == c.ID })
-	if err := pg.DeleteConversation(c.ID); err != nil {
+	if _, err := s.deleteConversations(pg, []int64{c.ID}); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -282,14 +281,16 @@ type conversationDeleteItem struct {
 	Error string `json:"error,omitempty"`
 }
 
-func (s *Server) cancelConversation(id int64) {
-	busyKey := s.convBusyKey(id)
+// Keep cancellation and deletion atomic with conversationRunContext admission.
+func (s *Server) deleteConversations(pg *db.DB, ids []int64) ([]int64, error) {
 	s.chatMu.Lock()
-	cancel := s.chatCancel[busyKey]
-	s.chatMu.Unlock()
-	if cancel != nil {
-		cancel(agent.AbortChatStoppedByUser)
+	defer s.chatMu.Unlock()
+	for _, id := range ids {
+		if cancel := s.chatCancel[s.convBusyKey(id)]; cancel != nil {
+			cancel(agent.AbortChatStoppedByUser)
+		}
 	}
+	return pg.DeleteConversations(ids)
 }
 
 // pgDeleteConversationsBatch deletes up to 100 selected conversations in one
@@ -324,10 +325,9 @@ func (s *Server) pgDeleteConversationsBatch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	for _, id := range ids {
-		s.cancelConversation(id)
 		s.cancelSideWhere(func(p sidequestion.Parent) bool { return p.ConversationID == id })
 	}
-	deleted, err := pg.DeleteConversations(ids)
+	deleted, err := s.deleteConversations(pg, ids)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -519,27 +519,37 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 	if len(userMessage) == 1 {
 		ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: userMessage[0]})
 	}
-	go s.runConversationTurn(ctx, cancel, c, msg, busyKey)
+	go s.runConversationTurn(ctx, cancel, c, msg, busyKey, nil)
 }
 
 // runConversationSync runs ONE agent turn on a conversation and BLOCKS until the
 // run ends (clearing busyKey). runConversation wraps it in a goroutine for the
 // fire-and-forget chat path; the P3 trigger queue calls it directly so it can wait
 // for completion before starting the next queued fire for the same agent.
-func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string) {
+func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, prepared *agent.ChatAgent) {
 	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
-	s.runConversationTurn(ctx, cancel, c, msg, busyKey)
+	s.runConversationTurn(ctx, cancel, c, msg, busyKey, prepared)
 }
 
 // Register cancellation before returning 202, so an immediate stop/delete cannot
 // miss a background goroutine which has not started yet.
 func (s *Server) conversationRunContext(id int64, busyKey string) (context.Context, context.CancelCauseFunc) {
-	// Per-run cancellable context so a manual stop (pgStopConversation) can abort
-	// just this session. Registered under chatMu so the stop handler can find it.
 	ctx, cancel := context.WithCancelCause(intercept.WithConvID(s.ctx, id))
 	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	// A trigger's conversation is visible before its run is registered. Holding
+	// the deletion lock across this check prevents a stale run starting afterward.
+	c, err := s.m.pg.GetConversation(id)
+	if err != nil {
+		log.Printf("[conv %d] check admission: %v", id, err)
+		cancel(fmt.Errorf("대화 시작 전 저장 상태를 확인하지 못했습니다: %w", err))
+		return ctx, cancel
+	}
+	if c == nil {
+		cancel(agent.AbortChatStoppedByUser)
+		return ctx, cancel
+	}
 	s.chatCancel[busyKey] = cancel
-	s.chatMu.Unlock()
 	return ctx, cancel
 }
 
@@ -554,7 +564,7 @@ func transcriptErrorSummary(label, errMsg string) string {
 	return "(" + label + "오류: " + errMsg + ")"
 }
 
-func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string) {
+func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelCauseFunc, c *db.Conversation, msg, busyKey string, ca *agent.ChatAgent) {
 	defer func() {
 		cancel(agent.AbortChatTurnFinished)
 		s.chatMu.Lock()
@@ -601,7 +611,9 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 		return
 	}
 	// precedence: the conversation agent's own binding → this conversation's pin → global.
-	ca := s.resolveChatAgent(c)
+	if ca == nil {
+		ca = s.resolveChatAgent(c)
+	}
 	if ca == nil {
 		finishReason = s.chatUnavailableReason()
 		return
@@ -664,20 +676,42 @@ func (s *Server) readTriggerBehavior(agentKey string) triggerBehavior {
 	return b
 }
 
-// StartTriggeredRun enqueues a P3 trigger fire for agentKey and pumps the queue. The
-// agent's策略 decides concurrency + merge: serial → run one at a time (optionally
-// merging by task / all / none); parallel → run each fire in its own concurrent
-// conversation up to trigger_max_parallel. Distinct agents always run concurrently.
-func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) {
-	if s.m.pg == nil || s.chatAgentRef() == nil {
+// loadPendingTriggers restores durable pending work and adds only IDs not
+// already queued or active in this process. Database reads stay outside queueMu.
+func (s *Server) loadPendingTriggers() {
+	if s.m.pg == nil || s.ctx.Err() != nil {
 		return
 	}
-	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
+	pending, err := s.m.pg.PendingTriggerDeliveries()
+	if err != nil {
+		log.Printf("[trigger] load pending: %v", err)
+		return
+	}
+	cfgs := map[string]triggerBehavior{}
+	for _, v := range pending {
+		if _, ok := cfgs[v.AgentKey]; !ok {
+			cfgs[v.AgentKey] = s.readTriggerBehavior(v.AgentKey)
+		}
+	}
 	s.queueMu.Lock()
-	s.triggerCfg[agentKey] = cfg
-	s.triggerQ[agentKey] = append(s.triggerQ[agentKey], triggeredRun{agentKey: agentKey, title: title, message: message, taskID: taskID, taskDesc: taskDesc, taskGoal: taskGoal, mergeable: mergeable})
-	s.pumpLocked(agentKey)
-	s.queueMu.Unlock()
+	defer s.queueMu.Unlock()
+	if s.triggerQueuedIDs == nil {
+		s.triggerQueuedIDs = map[int64]bool{}
+	}
+	for _, v := range pending {
+		if s.triggerQueuedIDs[v.ID] {
+			continue
+		}
+		s.triggerQueuedIDs[v.ID] = true
+		s.triggerCfg[v.AgentKey] = cfgs[v.AgentKey]
+		s.triggerQ[v.AgentKey] = append(s.triggerQ[v.AgentKey], triggeredRun{
+			agentKey: v.AgentKey, title: v.Title, message: v.Message, taskID: v.TaskID,
+			taskDesc: v.TaskDesc, taskGoal: v.TaskGoal, mergeable: v.Mergeable, deliveryIDs: []int64{v.ID},
+		})
+	}
+	for key := range cfgs {
+		s.pumpLocked(key)
+	}
 }
 
 // pumpLocked launches queued fires for one agent up to its concurrency limit, then
@@ -710,6 +744,9 @@ func (s *Server) runAndPump(agentKey string, item triggeredRun) {
 	s.runTriggeredRun(item)
 	s.queueMu.Lock()
 	s.triggerActive[agentKey]--
+	for _, id := range item.deliveryIDs {
+		delete(s.triggerQueuedIDs, id)
+	}
 	if s.triggerActive[agentKey] <= 0 && len(s.triggerQ[agentKey]) == 0 {
 		delete(s.triggerActive, agentKey)
 		delete(s.triggerQ, agentKey)
@@ -816,11 +853,12 @@ func mergeTriggeredRuns(items []triggeredRun) triggeredRun {
 		fmt.Fprintf(&b, "\n── 触发 %d ──\n%s\n", i+1, it.message)
 	}
 	return triggeredRun{
-		agentKey:  first.agentKey,
-		title:     fmt.Sprintf("合并触发 · task#%d · %d 条", first.taskID, len(items)),
-		message:   b.String(),
-		taskID:    first.taskID,
-		mergeable: true,
+		deliveryIDs: triggerDeliveryIDs(items),
+		agentKey:    first.agentKey,
+		title:       fmt.Sprintf("合并触发 · task#%d · %d 条", first.taskID, len(items)),
+		message:     b.String(),
+		taskID:      first.taskID,
+		mergeable:   true,
 		// taskDesc/taskGoal left empty: header already embedded above.
 	}
 }
@@ -858,39 +896,70 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		}
 	}
 	return triggeredRun{
-		agentKey:  first.agentKey,
-		title:     fmt.Sprintf("合并触发 · 全部 · %d 条", len(items)),
-		message:   b.String(),
-		taskID:    first.taskID,
-		mergeable: true,
+		deliveryIDs: triggerDeliveryIDs(items),
+		agentKey:    first.agentKey,
+		title:       fmt.Sprintf("合并触发 · 全部 · %d 条", len(items)),
+		message:     b.String(),
+		taskID:      first.taskID,
+		mergeable:   true,
 		// taskDesc/taskGoal left empty: per-task headers already embedded above.
 	}
 }
 
-// runTriggeredRun creates the conversation for one queued fire, records the human
-// turn, and runs it synchronously (blocks until the run ends). recover keeps a
-// panic from killing the drain loop and wedging the agent's queue.
+func triggerDeliveryIDs(items []triggeredRun) []int64 {
+	var ids []int64
+	for _, it := range items {
+		ids = append(ids, it.deliveryIDs...)
+	}
+	return ids
+}
+
+// Persist the claim and first message before any model or tool call. A claimed
+// run never automatically replays after a crash because side effects are unknown.
 func (s *Server) runTriggeredRun(item triggeredRun) {
+	pg := s.m.pg
+	if s.ctx.Err() != nil {
+		return
+	}
+	// Resolve once before claiming. Missing credentials or a blocked subscription
+	// must leave the delivery pending, not consume it without a model call.
+	s.profileUpdateMu.Lock()
+	resolved, resolveErr := s.resolveTaskRoleLLM(&Task{}, item.agentKey)
+	var ca *agent.ChatAgent
+	if resolveErr == nil && resolved.Available {
+		ca = s.resolveChatAgent(&db.Conversation{AgentKey: item.agentKey})
+	}
+	s.profileUpdateMu.Unlock()
+	if ca == nil {
+		log.Printf("[trigger] waiting for LLM connection for %s: %s (%v)", item.agentKey, resolved.Reason, resolveErr)
+		return
+	}
+	msg := finalTriggerMessage(item)
+	c, err := pg.ClaimTriggerConversation(item.deliveryIDs, item.agentKey, firstLine(item.title, 60), msg, firstLine(msg, 200))
+	if err != nil {
+		log.Printf("[trigger] claim for %s: %v", item.agentKey, err)
+		return
+	}
+	if c == nil {
+		return
+	}
+	interrupted := true
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[trigger] run for %s panicked: %v", item.agentKey, r)
+			_, _ = pg.AppendConvActivity(c.ID, db.Activity{Worker: item.agentKey, Kind: "error", IsError: true,
+				Summary: "트리거 실행이 비정상 종료되었습니다. 실행 기록을 확인한 뒤 다시 시도하세요."})
+		}
+		if err := pg.FinishTriggerDeliveries(item.deliveryIDs, interrupted); err != nil {
+			log.Printf("[trigger] finish: %v", err)
 		}
 	}()
-	pg := s.m.pg
-	c, err := pg.CreateConversation(item.agentKey, firstLine(item.title, 60), nil)
-	if err != nil {
-		log.Printf("[trigger] create conversation for %s failed: %v", item.agentKey, err)
-		return
-	}
-	msg := finalTriggerMessage(item) // prepend the task-context header for single (non-merged) fires
-	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: item.agentKey, Kind: "user", Summary: firstLine(msg, 200), Detail: msg}); err != nil {
-		log.Printf("[trigger] append msg failed: %v", err)
-	}
 	busyKey := s.convBusyKey(c.ID)
 	s.chatMu.Lock()
 	s.chatBusy[busyKey] = true
 	s.chatMu.Unlock()
-	s.runConversationSync(c, msg, busyKey)
+	s.runConversationSync(c, msg, busyKey, ca)
+	interrupted = s.ctx.Err() != nil
 }
 
 // firstLine returns a single-line, length-capped preview (shared with summaries).

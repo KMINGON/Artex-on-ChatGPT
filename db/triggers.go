@@ -149,17 +149,18 @@ ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`, key, value)
 // TaskEvent is a finding/goal event carrying the owning task's info, used to
 // compose the trigger message context.
 type TaskEvent struct {
-	NodeID     int64  `json:"node_id"`
-	TaskID     int64  `json:"task_id"`
-	TaskDesc   string `json:"task_description"`
-	TaskGoal   string `json:"task_goal"`
-	Summary    string `json:"summary"`     // finding summary / goal text
-	VulnClass  string `json:"vulnclass"`   // finding only
-	Severity   string `json:"severity"`    // finding only
-	Tool       string `json:"tool"`        // tool-call only: tool name
-	ToolInput  string `json:"tool_input"`  // tool-call only: 入参(JSON 文本)
-	ToolOutput string `json:"tool_output"` // tool-call only: 返回内容
-	ToolIsErr  bool   `json:"tool_is_err"` // tool-call only: 工具返回是否为错误
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
+	NodeID     int64     `json:"node_id"`
+	TaskID     int64     `json:"task_id"`
+	TaskDesc   string    `json:"task_description"`
+	TaskGoal   string    `json:"task_goal"`
+	Summary    string    `json:"summary"`     // finding summary / goal text
+	VulnClass  string    `json:"vulnclass"`   // finding only
+	Severity   string    `json:"severity"`    // finding only
+	Tool       string    `json:"tool"`        // tool-call only: tool name
+	ToolInput  string    `json:"tool_input"`  // tool-call only: 入参(JSON 文本)
+	ToolOutput string    `json:"tool_output"` // tool-call only: 返回内容
+	ToolIsErr  bool      `json:"tool_is_err"` // tool-call only: 工具返回是否为错误
 }
 
 // NewFindingsSince returns findings with node id > lastID across all live tasks,
@@ -184,30 +185,6 @@ ORDER BY n.id`, lastID)
 		var p struct{ Summary, Vulnclass, Severity string }
 		_ = json.Unmarshal(payload, &p)
 		e.Summary, e.VulnClass, e.Severity = p.Summary, p.Vulnclass, p.Severity
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-// TimedOutTasksSince returns tasks that reached status='timeout' with id > lastID,
-// ordered by id (monotonic watermark → no double-fire across restarts).
-func (d *DB) TimedOutTasksSince(lastID int64) ([]TaskEvent, error) {
-	rows, err := d.Query(`
-SELECT id, description, goal FROM tasks
-WHERE status='timeout' AND deleted_at IS NULL AND id > $1
-ORDER BY id`, lastID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []TaskEvent{}
-	for rows.Next() {
-		var e TaskEvent
-		if err := rows.Scan(&e.NodeID, &e.TaskDesc, &e.TaskGoal); err != nil {
-			return nil, err
-		}
-		e.TaskID = e.NodeID // task id doubles as NodeID for the watermark
-		e.Summary = e.TaskGoal
 		out = append(out, e)
 	}
 	return out, rows.Err()
