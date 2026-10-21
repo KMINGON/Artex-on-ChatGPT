@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# ARTEX 업데이트 스크립트: ① Docker 업데이트(새 이미지를 받아 재구성)  ② 로컬 컴파일 업데이트(바이너리 재빌드)
+# ARTEX 업데이트 스크립트: ① Docker 업데이트(소스로 이미지를 다시 빌드)  ② 로컬 컴파일 업데이트(바이너리 재빌드)
 # install.sh 와 짝을 이룹니다. install 은 최초 설치를, update 는 새 버전으로의 업그레이드를 담당합니다.
 # DB 마이그레이션은 직접 실행할 필요가 없습니다. artex 는 기동할 때마다 schema.sql 을 멱등하게 다시 돌리므로(ADD COLUMN/CREATE
-# INDEX IF NOT EXISTS 포함) "재시작이 곧 마이그레이션"입니다. 데이터(pgdata 볼륨, ./data, ./skills)는 영향을 받지 않습니다.
+# INDEX IF NOT EXISTS 포함) "재시작이 곧 마이그레이션"입니다. Compose의 DB·작업·인증 볼륨은 유지합니다.
 set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
 
@@ -23,7 +23,10 @@ sync_repo(){
 
 # ── ① Docker 업데이트 ───────────────────────────────
 update_docker(){
-  die "이 포크의 Docker 앱 업데이트는 아직 지원하지 않습니다. 2) 로컬 업데이트 또는 README의 소스 빌드 방법을 사용하세요."
+  command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 || die "Docker와 Compose가 필요합니다"
+  sync_repo
+  docker compose up -d --build --wait
+  ok "업데이트 완료: http://$(docker compose port artex 8787) (기존 데이터·인증 유지)"
 }
 
 # ── ② 로컬 컴파일 업데이트 ──────────────────────────────
@@ -48,10 +51,10 @@ update_local(){
 
 echo "=============================="
 echo "  ARTEX 업데이트"
-echo "  1) Docker 앱 업데이트 (미지원)"
+echo "  1) Docker Compose 업데이트"
 echo "  2) 로컬 업데이트(go 로 다시 컴파일)"
 echo "=============================="
-case "$(ask '선택' 2)" in
+case "$(ask '선택' 1)" in
   1) update_docker ;;
   2) sync_repo; update_local ;;
   *) die "잘못된 선택입니다" ;;

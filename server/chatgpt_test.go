@@ -91,6 +91,7 @@ func TestPersistedChatGPTProfileLoadsWithoutAPIKey(t *testing.T) {
 }
 
 func TestChatGPTMutationRequiresLocalSameOrigin(t *testing.T) {
+	t.Setenv(chatGPTCallbackEnv, "")
 	for _, tc := range []struct {
 		remote, origin string
 		allowed        bool

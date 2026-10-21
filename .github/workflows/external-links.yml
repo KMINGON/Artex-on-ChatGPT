@@ -1,20 +1,6 @@
 name: external-links
-# 추적 마크다운이 가리키는 외부 링크(방어 가이드의 사고 신고 창구 boho.or.kr·privacy.go.kr·
-# pipc.go.kr·fsec.or.kr, CISA KEV, OWASP·SigmaHQ·Suricata·MITRE·MISP, 원본 데모, GitHub
-# 배지 등)가 아직 살아 있는지 점검한다. 외부 URL 생존은 네트워크·원격 서버 정책에 의존해
-# flaky 하므로 내부 링크 머지 게이트(docs.yml)에서는 보지 않는다. 그래서 이 워크플로는
-# 푸시·PR 이 아니라 주간 스케줄과 수동 실행(workflow_dispatch)으로만 돌아 **머지를 막지 않고**,
-# 외부 링크가 변질·폐쇄되면 주기 실행이 빨갛게 드러낸다. 내부 링크·앵커는 docs.yml, Go 빌드·
-# 분석·테스트는 ci.yml, 탐지 규칙은 detections.yml, 한국어 UI 빌드는 web.yml 이 맡는다.
-#
-# --strict 는 allowlist(scripts/external-links-allowlist.txt)에 없는 DOWN(404·410·5xx·
-# DNS/연결 오류)이 하나라도 있을 때만 실패한다. RESTRICTED(봇 차단·속도 제한 등 호스트는
-# 살아 있는 상태)와 ALLOWED(우리가 고칠 수 없는 상류 상속 죽은 링크)는 실패로 치지 않으므로,
-# 빨간불은 "우리 문서가 큐레이션한 외부 링크가 새로 깨졌다 — 가서 보라"는 신호다. 스케줄
-# 워크플로는 기본 브랜치(main)에서만 돈다.
+# 자동 CI는 보류합니다. 필요한 경우 GitHub Actions에서 수동 실행합니다.
 on:
-  schedule:
-    - cron: "17 0 * * 1" # 매주 월요일 00:17 UTC
   workflow_dispatch:
 
 permissions:

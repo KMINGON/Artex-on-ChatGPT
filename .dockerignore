@@ -17,3 +17,27 @@ bench/seed_v2.sh
 
 # Private local documents, research, snapshots, and generated artifacts
 /reference/
+
+# Other checkouts, credentials, and runtime artifacts must never enter images.
+/openai-migration/
+**/.git
+**/reference
+**/.env
+**/.env.*
+**/config.json
+**/jwt.key
+**/accounts.json
+**/*.log
+**/*.db-wal
+**/*.db-shm
+**/*.test
+**/__pycache__
+**/.cache
+/artex.exe
+/work/
+/test-results/
+/scan-output/
+/evidence-local/
+/demo-data/
+/.secrets/
+/.swc-cache/

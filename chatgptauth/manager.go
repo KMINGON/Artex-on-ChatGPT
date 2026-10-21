@@ -58,34 +58,46 @@ type account struct {
 
 // Options are deliberately private: production callers cannot redirect credentials.
 type options struct {
-	client   *http.Client
-	now      func() time.Time
-	loginTTL time.Duration
+	client      *http.Client
+	now         func() time.Time
+	loginTTL    time.Duration
+	callbackURL string
 }
 
 type Manager struct {
-	mu         sync.Mutex
-	dir        string
-	store      diskState
-	accounts   map[string]*account
-	lock       *os.File
-	ctx        context.Context
-	cancel     context.CancelFunc
-	closed     bool
-	pending    *pendingLogin
-	lastError  string
-	onChange   func()
-	client     *http.Client
-	now        func() time.Time
-	loginTTL   time.Duration
-	metadataMu sync.Mutex
-	metadata   *metadata
-	wg         sync.WaitGroup
+	mu          sync.Mutex
+	dir         string
+	store       diskState
+	accounts    map[string]*account
+	lock        *os.File
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closed      bool
+	pending     *pendingLogin
+	lastError   string
+	onChange    func()
+	client      *http.Client
+	now         func() time.Time
+	loginTTL    time.Duration
+	callbackURL string // Immutable, validated loopback URL for an externally owned HTTP server.
+	metadataMu  sync.Mutex
+	metadata    *metadata
+	wg          sync.WaitGroup
 }
 
-func New(dir string) (*Manager, error) { return newManager(dir, options{}) }
+func New(dir string) (*Manager, error) { return NewWithCallback(dir, "") }
+
+// NewWithCallback uses an existing application HTTP server for OAuth callbacks.
+// An empty URL preserves the private ephemeral loopback listener used by New.
+// The URL must be a configured literal, never derived from request headers.
+func NewWithCallback(dir, callbackURL string) (*Manager, error) {
+	return newManager(dir, options{callbackURL: callbackURL})
+}
 
 func newManager(dir string, opts options) (*Manager, error) {
+	if err := validateCallbackURL(opts.callbackURL); err != nil {
+		return nil, err
+	}
 	if opts.now == nil {
 		opts.now = time.Now
 	}
@@ -106,7 +118,7 @@ func newManager(dir string, opts options) (*Manager, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{dir: dir, store: state, lock: lock, accounts: make(map[string]*account), ctx: ctx, cancel: cancel, client: &client, now: opts.now, loginTTL: opts.loginTTL}
+	m := &Manager{dir: dir, store: state, lock: lock, accounts: make(map[string]*account), ctx: ctx, cancel: cancel, client: &client, now: opts.now, loginTTL: opts.loginTTL, callbackURL: opts.callbackURL}
 	for id := range state.Accounts {
 		a := &account{}
 		a.ctx, a.cancel = context.WithCancel(ctx)

@@ -121,7 +121,7 @@ type Server struct {
 	ctx         context.Context
 
 	skillDir string // root directory for skill subdirectories
-	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
+	jwtKey   []byte // HS256 key outside the browsable workspace; ARTEX_AUTH_DIR can persist it.
 
 	// authMu guards the first-run setup token, the cached password hash (tokens
 	// are signed with a key derived from it — see auth.go signingKey) and the
@@ -1091,6 +1091,7 @@ func (s *Server) Handler() http.Handler {
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
+	root.HandleFunc("GET /auth/callback", s.chatGPTCallback)
 	root.Handle("/", s.webuiHandler())
 	return root
 }

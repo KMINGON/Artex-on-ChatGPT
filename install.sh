@@ -32,7 +32,10 @@ ensure_docker(){
 
 # ── ① 전부 Docker ──────────────────────────────
 install_docker(){
-  die "이 포크의 Docker 앱 배포는 아직 지원하지 않습니다. 2) 로컬 실행 또는 README의 설치 방법을 사용하세요."
+  ensure_docker
+  docker compose up -d --build --wait
+  ok "ARTEX와 PostgreSQL이 준비되었습니다: http://$(docker compose port artex 8787)"
+  info "새 설치의 기본 관리자: ARTEX / artex1234 (.env 지정값 또는 기존 비밀번호가 우선합니다)"
 }
 
 # ── ② 로컬 컴파일 실행 ────────────────────────────
@@ -95,10 +98,10 @@ JSON
 
 echo "=============================="
 echo "  ARTEX 설치"
-echo "  1) Docker 앱 설치 (미지원)"
+echo "  1) Docker Compose로 실행 (권장)"
 echo "  2) 로컬 실행 (go 컴파일)"
 echo "=============================="
-case "$(ask '선택' 2)" in
+case "$(ask '선택' 1)" in
   1) install_docker ;;
   2) install_local ;;
   *) die "잘못된 선택입니다" ;;

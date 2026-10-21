@@ -3,57 +3,60 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-artex}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env 파일에 POSTGRES_PASSWORD 를 설정하세요}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-artex-local-db}
       POSTGRES_DB: ${POSTGRES_DB:-artex}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:${ARTEX_PG_PORT:-5433}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-artex} -d ${POSTGRES_DB:-artex}"]
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
       timeout: 3s
-      retries: 10
+      retries: 20
     restart: unless-stopped
 
   artex:
-    # 앱 컨테이너는 미지원입니다. 기본 compose 실행은 DB만 시작합니다.
-    # 검증한 로컬 이미지를 명시한 경우에만 개발용 프로필로 실행할 수 있습니다.
-    profiles: [experimental-app]
-    image: ${ARTEX_IMAGE:-artex-chatgpt-local:unreleased}
+    image: artex-on-chatgpt:local
     pull_policy: never
+    build:
+      context: .
+      target: app
+      args:
+        ARTEX_BUILD_VERSION: ${ARTEX_BUILD_VERSION:-docker-local}
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      ARTEX_PG_DSN: postgres://${POSTGRES_USER:-artex}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-artex}?sslmode=disable
+      # Components are encoded by the app, including special characters in passwords.
+      ARTEX_PG_HOST: postgres
+      ARTEX_PG_PORT: "5432"
+      ARTEX_PG_USER: ${POSTGRES_USER:-artex}
+      ARTEX_PG_PASSWORD: ${POSTGRES_PASSWORD:-artex-local-db}
+      ARTEX_PG_DATABASE: ${POSTGRES_DB:-artex}
+      ARTEX_PG_SSLMODE: disable
+      # Only initialises an empty installation; never resets a saved password.
+      ARTEX_ADMIN_PASSWORD: ${ARTEX_ADMIN_PASSWORD:-artex1234}
+      ARTEX_AUTH_DIR: /app/auth
+      XDG_CONFIG_HOME: /app/auth
+      ARTEX_CHATGPT_CALLBACK_URL: http://127.0.0.1:${ARTEX_PORT:-8787}/auth/callback
+      ARTEX_LANG: ${ARTEX_LANG:-ko}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-}
       ARTEX_LLM_PROXY: ${ARTEX_LLM_PROXY:-}
-      # 첫 실행 보호. 비워 두면 기동 로그에 무작위 설정 토큰이 찍히고, /setup 에서 그 값을
-      # 입력해야 관리자 비밀번호를 만들 수 있습니다(docker compose logs artex 로 확인).
-      # ARTEX_ADMIN_PASSWORD 를 주면 /setup 없이 그 값으로 바로 초기화합니다(8자 이상).
-      ARTEX_SETUP_TOKEN: ${ARTEX_SETUP_TOKEN:-}
-      ARTEX_ADMIN_PASSWORD: ${ARTEX_ADMIN_PASSWORD:-}
-      # 브라우저 교차 출처 허용 목록(쉼표 구분). 내장 UI 는 동일 출처라 보통 비워 둡니다.
-      ARTEX_CORS_ORIGINS: ${ARTEX_CORS_ORIGINS:-}
-      # 서버 쪽 기본 출력 언어(ko·en·zh·es). 비우면 한국어입니다. 에이전트 출력·오류 메시지는 설정 화면의
-      # "표시 언어"가 우선하고, 서버 콘솔 로그는 이 값만 따릅니다.
-      ARTEX_LANG: ${ARTEX_LANG:-}
     ports:
-      # 기본값은 호스트의 127.0.0.1 에만 게시합니다. 다른 기기에서 직접 접속하려면 .env 에
-      # ARTEX_BIND=0.0.0.0 을 두되, 그 전에 반드시 초기 설정(관리자 비밀번호)을 마치고
-      # 가능하면 README 의 리버스 프록시(HTTPS) 구성을 쓰십시오.
-      - "${ARTEX_BIND:-127.0.0.1}:8787:8787"
-      - "127.0.0.1:8788:8788"
+      # Public default credentials are for this PC only. DB/proxy are not published.
+      - "127.0.0.1:${ARTEX_PORT:-8787}:8787"
     volumes:
-      # 데이터 디렉터리(jwt.key, SQLite 등 포함)를 프로젝트 루트의 data/ 에 바인드합니다.
-      # 호스트에서 바로 확인·백업할 수 있고, 컨테이너를 다시 만들어도 사라지지 않습니다.
-      - ./data:/app/data
-      # 프로젝트 루트의 skills 를 컨테이너에 마운트합니다(이미지에 내장된 /app/skills 를 덮어씁니다).
-      # skill 을 고치면 이미지를 다시 빌드할 필요 없이, 컨테이너가 호스트의 이 파일을 그대로 읽습니다.
-      - ./skills:/app/skills
+      - artex-data:/app/data
+      - artex-auth:/app/auth
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
     restart: unless-stopped
 
 volumes:
   pgdata:
+  artex-data:
+  artex-auth:

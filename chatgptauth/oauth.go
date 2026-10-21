@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -131,19 +132,28 @@ func (m *Manager) Start(ctx context.Context, accountID string) (LoginStart, erro
 	if p.verifier, err = randomString(); err != nil {
 		return LoginStart{}, err
 	}
-	ln, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return LoginStart{}, errors.New("ChatGPT 로그인용 로컬 포트를 열 수 없습니다.")
+	// Only the private-listener mode owns a server. Shared callbacks are routed
+	// by the application's server, whose lifetime must not follow a login flow.
+	p.redirectURI = m.callbackURL
+	var ln net.Listener
+	var srv *http.Server
+	if p.redirectURI == "" {
+		ln, err = net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			return LoginStart{}, errors.New("ChatGPT 로그인용 로컬 포트를 열 수 없습니다.")
+		}
+		p.redirectURI = "http://" + ln.Addr().String() + callbackPath
+		srv = &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+		srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { m.callback(p, w, req) })
 	}
-	p.redirectURI = "http://" + ln.Addr().String() + callbackPath
 	p.ctx, p.cancel = context.WithTimeout(m.ctx, m.loginTTL)
-	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
-	srv.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { m.callback(p, w, req) })
 	m.mu.Lock()
 	if m.closed || (accountID != "" && m.accounts[accountID].disconnecting) {
 		m.mu.Unlock()
 		p.cancel()
-		ln.Close()
+		if ln != nil {
+			_ = ln.Close()
+		}
 		return LoginStart{}, ErrClosed
 	}
 	if m.pending != nil {
@@ -154,15 +164,20 @@ func (m *Manager) Start(ctx context.Context, accountID string) (LoginStart, erro
 	}
 	m.pending, m.lastError = p, ""
 	hostID := m.store.HostID
-	m.wg.Add(2)
-	go func() { defer m.wg.Done(); _ = srv.Serve(ln) }()
+	if srv != nil {
+		m.wg.Add(1)
+		go func() { defer m.wg.Done(); _ = srv.Serve(ln) }()
+	}
+	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		<-p.ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutdown)
-		_ = srv.Close()
+		if srv != nil {
+			shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdown)
+			_ = srv.Close()
+		}
 		m.mu.Lock()
 		notify := m.pending == p
 		if notify {
@@ -201,7 +216,49 @@ func (m *Manager) Start(ctx context.Context, accountID string) (LoginStart, erro
 	return LoginStart{URL: d.Authorize + "?" + query.Encode(), ExpiresAt: m.now().Add(m.loginTTL)}, nil
 }
 
+// validateCallbackURL deliberately accepts one canonical form. Besides avoiding
+// arbitrary redirect origins, this keeps the exact Host comparison unambiguous.
+func validateCallbackURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err == nil {
+		port, portErr := strconv.ParseUint(u.Port(), 10, 16)
+		if portErr == nil && port > 0 && raw == "http://127.0.0.1:"+strconv.FormatUint(port, 10)+callbackPath {
+			return nil
+		}
+	}
+	return errors.New("ChatGPT 콜백 주소는 http://127.0.0.1:<포트>/auth/callback 형식이어야 합니다.")
+}
+
+// ServeCallback handles the current shared-server login without an ARTEX JWT.
+// OAuth state, nonce, PKCE and the configured Host provide the callback checks.
+// The caller owns its HTTP server and must avoid logging callback query strings.
+func (m *Manager) ServeCallback(w http.ResponseWriter, req *http.Request) {
+	callbackHeaders(w)
+	m.mu.Lock()
+	p, closed, shared := m.pending, m.closed, m.callbackURL != ""
+	m.mu.Unlock()
+	if closed {
+		http.Error(w, "연결 관리자가 종료되었습니다.", http.StatusGone)
+		return
+	}
+	if !shared || p == nil {
+		http.Error(w, "진행 중인 ChatGPT 로그인이 없습니다.", http.StatusNotFound)
+		return
+	}
+	m.callback(p, w, req)
+}
+
+func callbackHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+}
+
 func (m *Manager) callback(p *pendingLogin, w http.ResponseWriter, req *http.Request) {
+	callbackHeaders(w)
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -211,9 +268,6 @@ func (m *Manager) callback(p *pendingLogin, w http.ResponseWriter, req *http.Req
 	m.wg.Add(1)
 	m.mu.Unlock()
 	defer m.wg.Done()
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	u, _ := url.Parse(p.redirectURI)
 	if req.Method != http.MethodGet || req.URL.Path != callbackPath || req.Host != u.Host || len(req.URL.RawQuery) > 16<<10 {
 		http.Error(w, "잘못된 로그인 응답입니다.", http.StatusBadRequest)

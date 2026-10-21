@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -69,38 +70,168 @@ const (
 	authErrDataSourceUnavailable = "데이터 소스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해 주세요"
 )
 
-// loadOrCreateJWTKey reads the 32-byte signing key from keyDir/jwt.key. keyDir is
-// the project base dir (next to the executable), NOT the browsable workspace root
-// (dataDir) — the signing key must never be listable/downloadable via the file
-// manager. Legacy installs kept it at dataDir/jwt.key; if present there and not yet
-// at the new location, it is migrated (key preserved, so sessions stay valid) and
-// the old file removed so it disappears from the workspace. On first run a random
-// key is generated and persisted.
-func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
+// loadOrCreateJWTKey uses ARTEX_AUTH_DIR when set, otherwise the project keyDir.
+// The configured directory must be outside the browsable workspace. Existing
+// keys migrate without rotation; unreadable or invalid keys are never replaced.
+func loadOrCreateJWTKey(keyDir, dataDir string) (loaded []byte, loadErr error) {
+	legacyDirs := []string{dataDir}
+	if privateDir := os.Getenv("ARTEX_AUTH_DIR"); privateDir != "" {
+		var err error
+		privateDir, err = prepareJWTDir(privateDir, dataDir)
+		if err != nil {
+			return nil, err
+		}
+		legacyDirs = append([]string{keyDir}, legacyDirs...)
+		keyDir = privateDir
+	}
 	path := filepath.Join(keyDir, jwtKeyFilename)
-	// one-time migration out of the old in-workspace location.
-	if legacy := filepath.Join(dataDir, jwtKeyFilename); legacy != path {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if data, rerr := os.ReadFile(legacy); rerr == nil {
-				if werr := os.WriteFile(path, data, 0o600); werr == nil {
-					_ = os.Remove(legacy)
-					log.Printf(logT("[auth] JWT 키를 %s 에서 %s 로 이전(탐색 가능한 워크스페이스 밖으로 이동)"), legacy, path)
-				}
+	defer func() {
+		if loadErr == nil {
+			if err := removeExposedJWTKey(path, dataDir, loaded); err != nil {
+				loaded, loadErr = nil, err
 			}
 		}
+	}()
+	if key, err := readJWTKey(path); !errors.Is(err, os.ErrNotExist) {
+		return key, err
 	}
-	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
-		return []byte(strings.TrimSpace(string(data))), nil
+	var key []byte
+	var migrated string
+	for _, dir := range legacyDirs {
+		legacy := filepath.Join(dir, jwtKeyFilename)
+		if filepath.Clean(legacy) == filepath.Clean(path) {
+			continue
+		}
+		data, err := readJWTKey(legacy)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		key, migrated = data, legacy
+		break
 	}
-	key, err := randomToken(32)
+	if key == nil {
+		token, err := randomToken(32)
+		if err != nil {
+			return nil, fmt.Errorf("generate jwt key: %w", err)
+		}
+		key = []byte(token)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if errors.Is(err, os.ErrExist) {
+		return readJWTKey(path)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("generate jwt key: %w", err)
+		return nil, fmt.Errorf("create jwt key: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(key), 0600); err != nil {
+	_, writeErr := f.Write(key)
+	if writeErr == nil {
+		writeErr = f.Sync()
+	}
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
 		return nil, fmt.Errorf("write jwt key: %w", err)
 	}
-	log.Printf(logT("[auth] 새 JWT 키를 %s 에 기록"), path)
-	return []byte(key), nil
+	if migrated != "" {
+		if err := os.Remove(migrated); err != nil {
+			// Leave the original authoritative when migration cannot remove it.
+			// Otherwise the next startup would accept a still-exposed duplicate.
+			return nil, errors.Join(fmt.Errorf("remove legacy jwt key: %w", err), os.Remove(path))
+		}
+		log.Printf(logT("[auth] JWT 키를 %s 에서 %s 로 이전(탐색 가능한 워크스페이스 밖으로 이동)"), migrated, path)
+	} else {
+		log.Printf(logT("[auth] 새 JWT 키를 %s 에 기록"), path)
+	}
+	return key, nil
+}
+
+// A previous migration can leave the active key in both locations. Recheck on
+// every successful load so a failed cleanup cannot be bypassed by restarting.
+func removeExposedJWTKey(path, dataDir string, key []byte) error {
+	legacy := filepath.Join(dataDir, jwtKeyFilename)
+	activePath, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	legacyPath, err := filepath.Abs(legacy)
+	if err != nil {
+		return err
+	}
+	if activePath == legacyPath {
+		return nil
+	}
+	data, err := os.ReadFile(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect legacy jwt key copy: %w", err)
+	}
+	if !hmac.Equal([]byte(strings.TrimSpace(string(data))), key) {
+		return nil
+	}
+	if err := os.Remove(legacy); err != nil {
+		return fmt.Errorf("remove active jwt key copy from workspace: %w", err)
+	}
+	return nil
+}
+
+func readJWTKey(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("jwt key must be a regular private file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read jwt key: %w", err)
+	}
+	key := []byte(strings.TrimSpace(string(data)))
+	if len(key) < 32 {
+		return nil, fmt.Errorf("existing jwt key is invalid; refusing to replace it")
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		return nil, fmt.Errorf("protect jwt key: %w", err)
+	}
+	return key, nil
+}
+
+func prepareJWTDir(dir, dataDir string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("ARTEX_AUTH_DIR must name a private directory")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create ARTEX_AUTH_DIR: %w", err)
+	}
+	private, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	private, err = filepath.Abs(private)
+	if err != nil {
+		return "", err
+	}
+	workspace, err := filepath.EvalSymlinks(dataDir)
+	if errors.Is(err, os.ErrNotExist) {
+		workspace = dataDir
+	} else if err != nil {
+		return "", err
+	}
+	workspace, err = filepath.Abs(workspace)
+	if err != nil {
+		return "", err
+	}
+	if rel, err := filepath.Rel(workspace, private); err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+		return "", fmt.Errorf("ARTEX_AUTH_DIR must be outside the browsable data directory")
+	}
+	if err := os.Chmod(private, 0700); err != nil {
+		return "", fmt.Errorf("protect ARTEX_AUTH_DIR: %w", err)
+	}
+	return private, nil
 }
 
 // randomToken returns n characters drawn from keyChars with crypto/rand.

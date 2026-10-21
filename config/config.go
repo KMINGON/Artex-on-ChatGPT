@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -192,7 +193,7 @@ func SkillDir() string {
 
 // PostgresDSN resolves the connection string with precedence:
 //
-//	env ARTEX_PG_DSN  >  config file (database.dsn, or assembled from fields)
+//	env ARTEX_PG_DSN > explicit ARTEX_PG_HOST components > config file
 //
 // There is NO built-in fallback: when neither source supplies a database config,
 // it returns an error naming the config path it inspected, so startup fails loudly
@@ -201,6 +202,26 @@ func SkillDir() string {
 func PostgresDSN() (dsn, source string, err error) {
 	if v := strings.TrimSpace(os.Getenv("ARTEX_PG_DSN")); v != "" {
 		return v, trCfg("환경 변수 ARTEX_PG_DSN"), nil
+	}
+	if rawHost := os.Getenv("ARTEX_PG_HOST"); rawHost != "" {
+		d := Database{
+			Host: strings.TrimSpace(rawHost), User: os.Getenv("ARTEX_PG_USER"),
+			Password: os.Getenv("ARTEX_PG_PASSWORD"), DBName: os.Getenv("ARTEX_PG_DATABASE"),
+			SSLMode: strings.TrimSpace(os.Getenv("ARTEX_PG_SSLMODE")),
+		}
+		if d.Host == "" || strings.ContainsAny(d.Host, "/\\?#@[] \t\r\n") || (strings.Contains(d.Host, ":") && net.ParseIP(d.Host) == nil) {
+			return "", "", fmt.Errorf("ARTEX_PG_HOST에 포트 없는 호스트 이름이나 IP 주소를 지정해 주세요")
+		}
+		if d.User == "" || d.DBName == "" {
+			return "", "", fmt.Errorf("ARTEX_PG_HOST 사용 시 ARTEX_PG_USER와 ARTEX_PG_DATABASE가 필요합니다")
+		}
+		if port := strings.TrimSpace(os.Getenv("ARTEX_PG_PORT")); port != "" {
+			d.Port, err = strconv.Atoi(port)
+			if err != nil || d.Port < 1 || d.Port > 65535 {
+				return "", "", fmt.Errorf("ARTEX_PG_PORT는 1에서 65535 사이의 정수여야 합니다")
+			}
+		}
+		return d.buildDSN(), "환경 변수 ARTEX_PG_HOST 및 database 필드", nil
 	}
 	db := Load().Database
 	if d := strings.TrimSpace(db.DSN); d != "" {
@@ -226,9 +247,10 @@ func (d Database) buildDSN() string {
 		ssl = "disable"
 	}
 	u := url.URL{
-		Scheme: "postgres",
-		Host:   host + ":" + strconv.Itoa(port),
-		Path:   "/" + d.DBName,
+		Scheme:  "postgres",
+		Host:    net.JoinHostPort(host, strconv.Itoa(port)),
+		Path:    "/" + d.DBName,
+		RawPath: "/" + url.PathEscape(d.DBName),
 	}
 	if d.User != "" {
 		if d.Password != "" {
