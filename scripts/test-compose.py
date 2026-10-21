@@ -239,6 +239,19 @@ print(json.dumps({'jwt': digest(key), 'host': digest(state['host_id'].encode()),
         login = self.json_request("/api/auth/login", method="POST", body={"username": "ARTEX", "password": "artex1234"})
         token = login.get("token")
         require(isinstance(token, str) and token, "administrator login did not return a token")
+        # Check the real DB/API defaults, including editable prompt bodies and
+        # nested tool descriptions that static page translation cannot cover.
+        agents = self.json_request("/api/agents", token=token).get("agents", [])
+        require(len(agents) >= 6, "built-in agents were not seeded")
+        defaults = [self.json_request("/api/agents/" + item["key"], token=token) for item in agents]
+        for path in ("/api/tools", "/api/intercept/rules", "/api/asset-intercept/rules",
+                     "/api/intercept/judge", "/api/skills"):
+            defaults.append(self.json_request(path, token=token))
+        text = json.dumps(defaults, ensure_ascii=False)
+        require(re.search(r"[\u3400-\u9fff\uf900-\ufaff]", text) is None,
+                "fresh installation exposes Chinese in supplied defaults")
+        require(re.search(r"[가-힣]", text) is not None, "Korean defaults are missing")
+        self.passed("Korean agent, tool, interception and skill defaults through the real API")
         state = self.json_request("/api/chatgpt/status", token=token)
         require(state.get("accounts") == [] and state.get("pending") is False, "test account store is not empty")
         self.passed("first-run setup complete; default administrator login; empty account store")

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Compose builds the app from source; releases can reuse binaries with --target prebuilt.
+# Compose builds the app and frontend from this checkout.
 FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS node
 
 FROM node AS web-build
@@ -51,10 +51,6 @@ VOLUME ["/app/data", "/app/auth"]
 EXPOSE 8787
 ENTRYPOINT ["/app/start.sh"]
 CMD ["-addr", ":8787", "-proxy", "127.0.0.1:8788"]
-
-FROM runtime AS prebuilt
-ARG TARGETARCH
-COPY --chmod=755 dist/${TARGETARCH}/artex /app/artex
 
 FROM runtime AS app
 COPY --from=go-build --chmod=755 /out/artex /app/artex

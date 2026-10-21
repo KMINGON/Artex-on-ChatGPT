@@ -1,27 +1,47 @@
-# Artex-on-ChatGPT
+<div align="center">
+  <img src="web/public/logo.png" width="180" alt="ARTEX 로고" />
+  <h1>Artex-on-ChatGPT</h1>
+  <p><strong>개인 ChatGPT 계정으로 시작하는 한국어 ARTEX</strong></p>
+  <p>ChatGPT 구독 · OpenAI API · Docker Compose</p>
+</div>
 
-**개인 ChatGPT 구독 또는 OpenAI API 키로 사용하는 한국어 ARTEX 포크입니다.**
+<p align="center">
+  <a href="#빠른-시작">빠른 시작</a> ·
+  <a href="#원본-대비-변경점">원본 대비 변경점</a> ·
+  <a href="#chatgpt-구독으로-연결">ChatGPT 연결</a> ·
+  <a href="docs/changes.md">상세 변경 문서</a>
+</p>
 
-한국어 기반판 [artex-global](https://github.com/jiwoochris/artex-global)에 OpenAI의 공식 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) 연결을 추가하고, 모델 통신을 **OpenAI Responses**로 통합했습니다. 기존 Norma 엔진의 작업·도구·MCP·대화 압축을 유지합니다. ChatGPT 연결에는 Codex 설치나 API 키가 필요하지 않습니다.
+---
 
-> 기본 실행 방법은 **개인 PC의 Docker Compose**입니다. Linux 또는 WSL에서 사용하며, Docker Desktop을 쓰는 경우 먼저 실행해 두세요. ARTEX 관리자 로그인과 ChatGPT 계정 연결은 별개입니다.
+## 프로젝트 소개
 
-[빠른 시작](#빠른-시작) · [중지·업데이트·데이터](#중지업데이트데이터) · [ChatGPT 연결](#chatgpt-구독으로-연결) · [API 키 연결](#openai-api-키로-연결) · [상세 변경점·인증 차이](docs/changes.md) · [원본 사용법](https://github.com/jiwoochris/artex-global/blob/main/README.ko.md)
+원본 ARTEX는 Claude, GPT 등 다양한 LLM 프로바이더를 지원하는 에이전트 플랫폼입니다. 다만 OpenAI API 경로에서는 응답 단계(`phase`)와 추론 상태가 대화 이력에서 누락되고, 도구 호출 전후의 컨텍스트 압축·저장·재개 과정에도 보완이 필요한 부분이 있었습니다.
 
-## 원본 대비 주요 변경점
+이 프로젝트는 **OpenAI 단일 프로바이더와 Responses 호출 규약으로 통합**하여, 원본의 다중 에이전트·도구·MCP·컨텍스트 관리가 OpenAI에서도 일관되게 이어지도록 정비했습니다. API 키와 개인 ChatGPT 구독이 같은 실행 엔진을 사용하며, 응답 상태 보존부터 도구 실행·대화 재개까지 함께 다룹니다.
 
-| 변경 | 핵심 내용 |
-| --- | --- |
-| **간편 설치** | Compose가 앱과 PostgreSQL을 준비. 기본 관리자 계정으로 바로 로그인 |
-| **ChatGPT 개인 계정** | 공식 구독 로그인 추가. OpenAI API 키도 함께 지원 |
-| **OpenAI 전용 연결** | Claude와 관련 설정 제거, 두 인증을 Responses로 통합 |
-| **컨텍스트 보존** | OpenAI API에도 reasoning·`phase` 보존 적용. 도구 결과 압축과 저장·재개 오류 수정 |
-| **실행 안정성** | 취소 뒤 대기 도구 차단, 부분 출력을 미완료로 표시, 실패 사용량과 구독 한도 처리 개선 |
-| **설정·자동화** | 프로필 적용 경합 수정, 트리거 대기열 저장, API Daybreak 선택 및 구독 모델 선택 보완 |
+여기에 공식 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) 연결, 기본 프롬프트·규칙·오류 안내의 한국어화, **명령 한 번으로 시작하는 Docker Compose 환경**을 추가했습니다. ChatGPT 연결에는 Codex 설치나 API 키가 필요하지 않습니다.
 
-**[원본과의 비교, 상세 개선점, Daybreak 및 인증별 제약 →](docs/changes.md)**
+> **개인 PC에서 바로 시작하세요.** Linux·WSL에서 Docker Compose로 실행합니다. Docker Desktop을 사용한다면 먼저 실행해 두세요. ARTEX 관리자 로그인과 ChatGPT 계정 연결은 별도 절차입니다.
 
-기존 API에도 일반 대화 압축·Noa가 있었습니다. 이번 개선은 누락된 응답 상태와 실행 결함을 보완하며, 모델 자체의 성능 향상을 보장하지 않습니다. Noa 기능은 유지합니다.
+## 원본 대비 변경점
+
+| 영역 | 원본·이전 구성 | 이 프로젝트 |
+| --- | --- | --- |
+| **모델 연결** | Claude·OpenAI 등 공급자별 호출 경로 | OpenAI Responses로 통합하고 Claude·타사 공급자 설정 제거 |
+| **개인 계정 로그인** | API 키 중심 | **ChatGPT 구독 로그인** 추가, OpenAI API 키도 지원 |
+| **대화·추론 상태** | OpenAI 응답의 reasoning 원형·`phase` 누락 | 응답 단계·추론 상태·항목 순서를 도구 왕복과 저장·재개 과정에서 보존 |
+| **컨텍스트 관리** | 압축 경계의 도구 결과 누락, 이전 토큰 수에 의존 | 도구 호출·결과를 함께 보존하고 현재 입력·도구 정의까지 반영해 압축 |
+| **실행·저장 안정성** | 취소 후 대기 도구 실행, 부분 저장·출력 처리의 빈틈 | 취소 전파, 완성된 체크포인트 검증, 미완료 출력·실패 사용량 구분 |
+| **설정·자동화** | 프로필 변경 경합, 실행 대기 상태 유실 가능성 | 프로필 적용 동기화, 트리거 대기열 저장, 구독 한도 처리 |
+| **모델 선택** | 모델 이름 중심 설정 | API 모델·Daybreak 프로그램 분리, 구독 계정에서 제공하는 모델 목록 사용 |
+| **한국어 사용 경험** | 화면 외 프롬프트·규칙·실행 안내에 중국어 잔존 | 에이전트·도구 지침, 가로채기 기본값, 오류·알림·기본 스킬 한국어화 |
+| **설치·운영** | 호스트 빌드·DB 준비·초기 설정 | **Docker Compose로 앱·DB·기본 관리자 계정 준비** |
+| **프로젝트 구성** | 실험적 Noa와 원본 탐지 자료·중복 운영 경로 | 기본 자동 압축으로 통일하고 사용하지 않는 문서·스크립트·템플릿 정리 |
+
+작업·계획·도구·MCP·Skills·탐색 그래프 요약은 유지합니다. 기존 설정을 갱신할 때는 확인된 기본값만 바꾸고 사용자가 수정한 프롬프트·규칙은 보존합니다.
+
+**[상세 변경점과 인증별 동작 차이 →](docs/changes.md)** · [트래픽 증거 사용법](docs/finding-traffic-evidence.md)
 
 ## 빠른 시작
 
@@ -168,7 +188,7 @@ ARTEX_LANG=ko ./start.sh
 3. 같은 대화에서 `Bash 도구로 printf 'ARTEX_TOOL_OK\n' 명령만 한 번 실행하고 결과를 알려주세요. 파일 변경이나 네트워크 요청은 하지 마세요.`를 보냅니다.
 4. 페이지를 새로고침하고 같은 대화에서 기억값을 묻습니다. 서버 재시작 후에도 같은 확인을 반복할 수 있습니다.
 
-이 과정도 모델 사용량을 소비합니다. 기억값 응답만으로 opaque 상태 보존을 검증할 수는 없으며, 자동 테스트에서는 다음 요청에 포함된 항목·순서·도구 ID도 검사합니다. 프로젝트·작업 생성과 상세 도구 사용법은 [원본 한국어 안내](https://github.com/jiwoochris/artex-global/blob/main/README.ko.md)를 참고하세요.
+이 과정도 모델 사용량을 소비합니다. 기억값 응답만으로 opaque 상태 보존을 검증할 수는 없으며, 자동 테스트에서는 다음 요청에 포함된 항목·순서·도구 ID도 검사합니다. 취약점과 요청·응답을 연결하는 방법은 [트래픽 증거 사용법](docs/finding-traffic-evidence.md)을 참고하세요.
 
 ## Daybreak와 인증별 차이
 
@@ -180,6 +200,6 @@ API 프로필은 **모델 + API 액세스 프로그램(`standard`/`daybreak_blue
 
 ## 출처와 라이선스
 
-원본 [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX), 한국어 기반판 [jiwoochris/artex-global](https://github.com/jiwoochris/artex-global)의 [`fdfb7a1`](https://github.com/jiwoochris/artex-global/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)에서 출발했습니다. 기능·운영 문서와 원저자 고지는 원본 저장소를 참고하세요.
+원본 [Autumn-27/ARTEX](https://github.com/Autumn-27/ARTEX), 한국어 기반판 [jiwoochris/artex-global](https://github.com/jiwoochris/artex-global)의 [`fdfb7a1`](https://github.com/jiwoochris/artex-global/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)에서 출발했습니다. 원본 링크는 출처 기록이며, 현재 설치·운영 안내는 이 저장소의 문서를 기준으로 합니다.
 
 루트 [GNU AGPL v3](LICENSE), 웹 코드의 [MIT 라이선스·저작권 고지](web/LICENSE), 제3자 코드의 개별 라이선스를 보존합니다. 원저자의 [사용 제한·면책 고지](https://github.com/jiwoochris/artex-global/blob/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6/README.zh.md#许可与免责声明)를 확인하고 허가된 환경에서 사용하세요.

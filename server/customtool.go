@@ -42,9 +42,7 @@ type customToolReq struct {
 
 var reToolKey = reAgentKey // 同 agent key 规则:小写字母开头 + 小写字母/数字/下划线
 
-// 사용자 지정 도구 CRUD·시험 실행 엔드포인트가 writeErr 로 사용자에게 돌려주는 검증
-// 오류 응답을 한국어로 고정한다. 에이전트가 읽는 도구 실행 결과(actool.Errorf)와 도구
-// 스키마 description 은 두뇌 경계라 중국어 원문을 보존한다(BRIEF 성능 보존 방침).
+// 사용자 도구의 검증 오류·도구 실행 결과·스키마 설명을 한국어로 제공한다.
 const (
 	errCustomToolKeyFormat          = "key는 소문자로 시작하고 소문자·숫자·밑줄만 사용할 수 있습니다"
 	errCustomToolKindInvalid        = "kind 값은 command, script, http, shell 중 하나여야 합니다"
@@ -295,7 +293,7 @@ func (s *Server) buildCustomTool(t *db.Tool) actool.CoreTool {
 		case "http":
 			return s.runHTTPTool(ctx, execRaw, params, tc)
 		default:
-			return actool.Errorf("未知自定义工具类型: " + kind), nil
+			return actool.Errorf("알 수 없는 사용자 도구 유형: " + kind), nil
 		}
 	}
 	return actool.Build(actool.Spec{
@@ -335,7 +333,7 @@ func ensureSchema(raw json.RawMessage) map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"args": map[string]any{"type": "string", "description": "命令/参数(自由文本)"},
+			"args": map[string]any{"type": "string", "description": "명령/인자(자유 텍스트)"},
 		},
 	}
 }
@@ -346,7 +344,7 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 	var spec commandExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Command) == "" {
-		return actool.Errorf("command 为空"), nil
+		return actool.Errorf("command가 비어 있습니다"), nil
 	}
 	cmd := renderTemplate(spec.Command, params, shellQuote)
 	// 复用 Bash 也在用的底层 run(经 Bash CoreTool.Call):自动继承安全 floor/超时/
@@ -366,11 +364,11 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 	var spec scriptExec
 	_ = json.Unmarshal(execRaw, &spec)
 	if strings.TrimSpace(spec.Code) == "" {
-		return actool.Errorf("script code 为空"), nil
+		return actool.Errorf("script code가 비어 있습니다"), nil
 	}
 	interp := s.pythonInterpreter()
 	if interp == "" {
-		return actool.Errorf("未配置且未检测到 python 解释器(在系统配置里设置)"), nil
+		return actool.Errorf("Python 인터프리터가 설정되지 않았고 자동으로 찾지 못했습니다(시스템 설정에서 지정하세요)"), nil
 	}
 	workDir := s.m.dir
 	var sessionEnv []string
@@ -422,7 +420,7 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	out, err := c.CombinedOutput()
 	body := string(out)
 	if runCtx.Err() == context.DeadlineExceeded {
-		body += "\n... [超时终止] ..."
+		body += "\n... [시간 초과로 종료] ..."
 	} else if err != nil {
 		body += "\n[exit: " + err.Error() + "]"
 	}
@@ -440,7 +438,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	rawURL := renderTemplate(spec.URL, params, identity)
 	if strings.TrimSpace(rawURL) == "" {
-		return actool.Errorf("http url 为空"), nil
+		return actool.Errorf("HTTP URL이 비어 있습니다"), nil
 	}
 	var bodyReader io.Reader
 	if spec.Body != "" {
@@ -461,7 +459,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return actool.Errorf("请求失败: " + err.Error()), nil
+		return actool.Errorf("요청 실패: " + err.Error()), nil
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

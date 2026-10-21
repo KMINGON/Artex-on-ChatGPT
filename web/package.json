@@ -13,7 +13,6 @@
     "check:fix": "biome check --write",
     "prepare": "husky || true",
     "generate:presets": "ts-node -P tsconfig.scripts.json src/scripts/generate-theme-presets.ts",
-    "extract:i18n": "ts-node -P tsconfig.scripts.json src/scripts/extract-i18n.ts",
     "test": "vitest",
     "check:i18n": "ts-node -P tsconfig.scripts.json src/scripts/check-i18n-keys.ts"
   },
@@ -55,7 +54,6 @@
     "recharts": "^3.8.0",
     "remark-gfm": "^4.0.1",
     "shadcn": "^4.12.0",
-    "simple-icons": "^16.24.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
     "temporal-polyfill": "^1.0.1",

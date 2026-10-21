@@ -271,10 +271,6 @@ const (
 	// 任务并发上限:开关 + 上限数。默认关闭;开启后默认上限 5(见 defaultConcurrencyLimit)。
 	settingConcurrencyOn    = "task_concurrency_enabled"
 	settingConcurrencyLimit = "task_concurrency_limit"
-	// 实验功能:noa 模型驱动上下文压缩(norma v0.4.0)。默认关闭——开启后平台接入的四类
-	// agent(planner/worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction。
-	// 每 run 读一次,切换只影响之后启动的 run。
-	settingNoaCompaction = "noa_compaction"
 	// settingOutputLanguage 는 사용자 대면 출력 언어("en"/"ko"/"zh"/"es")의 런타임 값이다.
 	// 비어 있으면 config.Language()(ARTEX_LANG·설정 파일·기본값 한국어)로 떨어진다. 에이전트
 	// 출력 언어(langDirective)와 백엔드 메시지 카탈로그가 모두 이 값을 따른다.
@@ -393,7 +389,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 					// fmt.Errorf("recover traffic delete staging: %w", err) 로 감싸 기동 실패로
 					// 전파할 뿐 writeErr·actool 어느 경로에도 닿지 않는 운영자 기동 로그라,
 					// F3b(사용자 노출 writeErr) 범위가 아니어서 원문을 보존한다(Z2 계열).
-					return false, errors.New("归档流量暂存日志缺少任务 ID")
+					return false, errors.New("보관 트래픽 임시 저장 로그에 작업 ID가 없습니다")
 				}
 				task, taskErr := pg.GetTask(taskID)
 				if taskErr != nil {
@@ -448,7 +444,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	}
 	if m.traffic != nil {
 		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
-			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
+			log.Printf("[proxy] 전역 프록시 %q가 유효하지 않아 무시했습니다: %v", m.globalProxy, err)
 		}
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
@@ -502,19 +498,6 @@ func (m *Manager) SetLLMRecordEnabled(on bool) error {
 	m.llmRecOn = on
 	m.mu.Unlock()
 	return nil
-}
-
-// NoaCompactionEnabled reports whether the experimental noa context-compression
-// mechanism is on (默认关；settings.noa_compaction). Read per agent run via the
-// injected resolver, so a toggle takes effect on the next run without rebuild.
-func (m *Manager) NoaCompactionEnabled() bool {
-	return m.pg.GetBool(settingNoaCompaction, false)
-}
-
-// SetNoaCompaction persists the noa toggle. Effective on the next agent run —
-// the resolver reads it per run, so no rebuild is needed.
-func (m *Manager) SetNoaCompaction(on bool) error {
-	return m.pg.SetBool(settingNoaCompaction, on)
 }
 
 // LLMPoolEnabled reports whether LLM failover ("轮询") is on (默认关；
@@ -639,7 +622,7 @@ const browserMCPName = "browser"
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {
-		log.Printf("[mcp] browser 代理同步: 读取 MCP 列表失败: %v", err)
+		log.Printf("[mcp] browser 프록시 동기화: MCP 목록 읽기 실패: %v", err)
 		return
 	}
 	var srv *pgdb.MCPServer
@@ -668,7 +651,7 @@ func (m *Manager) syncBrowserMCPProxy() {
 	srv.Args = encodeJSON(args)
 	srv.Env = encodeJSON(env)
 	if _, err := m.pg.SaveMCP(srv); err != nil {
-		log.Printf("[mcp] browser 代理同步失败: %v", err)
+		log.Printf("[mcp] browser 프록시 동기화 실패: %v", err)
 		return
 	}
 	if proxy != "" {

@@ -1,6 +1,6 @@
 # Norma runtime snapshot
 
-This directory contains the complete Go module source of
+This directory contains a modified runtime snapshot of
 [`github.com/Autumn-27/norma`](https://github.com/Autumn-27/norma) **v0.4.3**,
 retrieved from the Go module cache. Upstream commit:
 `320ae32989da97dd91469bb89164cbfe87d83d5d` (tag `v0.4.3`).
@@ -8,9 +8,11 @@ retrieved from the Go module cache. Upstream commit:
 Original module checksum:
 `h1:DnmOhJPL6OZSMnCVYO5Ujh4yVINuDarEickVi9jx1hI=`.
 
-The upstream README, module files, examples, and tests are retained. The source
-distribution contained no LICENSE or NOTICE file; this file does not supply a
-new license or change the upstream author's rights.
+The module identity and original copyright notices are retained. Unused
+provider adapters, standalone applications/examples, and experimental Noa
+packages have been removed. The source distribution contained no LICENSE or
+NOTICE file; this file does not supply a new license or change the upstream
+author's rights.
 
 Artex uses a local module replacement for these limited runtime extensions:
 
@@ -39,6 +41,13 @@ Artex uses a local module replacement for these limited runtime extensions:
 - Transcript read/write failures return `storage_error`; storage errors prohibit
   whole-run replay and provider fallback. Session.Close also reports the first
   persistence failure. ARTEX's Chat/Main/Worker callers now check Resume/Close.
+- Interactive-shell descriptions, parameter help, errors, notifications, and
+  background-task completion messages use Korean. Tool identifiers, schemas,
+  task status values, and existing stored output remain unchanged.
+- Experimental `noa` and `noaadapter` packages and ARTEX's toggle/integration
+  are removed. All ARTEX agents use built-in compaction. Generic compactor,
+  context-view, and tool contracts remain tested; old user archives and
+  transcripts are not deleted.
 
 Checkpoints now use `checkpoint_begin`, `checkpoint_part`, and
 `checkpoint_commit` records with version 1, an ID, count, ordered indices, and a
@@ -62,8 +71,6 @@ Do not let old and new binaries write these files concurrently. Older readers
 do not understand committed checkpoints or recovery files. Rollback requires
 the preserved pre-upgrade transcript backup and matching connection bindings;
 pointing an old binary at newly written history can restore an incorrect view.
-Noa runtime/configuration and its existing seven failing baseline tests are
-unchanged in this reliability patch.
 
 Provider-specific formats, HTTP, authentication, and replay validation stay in
 Artex's `chatgptllm` and `chatgptauth` packages. Local regression tests cover

@@ -34,7 +34,6 @@ type ChatAgent struct {
 	webSearch          WebSearchOpts
 	guard              *guard.Guard // optional; nil disables intercept hooks for chat
 	nonStreamingFn     func() bool  // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn       func() bool  // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn        func() int   // resolver: per-reply output cap (nil/0 = send no cap)
 }
 
@@ -47,11 +46,6 @@ func NewChatAgent(prov llm.Provider, model, workDir string, tx *transcript.Store
 func (c *ChatAgent) SetNonStreaming(fn func() bool) { c.nonStreamingFn = fn }
 
 func (c *ChatAgent) nonStreaming() bool { return c.nonStreamingFn != nil && c.nonStreamingFn() }
-
-// SetNoaEnabled wires a resolver deciding whether chat runs use the experimental
-// noa context-compression mechanism. nil/unset = off (built-in compaction). Read
-// per run so the settings toggle takes effect without rebuilding the agent.
-func (c *ChatAgent) SetNoaEnabled(fn func() bool) { c.noaEnabledFn = fn }
 
 // SetMaxTokens wires a resolver for the per-reply output cap. nil/unset or 0 =
 // send no cap and let the endpoint decide. Read per run, like nonStreaming.
@@ -79,7 +73,7 @@ func (c *ChatAgent) SetGuard(g *guard.Guard) { c.guard = g }
 // agent's system prompt. Mirrors artifactSpec but without pentest-specific
 // wording ("payload", "抓响应体") that would be odd in a general assistant.
 func chatWorkDirSpec(workDir string) string {
-	return "\n\n**文件输出规约**：需要写文件时，一律写到工作目录 " + workDir + "（这是默认 CWD，相对路径即落在这里，也可用该绝对路径）——不要写 /tmp 或其他绝对路径。"
+	return "\n\n**파일 출력 규칙**: 파일을 작성할 때는 모두 작업 디렉터리 " + workDir + "에 저장하세요(기본 CWD이므로 상대 경로를 사용하면 이곳에 저장되며, 이 절대 경로를 사용해도 됩니다). /tmp 또는 다른 절대 경로에는 저장하지 마세요."
 }
 
 // chatSystem renders the DB-managed prompt body for agentKey. Custom agents have
@@ -173,8 +167,6 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		opts.Transcript = c.tx
 		opts.SessionID = boundSession
 	}
-	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	enableNoa(&opts, c.noaEnabledFn, c.workDir, "chat-"+boundSession, noaWarn("chat-"+boundSession))
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()

@@ -148,21 +148,14 @@ func (sc *Scheduler) fireIntervals(triggers []*db.AgentTrigger) {
 		if !due {
 			continue
 		}
-		// [F10/F19 경계 판정 · 두뇌 입력 보존] 이 파일의 트리거 합성부(정기·finding·목표·초과·
-		// 생성·도구 fire* 메서드)가 만드는 `【本次…触发】…` 컨텍스트 블록과 trunc 의 `…(已截断…)`
-		// 절단 표시는 번역하지 않는다. StartTriggeredRun 의 message 인자로 들어가
-		// finalTriggerMessage → ca.Chat 의 에이전트 입력(두뇌)이자 전사에 노출되는 이중 용도
-		// 문자열이다(BRIEF 경계 #1·F16 동형, conversations.go taskContextHeader 보존 주석 참조).
-		// title 인자(`定时触发 · …` 등)는 ca.Chat 에 안 가는 표시 전용이나, 본문이 중국어로
-		// 고정되어 제목만 바꾸면 대화 안에서 언어가 섞이므로(F7·F8·F12) 함께 보존한다.
-		ctx := "\n\n【本次为定时触发】" + now.Format(" 2006-01-02 15:04:05 MST")
+		ctx := "\n\n【이번 실행은 예약 트리거에 의해 시작되었습니다】" + now.Format(" 2006-01-02 15:04:05 MST")
 		eventKey := "interval:initial"
 		if tr.LastFire != nil {
 			eventKey = "interval:" + tr.LastFire.UTC().Format(time.RFC3339Nano)
 		}
 		sc.commit(db.TriggerBatch{IntervalID: tr.ID, Deliveries: []db.TriggerDelivery{{
 			TriggerID: tr.ID, EventKey: eventKey, AgentKey: tr.AgentKey,
-			Title: fmt.Sprintf("定时触发 · %s", now.Format("15:04")), Message: tr.IntervalMessage + ctx,
+			Title: fmt.Sprintf("예약 트리거 · %s", now.Format("15:04")), Message: tr.IntervalMessage + ctx,
 		}}})
 	}
 }
@@ -197,10 +190,10 @@ func (sc *Scheduler) fireFindings(triggers []*db.AgentTrigger) {
 		if len(want) == 0 {
 			continue
 		}
-		msgCtx := fmt.Sprintf("\n\n【本次由任务发现 finding 触发】\n发现: [%s/%s] %s",
+		msgCtx := fmt.Sprintf("\n\n【이번 실행은 작업의 취약점 발견으로 시작되었습니다】\n발견: [%s/%s] %s",
 			e.VulnClass, e.Severity, e.Summary)
 		for _, tr := range want {
-			batch.Deliveries = append(batch.Deliveries, delivery(tr, "finding:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("finding 触发 · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e))
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "finding:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("취약점 트리거 · task#%d", e.TaskID), tr.FindingMessage+msgCtx, e))
 		}
 	}
 	batch.StateValue = strconv.FormatInt(maxID, 10)
@@ -237,9 +230,9 @@ func (sc *Scheduler) fireGoals(triggers []*db.AgentTrigger) {
 		if len(want) == 0 {
 			continue
 		}
-		msgCtx := fmt.Sprintf("\n\n【本次由任务完成目标触发】\n达成目标: %s", e.Summary)
+		msgCtx := fmt.Sprintf("\n\n【이번 실행은 작업의 목표 달성으로 시작되었습니다】\n달성한 목표: %s", e.Summary)
 		for _, tr := range want {
-			batch.Deliveries = append(batch.Deliveries, delivery(tr, "goal:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("目标触发 · task#%d", e.TaskID), tr.GoalMessage+msgCtx, e))
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "goal:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("목표 트리거 · task#%d", e.TaskID), tr.GoalMessage+msgCtx, e))
 		}
 	}
 	if changed {
@@ -267,7 +260,7 @@ func (sc *Scheduler) fireTaskTimeouts(triggers []*db.AgentTrigger) {
 			}
 			key := fmt.Sprintf("timeout:%d:%s", e.TaskID, e.OccurredAt.UTC().Format(time.RFC3339Nano))
 			batch.Deliveries = append(batch.Deliveries, delivery(tr, key,
-				fmt.Sprintf("超时触发 · task#%d", e.TaskID), tr.TaskTimeoutMessage+"\n\n【本次由任务超时触发】", e))
+				fmt.Sprintf("시간 초과 트리거 · task#%d", e.TaskID), tr.TaskTimeoutMessage+"\n\n【이번 실행은 작업 시간 초과로 시작되었습니다】", e))
 		}
 	}
 	sc.commit(batch)
@@ -301,9 +294,9 @@ func (sc *Scheduler) fireTaskCreates(triggers []*db.AgentTrigger) {
 		if len(want) == 0 {
 			continue
 		}
-		msgCtx := "\n\n【本次由任务创建触发】"
+		msgCtx := "\n\n【이번 실행은 작업 생성으로 시작되었습니다】"
 		for _, tr := range want {
-			batch.Deliveries = append(batch.Deliveries, delivery(tr, "create:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("任务创建触发 · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e))
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "create:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("작업 생성 트리거 · task#%d", e.TaskID), tr.TaskCreateMessage+msgCtx, e))
 		}
 	}
 	batch.StateValue = strconv.FormatInt(maxID, 10)
@@ -348,13 +341,13 @@ func (sc *Scheduler) fireToolCalls(triggers []*db.AgentTrigger) {
 		if e.ToolIsErr {
 			errTag = "[error] "
 		}
-		msgCtx := fmt.Sprintf("\n\n【本次由工具调用触发】\n工具: %s\n入参: %s\n返回: %s%s",
+		msgCtx := fmt.Sprintf("\n\n【이번 실행은 도구 호출로 시작되었습니다】\n도구: %s\n인자: %s\n결과: %s%s",
 			e.Tool, trunc(e.ToolInput, 1500), errTag, trunc(e.ToolOutput, 1500))
 		for _, tr := range want {
 			if !containsFold(tr.ToolNames, e.Tool) {
 				continue
 			}
-			batch.Deliveries = append(batch.Deliveries, delivery(tr, "tool:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("工具触发 · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e))
+			batch.Deliveries = append(batch.Deliveries, delivery(tr, "tool:"+strconv.FormatInt(e.NodeID, 10), fmt.Sprintf("도구 트리거 · %s · task#%d", e.Tool, e.TaskID), tr.ToolCallMessage+msgCtx, e))
 		}
 	}
 	batch.StateValue = strconv.FormatInt(maxID, 10)
@@ -377,7 +370,7 @@ func trunc(s string, max int) string {
 	if len(r) <= max {
 		return s
 	}
-	return string(r[:max]) + fmt.Sprintf("…(已截断,共 %d 字)", len(r))
+	return string(r[:max]) + fmt.Sprintf("…(잘림, 전체 %d자)", len(r))
 }
 
 func (sc *Scheduler) lastID(key string) (int64, error) {

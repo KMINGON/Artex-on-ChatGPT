@@ -43,7 +43,7 @@ func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools = append(tools, s.platformTools()...) // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
 	custom, err := s.customTools()
 	if err != nil {
-		log.Printf("[custom-tool] 加载失败: %v", err)
+		log.Printf("[custom-tool] 로드 실패: %v", err)
 		return tools, nil
 	}
 	tools = append(tools, custom...)
@@ -152,11 +152,11 @@ func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick fu
 	}
 	_ = json.Unmarshal(in, &head)
 	if strings.TrimSpace(head.TaskID) == "" {
-		return actool.Errorf("task_id 为必填"), nil
+		return actool.Errorf("task_id는 필수입니다"), nil
 	}
 	t, ok := s.m.Task(head.TaskID)
 	if !ok {
-		return actool.Errorf("task 不存在: " + head.TaskID), nil
+		return actool.Errorf("작업이 없습니다: " + head.TaskID), nil
 	}
 	var m map[string]json.RawMessage
 	_ = json.Unmarshal(in, &m)
@@ -175,7 +175,7 @@ func (s *Server) delegateToTask(ctx context.Context, in json.RawMessage, pick fu
 
 func (s *Server) toolListTasks() actool.CoreTool {
 	return roTool("list_tasks",
-		"列出所有任务(id/描述/目标/状态/运行时长/父任务/LLM 配置)，编排 agent 用它掌握全局、看哪些任务卡太久、各自用哪个 LLM。运行时长：运行中=创建→现在，终态=创建→最后活动(秒)。llm_profile：任务 planner/worker 用的配置名，(激活配置)=跟随全局激活。",
+		"모든 작업(id/설명/목표/상태/실행 시간/상위 작업/LLM 설정)을 나열합니다. 조정 에이전트가 전체 현황, 오래 정체된 작업, 각 작업의 LLM을 확인할 때 사용합니다. 실행 시간(초): 실행 중이면 생성부터 현재까지, 종료 상태이면 생성부터 마지막 활동까지입니다. llm_profile은 작업 planner/worker의 설정 이름이며 (활성 설정)은 전역 활성 설정을 따릅니다.",
 		objSchema(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
 			lastAct, _ := s.m.PG().LastActivityAll()
@@ -205,11 +205,11 @@ func (s *Server) toolListTasks() actool.CoreTool {
 				}
 				llmState := t.llmStateSnapshot()
 				if llmState.ProfileID == nil {
-					row["llm_profile"] = "(激活配置)"
+					row["llm_profile"] = "(활성 설정)"
 				} else if n, ok := profName[*llmState.ProfileID]; ok {
 					row["llm_profile"] = n
 				} else {
-					row["llm_profile"] = fmt.Sprintf("#%d(已删除)", *llmState.ProfileID)
+					row["llm_profile"] = fmt.Sprintf("#%d(삭제됨)", *llmState.ProfileID)
 				}
 				out = append(out, row)
 			}
@@ -221,7 +221,7 @@ func (s *Server) toolListTasks() actool.CoreTool {
 // orchestration agent can pick one for spawn_task's llm_profile. Never leaks keys.
 func (s *Server) toolListLLMProfiles() actool.CoreTool {
 	return roTool("list_llm_profiles",
-		"列出可用的 LLM 配置(profile)：id、名称、模型、格式、是否为当前激活配置。用 id 给 spawn_task 的 llm_profile_id 参数指定子任务专属 LLM（如侦察用便宜模型、利用用强模型）。不含 API Key。",
+		"사용 가능한 LLM 프로필의 id, 이름, 모델, 형식, 현재 활성 여부를 나열합니다. spawn_task의 llm_profile_id에 id를 지정하여 하위 작업 전용 LLM을 선택하세요(예: 정찰에는 저렴한 모델, 악용에는 강력한 모델). API 키는 포함하지 않습니다.",
 		objSchema(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
 			profs, err := s.m.pg.ListProfiles()
@@ -240,16 +240,16 @@ func (s *Server) toolListLLMProfiles() actool.CoreTool {
 
 func (s *Server) toolSpawnTask() actool.CoreTool {
 	return wrTool("spawn_task",
-		"新建一个子任务并启动探索引擎，返回 task_id。用于把一件事(如一道题/一个目标)派成独立任务。parent_ref 可选：填当前编排关联的父任务 id 做父子关联。",
+		"하위 작업을 생성하고 탐색 엔진을 시작한 뒤 task_id를 반환합니다. 하나의 문제나 목표를 독립 작업으로 배정할 때 사용합니다. parent_ref는 선택 사항이며 현재 조정에 연결된 상위 작업 id를 입력하면 상하위 관계를 설정합니다.",
 		objSchema(map[string]any{
-			"description":            strParam("任务描述(简短标题)"),
-			"goal":                   strParam("任务目标(要达成什么)"),
-			"parent_ref":             strParam("可选：父任务 id(做父子关联)"),
-			"source_task_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": fmt.Sprintf("可选：只读继承的来源任务 id 列表(最多 %d 个)。子任务可只读引用这些任务已探明的资产/结论作为起点；与 parent_ref 的纯父子指针不同，这是内容继承。", db.MaxTaskSourceCount)},
-			"llm_profile_id":         map[string]any{"type": "integer", "description": "可选：指定本子任务 planner/worker 用的 LLM 配置 id(见 list_llm_profiles)；留空则继承父任务、再回退全局激活配置"},
-			"timeout_seconds":        map[string]any{"type": "integer", "description": "可选：任务级超时(秒)。到点后触发优雅收尾并进入 timeout 终态；留空或 0 = 不限时"},
-			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
-			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
+			"description":            strParam("작업 설명(짧은 제목)"),
+			"goal":                   strParam("작업 목표(달성할 결과)"),
+			"parent_ref":             strParam("선택: 상위 작업 id(상하위 관계 설정)"),
+			"source_task_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": fmt.Sprintf("선택: 읽기 전용으로 상속할 원본 작업 id 목록(최대 %d개). 하위 작업이 이미 확인된 자산/결론을 시작점으로 참조합니다. 단순 상하위 연결인 parent_ref와 달리 내용을 상속합니다.", db.MaxTaskSourceCount)},
+			"llm_profile_id":         map[string]any{"type": "integer", "description": "선택: 하위 작업 planner/worker의 LLM 설정 id(list_llm_profiles 참조). 생략하면 상위 작업을 상속하고, 없으면 전역 활성 설정을 사용합니다"},
+			"timeout_seconds":        map[string]any{"type": "integer", "description": "선택: 작업 시간 제한(초). 도달하면 마무리 과정을 거쳐 timeout으로 종료합니다. 생략 또는 0이면 무제한입니다"},
+			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "선택: planner 주기적 실행 간격(초). 이전 계획 종료/작업 시작 이후 이 시간이 지나도록 다른 실행 계기가 없으면 계획을 한 차례 실행합니다(교착 방지 및 실행 중 Worker 감독). 생략 또는 0이면 기본 600초(10분)입니다"},
+			"seed_first_intent":      map[string]any{"type": "boolean", "description": "선택: 간단한 작업에서 사용합니다. 생성 시 초기 의도 하나(설명+목표)를 바로 배정해 Worker가 첫 planner를 기다리지 않고 테스트를 시작합니다. 기본 false이며 계획 후 실행하는 표준 흐름을 따릅니다."},
 		}, "description", "goal"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -264,27 +264,27 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Description) == "" {
-				a.Description = "未命名任务"
+				a.Description = "이름 없는 작업"
 			}
 			if strings.TrimSpace(a.Goal) == "" {
-				return actool.Errorf("goal 为必填"), nil
+				return actool.Errorf("goal은 필수입니다"), nil
 			}
 			if a.TimeoutSeconds < 0 {
 				a.TimeoutSeconds = 0
 			}
 			// 只读继承来源任务：数量上限 + 每个 id 有效/去重/存在，校验规则与 HTTP 建任务一致。
 			if len(a.SourceTaskIDs) > db.MaxTaskSourceCount {
-				return actool.Errorf(fmt.Sprintf("关联任务最多选择 %d 个", db.MaxTaskSourceCount)), nil
+				return actool.Errorf(fmt.Sprintf("연결 작업은 최대 %d개까지 선택할 수 있습니다", db.MaxTaskSourceCount)), nil
 			}
 			sourceIDs := make([]int64, 0, len(a.SourceTaskIDs))
 			seenSources := map[int64]bool{}
 			for _, raw := range a.SourceTaskIDs {
 				id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 				if err != nil || id <= 0 || seenSources[id] {
-					return actool.Errorf("关联任务 id 无效或重复"), nil
+					return actool.Errorf("연결 작업 id가 잘못되었거나 중복되었습니다"), nil
 				}
 				if _, ok := s.m.Task(strconv.FormatInt(id, 10)); !ok {
-					return actool.Errorf(fmt.Sprintf("关联任务 #%d 不存在", id)), nil
+					return actool.Errorf(fmt.Sprintf("연결 작업 #%d이(가) 없습니다", id)), nil
 				}
 				seenSources[id] = true
 				sourceIDs = append(sourceIDs, id)
@@ -293,7 +293,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			var pin *int64
 			if id := parseProfileID(a.LLMProfileID); id > 0 {
 				if _, ok := s.loadProfileConfig(id); !ok {
-					return actool.Errorf(fmt.Sprintf("LLM 配置 #%d 不存在或未设置 API Key", id)), nil
+					return actool.Errorf(fmt.Sprintf("LLM 설정 #%d이(가) 없거나 사용할 수 있는 인증이 설정되지 않았습니다", id)), nil
 				}
 				pin = &id
 			} else if a.ParentRef != "" {
@@ -329,8 +329,8 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 }
 
 func (s *Server) toolPauseTask() actool.CoreTool {
-	return wrTool("pause_task", "暂停指定任务(停止其 planner/worker 循环)。",
-		objSchema(map[string]any{"task_id": strParam("要暂停的任务 id")}, "task_id"),
+	return wrTool("pause_task", "지정한 작업을 일시 정지합니다(planner/worker 루프 중지).",
+		objSchema(map[string]any{"task_id": strParam("일시 정지할 작업 id")}, "task_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				TaskID string `json:"task_id"`
@@ -338,7 +338,7 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 			_ = json.Unmarshal(in, &a)
 			t, ok := s.m.Task(a.TaskID)
 			if !ok {
-				return actool.Errorf("task 不存在: " + a.TaskID), nil
+				return actool.Errorf("작업이 없습니다: " + a.TaskID), nil
 			}
 			if _, err := s.applyTaskControlWithCause(t, "pause", agent.AbortPausedByOrchestrator); err != nil {
 				return actool.Errorf(err.Error()), nil
@@ -348,30 +348,30 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 }
 
 func (s *Server) toolGetTaskGraph() actool.CoreTool {
-	return roTool("get_task_graph", "读指定任务的探索图总览(同 graph_overview：资产计数/frontier/发现/覆盖等)，用 task_id 指定任务。",
-		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
+	return roTool("get_task_graph", "task_id로 지정한 작업의 탐색 그래프 개요를 읽습니다(graph_overview와 동일: 자산 수/frontier/발견/진행 범위 등).",
+		objSchema(map[string]any{"task_id": strParam("작업 id")}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).GraphOverviewTool)
 		})
 }
 
 func (s *Server) toolListTaskFindings() actool.CoreTool {
-	return roTool("list_task_findings", "读指定任务的确认漏洞(含 flag/PoC；每条带 id/task_id/intent_id/vulnclass/severity/摘要/状态)，用 task_id 指定任务。",
-		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
+	return roTool("list_task_findings", "task_id로 지정한 작업에서 확인된 취약점을 읽습니다(flag/PoC 포함, 각 항목은 id/task_id/intent_id/vulnclass/severity/요약/상태 포함).",
+		objSchema(map[string]any{"task_id": strParam("작업 id")}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).ListFindingsTool)
 		})
 }
 
 func (s *Server) toolAddHint() actool.CoreTool {
-	return wrTool("add_task_hint", "给指定任务注入战略提示(该任务的 planner 下轮生成意图时会读到)。\n"+
-		"★优先批量：多条提示放进 hints 数组一次提交（返回 ids 数组，与 hints 等长同序，失败项 id=0）；单条则省略 hints 直接给顶层 text。",
+	return wrTool("add_task_hint", "지정한 작업에 전략 힌트를 전달합니다(다음 의도 생성 시 해당 작업의 planner가 읽음).\n"+
+		"여러 힌트는 hints 배열로 한 번에 제출하세요(ids 배열은 hints와 길이·순서가 같으며 실패 항목은 id=0). 한 개이면 hints를 생략하고 최상위 text를 지정하세요.",
 		objSchema(map[string]any{
-			"task_id":      strParam("任务 id"),
-			"hints":        map[string]any{"type": "array", "description": "【优先用这个】提示数组，每个元素字段同顶层（text/asset_ids/traffic_refs）。", "items": objSchema(map[string]any{"text": strParam("提示内容"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}}, "traffic_refs": agent.HintTrafficSchema()})},
-			"text":         strParam("[单条] 提示内容"),
+			"task_id":      strParam("작업 id"),
+			"hints":        map[string]any{"type": "array", "description": "우선 사용: 힌트 배열. 각 항목의 필드는 최상위와 같습니다(text/asset_ids/traffic_refs).", "items": objSchema(map[string]any{"text": strParam("힌트 내용"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}}, "traffic_refs": agent.HintTrafficSchema()})},
+			"text":         strParam("[단일] 힌트 내용"),
 			"traffic_refs": agent.HintTrafficSchema(),
-			"asset_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "锚定的资产 id（可选，0/1/多个；该任务内的资产 id）"},
+			"asset_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "연결할 자산 id(선택, 0개/1개/여러 개, 해당 작업 내 자산 id)"},
 		}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).AddHintTool)
@@ -380,11 +380,11 @@ func (s *Server) toolAddHint() actool.CoreTool {
 
 func (s *Server) toolGetWorkerTrace() actool.CoreTool {
 	return roTool("get_task_worker_trace",
-		"看指定任务里某个 work(意图)的执行过程：get_task_worker_trace(task_id, intent_id) 看步骤摘要；再带 step_ids=[...] 取那几步完整内容(一次最多 5 个,多传只返回前 5 个)。",
+		"지정한 작업에서 work(의도)의 실행 과정을 봅니다. get_task_worker_trace(task_id, intent_id)로 단계 요약을 보고 step_ids=[...]를 추가해 해당 단계의 전체 내용을 읽습니다(한 번에 최대 5개, 초과 시 앞 5개만 반환).",
 		objSchema(map[string]any{
-			"task_id":   strParam("任务 id"),
-			"intent_id": map[string]any{"type": "integer", "description": "意图 id(该任务里的 work)"},
-			"step_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "可选：要取完整内容的步骤 id(一次最多 5 个,多传只返回前 5 个,其余在 omitted_step_ids 里列出)"},
+			"task_id":   strParam("작업 id"),
+			"intent_id": map[string]any{"type": "integer", "description": "의도 id(해당 작업의 work)"},
+			"step_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "선택: 전체 내용을 읽을 단계 id(한 번에 최대 5개, 초과하면 앞 5개만 반환하고 나머지는 omitted_step_ids에 표시)"},
 		}, "task_id", "intent_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).GetWorkerTraceTool)
@@ -392,16 +392,16 @@ func (s *Server) toolGetWorkerTrace() actool.CoreTool {
 }
 
 func (s *Server) toolListWorkerTraces() actool.CoreTool {
-	return roTool("list_task_worker_traces", "列出指定任务里跑过哪些 work(意图) + 各自步数，用于发现哪些 work 值得翻看(再用 get_task_worker_trace)。",
-		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
+	return roTool("list_task_worker_traces", "지정한 작업에서 실행한 work(의도)와 각 단계 수를 나열합니다. 상세 확인할 work를 찾은 뒤 get_task_worker_trace를 사용하세요.",
+		objSchema(map[string]any{"task_id": strParam("작업 id")}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).ListWorkerTracesTool)
 		})
 }
 
 func (s *Server) toolSearchWorkerTraces() actool.CoreTool {
-	return roTool("search_task_worker_traces", "在指定任务里按关键字搜索所有 work 的执行过程(返回命中步骤摘要 + intent_id)。",
-		objSchema(map[string]any{"task_id": strParam("任务 id"), "q": strParam("搜索关键字")}, "task_id", "q"),
+	return roTool("search_task_worker_traces", "지정한 작업의 모든 work 실행 과정에서 키워드를 검색합니다(일치 단계 요약 + intent_id 반환).",
+		objSchema(map[string]any{"task_id": strParam("작업 id"), "q": strParam("검색 키워드")}, "task_id", "q"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).SearchWorkerTracesTool)
 		})
@@ -409,10 +409,10 @@ func (s *Server) toolSearchWorkerTraces() actool.CoreTool {
 
 func (s *Server) toolGetTaskNodeDetail() actool.CoreTool {
 	return roTool("get_task_node_detail",
-		"读指定任务里某个探索图节点的完整内容(发现/事实/意图/目标：摘要 + 详情/证据/PoC)。id 为探索节点 id(如 report_finding 返回、或 list_task_findings 里的 id)。写漏洞报告前用它取该漏洞的完整证据。",
+		"지정한 작업의 탐색 그래프 노드 전체 내용을 읽습니다(발견/사실/의도/목표: 요약 + 상세/증거/PoC). id는 탐색 노드 id입니다(report_finding 반환값 또는 list_task_findings의 id). 취약점 보고서 작성 전에 전체 증거를 확인할 때 사용하세요.",
 		objSchema(map[string]any{
-			"task_id": strParam("任务 id"),
-			"id":      map[string]any{"type": "integer", "description": "探索图节点 id(非资产 id)"},
+			"task_id": strParam("작업 id"),
+			"id":      map[string]any{"type": "integer", "description": "탐색 그래프 노드 id(자산 id가 아님)"},
 		}, "task_id", "id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).NodeDetailTool)
@@ -425,11 +425,11 @@ func (s *Server) toolGetTaskNodeDetail() actool.CoreTool {
 // task-agnostic, so this host tool needs no task_id / exploration store.
 func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 	return wrTool("update_finding_report",
-		"为已登记的漏洞写入/更新【详细报告】(Markdown 全文,整段覆盖旧内容)。finding_id 传 report_finding 返回的那个 id(\"finding recorded: <id>\" 里的数字)。报告建议包含:漏洞概述、影响与危害、复现步骤、证据/PoC、修复建议。",
+		"등록된 취약점의 상세 보고서를 작성/갱신합니다(Markdown 전문으로 기존 내용 전체 교체). finding_id는 report_finding의 id(\"finding recorded: <id>\"의 숫자)를 사용합니다. 취약점 개요, 영향·위험, 재현 단계, 증거/PoC, 수정 권고를 포함하세요.",
 		objSchema(map[string]any{
-			"finding_id":       map[string]any{"type": "integer", "description": "目标漏洞 id(report_finding 返回的 id)"},
-			"report":           strParam("详细报告全文,Markdown 格式"),
-			"evidence_version": map[string]any{"type": "integer", "description": "get_finding_traffic 返回的证据 version；用于防止报告覆盖新的证据变更"},
+			"finding_id":       map[string]any{"type": "integer", "description": "대상 취약점 id(report_finding 반환 id)"},
+			"report":           strParam("Markdown 형식의 상세 보고서 전문"),
+			"evidence_version": map[string]any{"type": "integer", "description": "get_finding_traffic이 반환한 증거 version. 새 증거 변경을 이전 보고서로 덮어쓰지 않도록 확인합니다"},
 		}, "finding_id", "report"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -440,14 +440,14 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 			_ = json.Unmarshal(in, &a)
 			nodeID := parseProfileID(a.FindingID) // 复用「数字或数字字符串」解析
 			if nodeID <= 0 {
-				return actool.Errorf("finding_id 无效"), nil
+				return actool.Errorf("finding_id가 올바르지 않습니다"), nil
 			}
 			n, err := s.m.pg.SetFindingReportVersionByNodeID(ctx, nodeID, a.Report, a.EvidenceVersion)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			if n == 0 {
-				return actool.Errorf(fmt.Sprintf("未找到 finding_id=%d 对应的漏洞记录(先用 report_finding 登记)", nodeID)), nil
+				return actool.Errorf(fmt.Sprintf("finding_id=%d에 해당하는 취약점 기록이 없습니다(report_finding으로 먼저 등록하세요)", nodeID)), nil
 			}
 			return actool.Text(fmt.Sprintf("finding %d report updated (%d chars)", nodeID, len(a.Report))), nil
 		})
@@ -512,7 +512,8 @@ func (s *Server) seedOrchestrationTools() {
 // orchestration + platform tools into already-seeded rows ONCE per version flag —
 // SeedTool is first-insert-only, so a new param (e.g. spawn_task 的 llm_profile) never
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
-// Bump the flag whenever these tools' schemas/descriptions change in code.
+// Keep the existing flag; only the known a6d1c41 defaults may be refreshed.
+// Customized fields are handled individually by the later Korean migration.
 func (s *Server) refreshBuiltinToolSchemas() {
 	const flag = "tool_schema_refresh_v7_list_facts_paging"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
@@ -521,7 +522,7 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	tools := append(s.orchestrationTools(), s.platformTools()...)
 	for _, t := range tools {
 		schema, _ := json.Marshal(t.InputSchema())
-		if err := s.m.pg.RefreshToolDefaults(t.Name(), t.Description(), schema); err != nil {
+		if err := s.refreshUneditedToolDefault(t.Name(), t.Description(), schema); err != nil {
 			log.Printf("[tools] refresh %s schema failed: %v", t.Name(), err)
 		}
 	}
@@ -538,7 +539,7 @@ func (s *Server) refreshBuiltinToolSchemas() {
 			continue
 		}
 		schema, _ := json.Marshal(sd.Schema)
-		if err := s.m.pg.RefreshToolDefaults(sd.Key, sd.Desc, schema); err != nil {
+		if err := s.refreshUneditedToolDefault(sd.Key, sd.Desc, schema); err != nil {
 			log.Printf("[tools] refresh %s desc failed: %v", sd.Key, err)
 		}
 	}
@@ -557,17 +558,13 @@ func (s *Server) unbindGoalMetDefault() {
 		return
 	}
 	if err := s.m.pg.RemoveAgentFromTool("planner", "goal_met"); err != nil {
-		log.Printf("[tools] goal_met 解绑 planner 失败: %v", err)
+		log.Printf("[tools] planner에서 goal_met 연결 해제 실패: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
 }
 
-// reseedGoalsPrompt 把 goals 目标拆解器的提示词刷成【当前代码默认】——因为默认正文新增了
-// 「先抽操作约束(set_constraints)再拆目标」这一步,而 SeedPromptIfEmpty 首插入only,旧库
-// 已有的 version 1 收不到这步。这里用版本管理【追加一个新版本】并切过去(ResetPromptToDefault),
-// 旧的版本仍保留在历史里,用户若自定义过可从版本记录找回。settings flag 守卫 → 只做一次;
-// 以后默认再变就 bump 这个 flag。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。
+// reseedGoalsPrompt upgrades only a known, unedited default when its legacy flag is absent.
 func (s *Server) reseedGoalsPrompt() {
 	const flag = "goals_prompt_constraint_step_v1"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
@@ -583,21 +580,17 @@ func (s *Server) reseedGoalsPrompt() {
 		return
 	}
 	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err != nil || cur == tmpl || !isLegacyPromptDefault("goals", cur) {
 		return
 	}
 	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
-		log.Printf("[prompts] goals 提示词重刷为新默认失败: %v", err)
+		log.Printf("[prompts] goals 프롬프트를 새 기본값으로 갱신 실패: %v", err)
 		return
 	}
-	log.Printf("[prompts] goals 提示词已追加新默认版本(加入抽操作约束步,一次性)")
+	log.Printf("[prompts] goals 프롬프트의 새 기본 버전을 추가했습니다(작업 제약 추출 단계 추가, 최초 1회)")
 }
 
-// reseedMainAgentPrompt 把 mainagent 提示词刷成【当前代码默认】——默认正文新增了「目标全部
-// 达成后 add_intent 直投意图时,反问人是否登记为正式目标」这段引导,而 SeedPromptIfEmpty 首插入
-// only,旧库已有版本收不到。用版本管理【追加一个新版本】并切过去(ResetPromptToDefault),旧版本仍
-// 保留在历史里,用户若自定义过可从版本记录找回。settings flag 守卫 → 只做一次。全新库无需处理
-// (SeedPromptIfEmpty 已 seed 最新默认)。与 reseedGoalsPrompt 完全同构。
+// reseedMainAgentPrompt upgrades only a known, unedited default when its legacy flag is absent.
 func (s *Server) reseedMainAgentPrompt() {
 	const flag = "mainagent_prompt_goalless_intent_v1"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
@@ -613,22 +606,17 @@ func (s *Server) reseedMainAgentPrompt() {
 		return
 	}
 	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err != nil || cur == tmpl || !isLegacyPromptDefault("mainagent", cur) {
 		return
 	}
 	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
-		log.Printf("[prompts] mainagent 提示词重刷为新默认失败: %v", err)
+		log.Printf("[prompts] mainagent 프롬프트를 새 기본값으로 갱신 실패: %v", err)
 		return
 	}
-	log.Printf("[prompts] mainagent 提示词已追加新默认版本(加入目标达成后反问建目标,一次性)")
+	log.Printf("[prompts] mainagent 프롬프트의 새 기본 버전을 추가했습니다(목표 달성 후 다음 목표 질문 추가, 최초 1회)")
 }
 
-// reseedPlannerPrompt 把 planner 提示词刷成【当前代码默认】——默认正文做了精简重构,并把「克制」降级为
-// 仅去重、新增「深度优先于覆盖度」「硬底线:目标未达成且无在跑意图必须产出」、给否定结论复核加上界。
-// 每次默认有实质变更就 bump 下面的 flag(当前 v2)让存量旧库再刷一次。SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理
-// 【追加一个新版本】并切过去(ResetPromptToDefault),旧版本仍保留在历史里,用户若自定义过可从版本记录
-// 找回。settings flag 守卫 → 只做一次。全新库无需处理(SeedPromptIfEmpty 已 seed 最新默认)。与
-// reseedGoalsPrompt 完全同构。
+// reseedPlannerPrompt upgrades only a known, unedited default when its legacy flag is absent.
 func (s *Server) reseedPlannerPrompt() {
 	const flag = "planner_prompt_compact_realistic_v2"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
@@ -644,21 +632,17 @@ func (s *Server) reseedPlannerPrompt() {
 		return
 	}
 	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err != nil || cur == tmpl || !isLegacyPromptDefault("planner", cur) {
 		return
 	}
 	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
-		log.Printf("[prompts] planner 提示词重刷为新默认失败: %v", err)
+		log.Printf("[prompts] planner 프롬프트를 새 기본값으로 갱신 실패: %v", err)
 		return
 	}
-	log.Printf("[prompts] planner 提示词已追加新默认版本(精简重构+克制降级去重+深度优先+否定复核上界,一次性)")
+	log.Printf("[prompts] planner 프롬프트의 새 기본 버전을 추가했습니다(구조 간소화·중복 방지·깊이 우선·부정 결론 재검토 상한, 최초 1회)")
 }
 
-// reseedWorkerPrompt 把 worker 提示词刷成【当前代码默认】——默认正文 record_fact 段删掉了「否定类结论
-// 写观察+试探性读法」整句、并把 confidence(observed/inferred)与「是否穷尽本意图手段」解耦(这些易误导规划者),
-// 同时把 facts 数组分条收紧为「彼此完全独立、无法归并」的极少数例外。bump flag 至 v3 让存量旧库再刷一次。
-// SeedPromptIfEmpty 首插入only,旧库已有版本收不到,故用版本管理【追加一个新版本】并切过去,旧版本仍保留在历史里可找回。
-// settings flag 守卫 → 只做一次。全新库无需处理。与 reseedGoalsPrompt 完全同构。
+// reseedWorkerPrompt upgrades only a known, unedited default when its legacy flag is absent.
 func (s *Server) reseedWorkerPrompt() {
 	const flag = "worker_prompt_compact_v4"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
@@ -674,14 +658,14 @@ func (s *Server) reseedWorkerPrompt() {
 		return
 	}
 	// 全新库 seedPrompts 已 seed 最新默认 → 当前版本已等于代码默认,不必再追加重复版本。
-	if cur, err := s.m.pg.CurrentPrompt(a.ID); err == nil && cur == tmpl {
+	if cur, err := s.m.pg.CurrentPrompt(a.ID); err != nil || cur == tmpl || !isLegacyPromptDefault("worker", cur) {
 		return
 	}
 	if _, err := s.m.pg.ResetPromptToDefault(a.ID, tmpl); err != nil {
-		log.Printf("[prompts] worker 提示词重刷为新默认失败: %v", err)
+		log.Printf("[prompts] worker 프롬프트를 새 기본값으로 갱신 실패: %v", err)
 		return
 	}
-	log.Printf("[prompts] worker 提示词已追加新默认版本(查上下文段收敛为 list_assets/list_findings,去掉 list_facts/node_detail/asset_neighbors,一次性)")
+	log.Printf("[prompts] worker 프롬프트의 새 기본 버전을 추가했습니다(맥락 조회를 list_assets/list_findings로 통합, list_facts/node_detail/asset_neighbors 제거, 최초 1회)")
 }
 
 // reporterToolCallMessage 必须无条件要求先读一次 get_finding_traffic 再写报告。
@@ -689,11 +673,11 @@ func (s *Server) reseedWorkerPrompt() {
 // 写成「启用自动绑定才读」,默认关闭配置下 reporter 就不会传 evidence_version,
 // SetFindingReportVersionByNodeID 便按 legacy 语义写 -1,漏洞详情与 Markdown 导出
 // 从此常驻「证据已变更，报告待更新」,而 UI 上没有任何入口能把它清掉。
-const reporterToolCallMessage = "上面刚有一个漏洞被 report_finding 登记。请读取返回 JSON 的 finding_id（独立漏洞记录 ID）与 finding_node_id（探索节点 ID），" +
-	"先用 get_finding_traffic(finding_id) 读取当前证据清单及其 version（空清单是正常情况，照常写报告）；" +
-	"若运行指引启用自动绑定，在读取前先核实并关联本次漏洞的流量。节点详情使用 finding_node_id。" +
-	"最后调用 update_finding_report(finding_id=finding_node_id, report, evidence_version=实际读取版本) 保存，" +
-	"evidence_version 必须传，否则报告会被永久标记为待更新。不要混用两种编号。"
+const reporterToolCallMessage = "report_finding으로 취약점이 등록되었습니다. 반환 JSON의 finding_id(독립 취약점 기록 ID)와 finding_node_id(탐색 노드 ID)를 확인하세요. " +
+	"먼저 get_finding_traffic(finding_id)으로 현재 증거 목록과 version을 읽으세요(빈 목록도 정상이며 보고서를 작성하면 됩니다). " +
+	"실행 지침에서 자동 연결이 활성화되었다면 읽기 전에 이번 취약점의 트래픽을 확인하고 연결하세요. 노드 상세에는 finding_node_id를 사용하세요. " +
+	"마지막으로 update_finding_report(finding_id=finding_node_id, report, evidence_version=읽은 버전)를 호출해 저장하세요. " +
+	"evidence_version은 반드시 전달해야 하며 생략하면 보고서가 계속 갱신 필요 상태로 표시됩니다. 두 ID를 혼동하지 마세요."
 
 // 旧版触发消息(0.3.8 及更早)。只有仍与它逐字相同的记录才会被迁移覆盖，用户改过的保持原样。
 const reporterToolCallMessageV1 = "上面刚有一个漏洞被 report_finding 登记。请从触发上下文里取出 finding_id" +
@@ -712,7 +696,7 @@ func (s *Server) upgradeReporterTriggerMessage() {
 	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 只尝试一次
 	triggers, err := s.m.pg.ListTriggersFor("reporter")
 	if err != nil {
-		log.Printf("[reporter] 读取触发器失败: %v", err)
+		log.Printf("[reporter] 트리거 조회 실패: %v", err)
 		return
 	}
 	for _, t := range triggers {
@@ -721,20 +705,14 @@ func (s *Server) upgradeReporterTriggerMessage() {
 		}
 		t.ToolCallMessage = reporterToolCallMessage
 		if err := s.m.pg.UpdateTrigger(t); err != nil {
-			log.Printf("[reporter] 升级触发消息失败: %v", err)
+			log.Printf("[reporter] 트리거 메시지 갱신 실패: %v", err)
 			return
 		}
-		log.Printf("[reporter] 触发消息已升级为读取并回传 evidence_version")
+		log.Printf("[reporter] 트리거 메시지를 evidence_version 조회·반환 방식으로 갱신했습니다")
 	}
 }
 
-// reporterAgentName·reporterAgentDescription 은 시드되는 reporter 에이전트의 표시 전용
-// 라벨이다(한국어화). 에이전트의 두뇌(段[A] agent.ReporterDefaultPrompt)와 트리거 주입
-// 메시지(reporterToolCallMessage)는 모델 입력이라 중국어 원문을 보존하지만, 이 이름·설명은
-// `agentDTO` 로 system/agents UI 에만 렌더되고(server_mgmt.go) 어떤 프롬프트·에이전트 선택에도
-// 들어가지 않는 순수 UI 라벨이라 한국어화한다(BRIEF 사용자 노출 산출물 한국어화 범위). 트리거는
-// report_finding 도구 호출 기반(OnToolCall·결정적)이라 reporter 는 key "reporter" 로 참조될 뿐
-// 표시 이름으로 선택되지 않는다. 회귀 방어: reporter_seed_localized_test.go. [[F35]]
+// Reporter key is stable; display labels, prompts and trigger messages use Korean.
 const reporterAgentName = "보고서 작성"
 const reporterAgentDescription = "취약점 상세 보고서 작성: 취약점을 발견하면 자동으로 트리거되어, 증거와 실행 과정을 조회한 뒤 Markdown 보고서를 작성해 해당 취약점에 기록합니다."
 
@@ -754,17 +732,17 @@ func (s *Server) seedReporterAgent() {
 	}
 	a, err := s.m.pg.CreateAgent("reporter", reporterAgentName, reporterAgentDescription)
 	if err != nil {
-		log.Printf("[reporter] 创建 agent 失败: %v", err)
+		log.Printf("[reporter] 에이전트 생성 실패: %v", err)
 		return
 	}
 	if err := s.m.pg.SeedPromptIfEmpty(a.ID, agent.ReporterDefaultPrompt); err != nil {
-		log.Printf("[reporter] seed prompt 失败: %v", err)
+		log.Printf("[reporter] 기본 프롬프트 저장 실패: %v", err)
 	}
 	// 触发运行策略：parallel + none —— 一漏洞一报告、多个 finding 并发各写各的。
 	// merge 必须为 none：否则(默认 all)一波 finding 会被合并成一次运行，并行就没意义。
 	// maxParallel=5：同时最多 5 个报告会话，避免瞬时太多 LLM 调用。
 	if err := s.m.pg.SetAgentTriggerBehavior("reporter", "parallel", "none", 5); err != nil {
-		log.Printf("[reporter] 设置触发运行策略失败: %v", err)
+		log.Printf("[reporter] 트리거 실행 정책 설정 실패: %v", err)
 	}
 	// 绑定它需要的工具：写报告 + 读证据/执行过程/态势。
 	if err := s.m.pg.AddAgentToToolBinding("reporter", []string{
@@ -772,10 +750,10 @@ func (s *Server) seedReporterAgent() {
 		"get_task_worker_trace", "list_task_worker_traces", "search_task_worker_traces",
 		"get_task_graph",
 	}); err != nil {
-		log.Printf("[reporter] 绑定工具失败: %v", err)
+		log.Printf("[reporter] 도구 연결 실패: %v", err)
 	}
 	// 触发器：report_finding 被调用即触发（工具返回 "finding recorded: <id>" 带上 finding_id，
-	// 任务 id 也在触发消息里）。
+	// 작업 id 也在触发消息里）。
 	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
 		AgentKey:        "reporter",
 		Enabled:         true,
@@ -783,7 +761,7 @@ func (s *Server) seedReporterAgent() {
 		ToolNames:       []string{"report_finding"},
 		ToolCallMessage: reporterToolCallMessage,
 	}); err != nil {
-		log.Printf("[reporter] 创建触发器失败: %v", err)
+		log.Printf("[reporter] 트리거 생성 실패: %v", err)
 	}
 	log.Printf(logT("[reporter] 「%s」 agent + finding 트리거 사전 구성"), reporterAgentName)
 }
@@ -796,7 +774,7 @@ func (s *Server) seedAutoReportFindingBinding() {
 		return
 	}
 	if err := s.m.pg.AddAgentToToolBinding("auto", []string{"report_finding"}); err != nil {
-		log.Printf("[auto] report_finding 默认绑定失败: %v", err)
+		log.Printf("[auto] report_finding 기본 연결 실패: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
@@ -812,7 +790,7 @@ func (s *Server) seedPlannerDefaultBindings() {
 		return
 	}
 	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"report_finding"}); err != nil {
-		log.Printf("[planner] report_finding 默认绑定失败: %v", err)
+		log.Printf("[planner] report_finding 기본 연결 실패: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
@@ -829,7 +807,7 @@ func (s *Server) seedPlannerListAssetsBinding() {
 		return
 	}
 	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"list_assets"}); err != nil {
-		log.Printf("[planner] list_assets 默认绑定失败: %v", err)
+		log.Printf("[planner] list_assets 기본 연결 실패: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
@@ -847,11 +825,11 @@ func (s *Server) seedCompanyScopeRebind() {
 		return
 	}
 	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"add_company_scope"}); err != nil {
-		log.Printf("[planner] add_company_scope 默认绑定失败: %v", err)
+		log.Printf("[planner] add_company_scope 기본 연결 실패: %v", err)
 		return
 	}
 	if err := s.m.pg.RemoveAgentFromTool("worker", "add_company_scope"); err != nil {
-		log.Printf("[worker] add_company_scope 解绑失败: %v", err)
+		log.Printf("[worker] add_company_scope 연결 해제 실패: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
@@ -878,7 +856,7 @@ func (s *Server) seedWorkerReadToolsUnbind() {
 		"list_facts", "list_companies", "list_worker_traces",
 	} {
 		if err := s.m.pg.RemoveAgentFromTool("worker", k); err != nil {
-			log.Printf("[worker] %s 从 worker 解绑失败: %v", k, err)
+			log.Printf("[worker] %s 연결 해제 실패: %v", k, err)
 			return // 出错则不落 flag，下次启动重试
 		}
 	}
@@ -899,7 +877,7 @@ func (s *Server) seedWorkerReadbackRebind() {
 	if err := s.m.pg.AddAgentToToolBinding("worker", []string{
 		"search_all_worker_traces", "get_worker_trace", "node_detail",
 	}); err != nil {
-		log.Printf("[worker] 回看/详情工具补绑失败: %v", err)
+		log.Printf("[worker] 실행 이력/상세 조회 도구 추가 연결 실패: %v", err)
 		return // 出错则不落 flag，下次启动重试
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
@@ -922,7 +900,7 @@ func (s *Server) seedAutoDefaultBindings() {
 	// 资产工具：Auto 操作平台常要看/登记资产、管理公司范围。
 	keys = append(keys, "insert_assets", "add_company_scope", "list_assets")
 	if err := s.m.pg.AddAgentToToolBinding("auto", keys); err != nil {
-		log.Printf("[auto] 默认绑定失败: %v", err)
+		log.Printf("[auto] 기본 연결 실패: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")

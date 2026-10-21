@@ -32,3 +32,15 @@ test("tokens roundtrip labels and removing one reference preserves its neighbors
   const next = value.slice(0, selected[0].start) + value.slice(selected[0].start + selected[0].token.length);
   assert.equal(selectedMentions(next)[0].token, second);
 });
+
+test("new mentions use Korean while existing Chinese drafts remain readable", () => {
+  const token = mentionToken({ kind: "finding", id: 42, label: "인증 오류" });
+  assert.equal(token, "@[취약점#42 인증 오류]");
+  assert.equal(mentionSearch("취약점 인증").kind, "finding");
+  assert.equal(mentionSearch("취약점 인증").query, "인증");
+  assert.equal(mentionSearch("서브도메인 test").kind, "subdomain");
+  assert.deepEqual(selectedMentions(`${token} @[漏洞#43 old]`).map(({ kind, id }) => ({ kind, id })), [
+    { kind: "finding", id: "42" },
+    { kind: "finding", id: "43" },
+  ]);
+});

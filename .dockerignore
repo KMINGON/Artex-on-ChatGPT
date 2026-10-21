@@ -7,19 +7,13 @@ server/webui/dist
 data
 *.db
 transcripts
-bench/kv
-bench/debug
-bench/__pycache__
-bench/.env
-bench/scheduler.py
-bench/entrypoint_v2.sh
-bench/seed_v2.sh
+/bench/
+/dist/
 
 # Private local documents, research, snapshots, and generated artifacts
 /reference/
 
 # Other checkouts, credentials, and runtime artifacts must never enter images.
-/openai-migration/
 **/.git
 **/reference
 **/.env

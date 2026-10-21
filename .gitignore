@@ -1,4 +1,4 @@
-# backend
+# 백엔드 데이터
 /data/
 *.db
 *.db-wal
@@ -9,14 +9,14 @@ __pycache__/
 *.pyc
 *.pyo
 
-# frontend
+# 프런트엔드 빌드
 web/node_modules/
 web/.next/
 web/tsconfig.tsbuildinfo
 web/next-env.d.ts
 *.local
 
-# development tools
+# 개발 도구
 .playwright-mcp/
 .playwright-cli/
 .idea/
@@ -24,16 +24,16 @@ web/next-env.d.ts
 *.swp
 *.swo
 
-# os
+# 운영체제
 .DS_Store
 Thumbs.db
 
-# claude code local state
+# 로컬 에이전트 상태
 .claude/
 
-# 内嵌前端的单二进制产物
+# 실행 파일과 내장 웹 빌드
 /artex
-# 一键更新在可执行文件旁留下的中间产物（暂存件 / 备份 / 失败版本 / 升级标记）
+# 앱 업데이트 중간 산출물
 /artex.new
 /artex.new.sha256
 /artex.old
@@ -42,16 +42,16 @@ Thumbs.db
 /server/webui/dist/
 /dist/
 
-# JWT 签名密钥（运行时生成，存项目根，绝不提交）
+# 런타임 JWT 서명 키
 /jwt.key
 
-# Docker 部署生成的本地环境（含密码/密钥，不提交）
+# 비밀번호·키가 포함된 로컬 환경
 .env
 .env.*
 !.env.example
 !.env.*.example
 
-# Local test binaries, coverage, profiling, and runtime logs
+# 테스트·프로파일·실행 로그
 *.test
 *.test.exe
 coverage.out
@@ -60,25 +60,22 @@ coverage.html
 *.log
 /.cache/
 
-# 调度器运行/模拟产生的事件日志（测试产物，不提交）
+# 스케줄러 실행·시뮬레이션 기록
 *-events.csv
 
-# bench 基准测试相关（本地产物，不提交）
+# 로컬 성능 실험 산출물
 /bench/
 /Dockerfile.bench
 /Dockerfile.bench.v2
-# --- artex-global 로컬 운영: 커밋 금지 (소유자 지시: 테스트/스캔 결과 비공개) ---
+# 로컬 작업·검사·증거 자료
 work/
 test-results/
 scan-output/
 evidence-local/
-# 데모 앱을 로컬에서 기동하면 생기는 런타임 데이터(녹화 프록시 트래픽 인덱스 DB·
-# mitmproxy CA 개인키 등)라 공개 저장소에 커밋하지 않는다(BRIEF 경계 #2).
+# 로컬 데모의 프록시 기록과 인증서 키
 /demo-data/
 *.local.env
-# D2 모델 비교 라이브 테스트: package agent 내부라 work/ 밖에 둘 수밖에 없고,
-# OPENROUTER_API_KEY·네트워크를 소비하는 로컬 전용 산출물이라 공개 저장소에
-# 커밋하지 않는다(BRIEF 경계 #2). 정확한 경로만 막아 상류 추적 테스트는 건드리지 않는다.
+# 개인 모델 비교 테스트
 agent/d2_models_live_test.go
 
 # API 키·비밀: 어디에 두든 커밋 금지
@@ -96,5 +93,5 @@ secrets.env
 /artex.out.log
 /artex.err.log
 
-# Private local documents, research, snapshots, and generated artifacts
+# 개인 문서·조사·검증 자료
 /reference/

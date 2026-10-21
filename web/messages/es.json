@@ -3095,8 +3095,6 @@
       "pythonSaved": "Se guardó la configuración del intérprete de Python",
       "bindingOn": "Se activó la vinculación automática de tráfico del agente",
       "bindingOff": "Se desactivó la vinculación automática de tráfico del agente",
-      "noaOn": "Se activó la compresión de contexto noa (se aplica a las ejecuciones que se inicien después)",
-      "noaOff": "Se desactivó la compresión de contexto noa (se restauró la compresión integrada)",
       "webSearchSaved": "Se guardó la configuración de búsqueda web",
       "braveKeySaved": "Se guardó la API Key de Brave",
       "tavilyKeySaved": "Se guardó la API Key de Tavily",
@@ -3133,11 +3131,6 @@
       "desc": "Cuando está activado, las <b>restricciones de comportamiento</b> de cada tarea (los elementos allow/deny que se gestionan en «Restricciones de comportamiento» del resumen de la tarea) se añaden al prompt del sistema de ese agente para limitar el alcance de la exploración (p. ej., «Probar solo el puerto actual», «Prohibida la fuerza bruta»).<br></br>Puede controlar la inyección por separado para el <b>planner</b> y el <b>worker</b>; ambos están activados de forma predeterminada. Los cambios se aplican de inmediato (se leen en la siguiente ronda) sin necesidad de regenerar los agentes. Cuando está desactivado, ese agente deja de ver las restricciones.",
       "injectPlanner": "Inyectar en el planner",
       "injectWorker": "Inyectar en el worker"
-    },
-    "experimental": {
-      "title": "Funciones experimentales",
-      "desc": "Estas funciones aún están en validación y están desactivadas de forma predeterminada. Pueden cambiar el comportamiento del agente o afectar a la estabilidad, así que actívelas solo después de entender su impacto.<br></br><b>Compresión de contexto noa</b>: el modelo comprime directamente el historial largo de conversación (norma v0.4.0). Cuando está activada, los cuatro tipos de agentes conectados a la plataforma (<b>planner / worker / agente principal / conversación</b>) ceden el contexto a noa en lugar de usar la compresión integrada, y la salida original de la compresión se conserva en el directorio de trabajo de la tarea para poder revisarla fácilmente. Los cambios se aplican de inmediato (a las ejecuciones que se inicien después) sin necesidad de regenerar los agentes. Al desactivarla, se restaura de inmediato la compresión integrada.",
-      "noaLabel": "Compresión de contexto noa"
     },
     "webSearch": {
       "title": "Búsqueda web",

@@ -3095,8 +3095,6 @@
       "pythonSaved": "Saved the Python interpreter setting",
       "bindingOn": "Turned on automatic agent traffic binding",
       "bindingOff": "Turned off automatic agent traffic binding",
-      "noaOn": "Turned on noa context compression (applies to runs started afterward)",
-      "noaOff": "Turned off noa context compression (restored built-in compression)",
       "webSearchSaved": "Saved the web search settings",
       "braveKeySaved": "Saved the Brave API Key",
       "tavilyKeySaved": "Saved the Tavily API Key",
@@ -3133,11 +3131,6 @@
       "desc": "When on, each task's <b>behavior constraints</b> (the allow/deny items managed under “Behavior Constraints” in the task overview) are appended to that agent's system prompt to limit the exploration scope (e.g., “Test the current port only”, “No brute forcing”).<br></br>You can control injection separately for the <b>planner</b> and the <b>worker</b>; both default to on. Changes apply immediately (read on the next round) with no need to regenerate the agents. When off, that agent no longer sees the constraints.",
       "injectPlanner": "Inject into the planner",
       "injectWorker": "Inject into the worker"
-    },
-    "experimental": {
-      "title": "Experimental Features",
-      "desc": "These features are still under validation and default to off. They may change agent behavior or affect stability, so turn them on only after you understand the impact.<br></br><b>noa context compression</b>: the model compresses long conversation history directly (norma v0.4.0). When on, the four kinds of agents connected to the platform (<b>planner / worker / main agent / conversation</b>) hand off context to noa instead of using the built-in compression, and the raw compression output is kept in the task's working directory for easy review. Changes apply immediately (to runs started afterward) with no need to regenerate the agents. Turning it off restores the built-in compression immediately.",
-      "noaLabel": "noa context compression"
     },
     "webSearch": {
       "title": "Web Search",

@@ -56,11 +56,11 @@ func jsonResult(v any) (Result, error) {
 
 func sessManager(tc *ToolContext) (*Manager, *Result) {
 	if InteractiveShellDisabled() {
-		r := Errorf("交互式 shell 已被全局停用(AGENT_CORE_DISABLE_INTERACTIVE_SHELL)")
+		r := Errorf("대화형 shell이 전역 설정으로 비활성화되어 있습니다(AGENT_CORE_DISABLE_INTERACTIVE_SHELL)")
 		return nil, &r
 	}
 	if tc == nil || tc.Tasks == nil {
-		r := Errorf("交互式 shell 需要后台任务管理器(未启用)")
+		r := Errorf("대화형 shell에는 백그라운드 작업 관리자가 필요합니다(활성화되지 않음)")
 		return nil, &r
 	}
 	return tc.Tasks, nil
@@ -75,16 +75,16 @@ func ms(v int, def int) time.Duration {
 
 // NewShellOpen 开一个交互会话。
 func NewShellOpen() CoreTool {
-	desc := "开一个持久 PTY 交互会话运行【交互式/需真 TTY 的程序】(msfconsole/ssh 交互/mysql、python 等 REPL/密码提示/nc 会话)，返回 session_id。**一次性、非交互命令用 Bash**。mode: interactive=阻塞到首个提示符/静默再返回启动输出; hands-free(默认)=立即返回, 之后用 shell_read 轮询; dispatch=立即返回, 完成时发通知; monitor=立即返回, 后台盯 watch 关键词命中即发通知(会话不结束, 仅本次运行内存活)。可设 prompt_regex(如 'msf6? >\\s*$')精确判定完成。用完务必 shell_close。"
+	desc := "지속되는 PTY 대화형 세션을 열어 대화형 입력이나 실제 TTY가 필요한 프로그램(msfconsole/대화형 ssh/mysql·python 등의 REPL/비밀번호 입력/nc 세션)을 실행하고 session_id를 반환합니다. **일회성 비대화형 명령은 Bash를 사용하세요.** mode: interactive=첫 프롬프트 또는 출력 중단까지 기다린 뒤 시작 출력을 반환; hands-free(기본값)=즉시 반환하고 이후 shell_read로 확인; dispatch=즉시 반환하고 완료 시 알림; monitor=즉시 반환하고 백그라운드에서 watch 키워드가 감지되면 알림(세션은 종료하지 않으며 이번 실행 동안만 유지). prompt_regex(예: 'msf6? >\\s*$')로 완료 여부를 정확히 판단할 수 있습니다. 사용 후 반드시 shell_close로 종료하세요."
 	schema := obj(map[string]any{
-		"command":          strProp("要运行的交互程序，如 'msfconsole -q' / 'ssh user@host' / 'python3'"),
-		"mode":             strProp("interactive | hands-free(默认) | dispatch | monitor"),
-		"watch":            arrStr("monitor 模式必填：要盯的关键词/正则数组，输出里命中任一即发通知(每个只报一次)"),
-		"prompt_regex":     strProp("可选：命令完成判定的提示符正则(匹配输出末尾)"),
-		"rows":             intProp("可选：PTY 行数(默认 24)"),
-		"cols":             intProp("可选：PTY 列数(默认 80)"),
-		"quiet_ms":         intProp("可选：静默多少毫秒算完成(默认 8000)"),
-		"startup_grace_ms": intProp("可选：启动宽限毫秒，此期间不触发静默判定(默认 15000)"),
+		"command":          strProp("실행할 대화형 프로그램. 예: 'msfconsole -q' / 'ssh user@host' / 'python3'"),
+		"mode":             strProp("interactive | hands-free(기본값) | dispatch | monitor"),
+		"watch":            arrStr("monitor 모드 필수: 감시할 키워드/정규식 배열. 출력에서 하나라도 일치하면 알림(항목별 한 번만 알림)"),
+		"prompt_regex":     strProp("선택: 명령 완료를 판단할 프롬프트 정규식(출력 끝부분에 적용)"),
+		"rows":             intProp("선택: PTY 행 수(기본값 24)"),
+		"cols":             intProp("선택: PTY 열 수(기본값 80)"),
+		"quiet_ms":         intProp("선택: 출력이 멈춘 뒤 완료로 판단하기까지의 시간(ms, 기본값 8000)"),
+		"startup_grace_ms": intProp("선택: 시작 유예 시간(ms). 이 동안은 출력 중단으로 완료를 판단하지 않음(기본값 15000)"),
 	}, "command")
 	return sessTool("shell_open", desc, schema, false, func(ctx context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
 		m, errR := sessManager(tc)
@@ -103,7 +103,7 @@ func NewShellOpen() CoreTool {
 		}
 		_ = json.Unmarshal(in, &a)
 		if a.Command == "" {
-			return Errorf("command 必填"), nil
+			return Errorf("command는 필수입니다"), nil
 		}
 		mode := a.Mode
 		if mode == "" {
@@ -112,17 +112,17 @@ func NewShellOpen() CoreTool {
 		switch mode {
 		case "hands-free", "interactive", "dispatch", "monitor":
 		default:
-			return Errorf("mode 需为 interactive | hands-free | dispatch | monitor"), nil
+			return Errorf("mode는 interactive | hands-free | dispatch | monitor 중 하나여야 합니다"), nil
 		}
 		var watch []*regexp.Regexp
 		if mode == "monitor" {
 			if len(a.Watch) == 0 {
-				return Errorf("monitor 模式必须给 watch(要盯的关键词/正则)"), nil
+				return Errorf("monitor 모드에는 watch(감시할 키워드/정규식)가 필요합니다"), nil
 			}
 			for _, w := range a.Watch {
 				re, err := regexp.Compile(w)
 				if err != nil {
-					return Errorf("watch 正则无效 " + w + ": " + err.Error()), nil
+					return Errorf("watch 정규식이 올바르지 않습니다 " + w + ": " + err.Error()), nil
 				}
 				watch = append(watch, re)
 			}
@@ -131,7 +131,7 @@ func NewShellOpen() CoreTool {
 		if a.PromptRegex != "" {
 			re, err := regexp.Compile(a.PromptRegex)
 			if err != nil {
-				return Errorf("prompt_regex 无效: " + err.Error()), nil
+				return Errorf("prompt_regex가 올바르지 않습니다: " + err.Error()), nil
 			}
 			pr = re
 		}
@@ -142,7 +142,7 @@ func NewShellOpen() CoreTool {
 		}
 		s, err := m.openSession(a.Command, workDir, env, a.Rows, a.Cols, mode, pr)
 		if err != nil {
-			return Errorf("开启会话失败: " + err.Error()), nil
+			return Errorf("세션을 열지 못했습니다: " + err.Error()), nil
 		}
 		quiet, grace := ms(a.QuietMs, sessDefQuietMs), ms(a.StartupGraceMs, sessDefGraceMs)
 		switch mode {
@@ -164,18 +164,18 @@ func NewShellOpen() CoreTool {
 
 // NewShellSend 向会话发送输入/按键。
 func NewShellSend() CoreTool {
-	desc := "向一个交互会话发送输入：text/submit/keys/hex/paste 可组合，按出现顺序发送(各参数含义见字段)。wait=true(默认)等命令完成并带回增量输出。"
+	desc := "대화형 세션에 입력을 보냅니다. text/submit/keys/hex/paste를 조합할 수 있으며 나열된 순서로 전송합니다(각 인자의 의미는 필드 설명 참조). wait=true(기본값)이면 명령이 완료될 때까지 기다린 뒤 새로 추가된 출력을 반환합니다."
 	schema := obj(map[string]any{
-		"session_id":   strProp("会话 id(shell_open 返回)"),
-		"text":         strProp("要输入的文本(不自动回车)"),
-		"submit":       boolProp("是否在文本后追加回车执行"),
-		"keys":         arrStr("具名键: ctrl+c/ctrl+d/tab/enter/esc/up/down/left/right/..."),
-		"hex":          arrStr("原始字节的十六进制, 如 ['0x1b','0x5b','0x41']"),
-		"paste":        strProp("多行粘贴(bracketed paste, 不触发逐行执行)"),
-		"wait":         boolProp("是否同步等到命令完成(默认 true)"),
-		"prompt_regex": strProp("可选：覆盖会话默认的完成判定提示符"),
-		"quiet_ms":     intProp("可选：静默判定阈值毫秒(默认 8000)"),
-		"timeout_ms":   intProp("可选：wait 的硬超时毫秒(默认 120000)"),
+		"session_id":   strProp("세션 ID(shell_open에서 반환)"),
+		"text":         strProp("입력할 텍스트(자동 줄바꿈 없음)"),
+		"submit":       boolProp("텍스트 뒤에 Enter를 추가하여 실행할지 여부"),
+		"keys":         arrStr("키 이름: ctrl+c/ctrl+d/tab/enter/esc/up/down/left/right/..."),
+		"hex":          arrStr("원시 바이트의 16진수 표기. 예: ['0x1b','0x5b','0x41']"),
+		"paste":        strProp("여러 줄 붙여넣기(bracketed paste, 줄마다 실행되지 않음)"),
+		"wait":         boolProp("명령이 완료될 때까지 동기적으로 기다릴지 여부(기본값 true)"),
+		"prompt_regex": strProp("선택: 세션의 기본 완료 판단 프롬프트를 재정의"),
+		"quiet_ms":     intProp("선택: 출력 중단 판단 기준 시간(ms, 기본값 8000)"),
+		"timeout_ms":   intProp("선택: wait의 최대 대기 시간(ms, 기본값 120000)"),
 	}, "session_id")
 	return sessTool("shell_send", desc, schema, false, func(ctx context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
 		m, errR := sessManager(tc)
@@ -197,10 +197,10 @@ func NewShellSend() CoreTool {
 		_ = json.Unmarshal(in, &a)
 		s, ok := m.session(a.SessionID)
 		if !ok {
-			return Errorf("会话不存在: " + a.SessionID), nil
+			return Errorf("세션을 찾을 수 없습니다: " + a.SessionID), nil
 		}
 		if !s.running() {
-			return Errorf("会话已结束(exit " + fmtExit(s.exit()) + ")，用 shell_read 读取尾部输出或 shell_close"), nil
+			return Errorf("세션이 종료되었습니다(exit " + fmtExit(s.exit()) + "). shell_read로 마지막 출력을 읽거나 shell_close로 정리하세요"), nil
 		}
 		before := s.total
 		// build & write input in order: text, submit(\r), keys, hex, paste
@@ -215,7 +215,7 @@ func NewShellSend() CoreTool {
 			if b, ok := keyToBytes(k); ok {
 				payload = append(payload, b...)
 			} else {
-				return Errorf("未知按键: " + k), nil
+				return Errorf("알 수 없는 키: " + k), nil
 			}
 		}
 		if len(a.Hex) > 0 {
@@ -227,10 +227,10 @@ func NewShellSend() CoreTool {
 			payload = append(payload, "\x1b[201~"...)
 		}
 		if len(payload) == 0 {
-			return Errorf("没有可发送的输入(text/submit/keys/hex/paste 至少给一个)"), nil
+			return Errorf("전송할 입력이 없습니다(text/submit/keys/hex/paste 중 하나 이상 필요)"), nil
 		}
 		if _, err := s.ptmx.Write(payload); err != nil {
-			return Errorf("写入失败: " + err.Error()), nil
+			return Errorf("쓰기에 실패했습니다: " + err.Error()), nil
 		}
 		wait := a.Wait == nil || *a.Wait
 		if !wait {
@@ -250,14 +250,14 @@ func NewShellSend() CoreTool {
 
 // NewShellRead 读输出：增量流 或 整屏快照。
 func NewShellRead() CoreTool {
-	desc := "读一个交互会话的输出(不发输入)。view=stream(默认)增量原始流(流式首选,续读/可 drain 取全量); view=screen 整屏 vt 快照(适合 vim/htop 等全屏程序)。"
+	desc := "입력을 보내지 않고 대화형 세션의 출력을 읽습니다. view=stream(기본값)은 새로 추가된 원시 출력 스트림(스트리밍에 권장, 이어 읽기 가능하며 drain으로 전체 출력 조회); view=screen은 전체 화면 VT 스냅샷(vim/htop 같은 전체 화면 프로그램에 적합)입니다."
 	schema := obj(map[string]any{
-		"session_id":   strProp("会话 id"),
-		"view":         strProp("stream(默认) | screen"),
-		"since_cursor": intProp("stream: 从该游标之后读; 不传则用会话内部游标续读"),
-		"max_lines":    intProp("stream: 最多返回行数(默认 200)"),
-		"max_bytes":    intProp("stream: 最多返回字节(默认 8192)"),
-		"drain":        boolProp("stream: true=返回自上次以来全部原始流(忽略上限)"),
+		"session_id":   strProp("세션 ID"),
+		"view":         strProp("stream(기본값) | screen"),
+		"since_cursor": intProp("stream: 지정한 커서 이후부터 읽음. 생략하면 세션의 내부 커서에서 이어 읽음"),
+		"max_lines":    intProp("stream: 반환할 최대 행 수(기본값 200)"),
+		"max_bytes":    intProp("stream: 반환할 최대 바이트 수(기본값 8192)"),
+		"drain":        boolProp("stream: true이면 마지막 조회 이후의 원시 출력 전체 반환(상한 무시)"),
 	}, "session_id")
 	// per-session read cursor kept here (tool-side) so unspecified reads continue.
 	return sessTool("shell_read", desc, schema, true, func(_ context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
@@ -276,7 +276,7 @@ func NewShellRead() CoreTool {
 		_ = json.Unmarshal(in, &a)
 		s, ok := m.session(a.SessionID)
 		if !ok {
-			return Errorf("会话不存在: " + a.SessionID), nil
+			return Errorf("세션을 찾을 수 없습니다: " + a.SessionID), nil
 		}
 		if a.View == "screen" {
 			grid, rows, cols, cx, cy := s.screen()
@@ -308,8 +308,8 @@ func NewShellRead() CoreTool {
 
 // NewShellClose 关闭会话。
 func NewShellClose() CoreTool {
-	schema := obj(map[string]any{"session_id": strProp("会话 id")}, "session_id")
-	return sessTool("shell_close", "关闭一个交互会话(杀掉进程、释放 PTY)。", schema, false, func(_ context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
+	schema := obj(map[string]any{"session_id": strProp("세션 ID")}, "session_id")
+	return sessTool("shell_close", "대화형 세션을 닫습니다(프로세스 종료 및 PTY 해제).", schema, false, func(_ context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
 		m, errR := sessManager(tc)
 		if errR != nil {
 			return *errR, nil
@@ -320,7 +320,7 @@ func NewShellClose() CoreTool {
 		_ = json.Unmarshal(in, &a)
 		s, ok := m.session(a.SessionID)
 		if !ok {
-			return Errorf("会话不存在: " + a.SessionID), nil
+			return Errorf("세션을 찾을 수 없습니다: " + a.SessionID), nil
 		}
 		ec := s.exit()
 		s.kill()
@@ -333,7 +333,7 @@ func NewShellClose() CoreTool {
 
 // NewShellList 列出会话。
 func NewShellList() CoreTool {
-	return sessTool("shell_list", "列出当前所有交互会话及状态。", obj(map[string]any{}), true, func(_ context.Context, _ json.RawMessage, tc *ToolContext) (Result, error) {
+	return sessTool("shell_list", "현재 모든 대화형 세션과 상태를 조회합니다.", obj(map[string]any{}), true, func(_ context.Context, _ json.RawMessage, tc *ToolContext) (Result, error) {
 		m, errR := sessManager(tc)
 		if errR != nil {
 			return *errR, nil

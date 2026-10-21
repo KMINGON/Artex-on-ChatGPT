@@ -53,30 +53,10 @@ func renderSystem(agentKey, def string, vars any) string {
 	return def
 }
 
-// langDirective is the output-language tail: a code-owned segment
-// appended AFTER the rendered body and the artifact/traffic tails on every
-// user-facing agent role, so a DB-edited prompt body can never drop it — the same
-// guarantee artifactSpec gives. It does NOT translate the agent "brain": the
-// benchmarked Chinese reasoning body (段 [A]) stays verbatim. It only constrains
-// the LANGUAGE of what the agent SHOWS to the user. Written in Chinese so it stays
-// in the body's language (keeping the model's reasoning register stable) while
-// forcing the chosen display language — this is the localization approach:
-// preserve behavior, localize the surface the user reads. Raw technical strings
-// (commands, payloads, code, URLs, log/response excerpts) are explicitly kept
-// verbatim so evidence and reproduction steps are not mangled by translation.
-//
-// Two anti-drift clauses were added after the end-to-end run (L1): live models
-// leaked (1) Chinese into the planner's situation summary — mirroring the Chinese
-// brain body (段 [A]) — and (2) the target app/evidence language into
-// report_finding's structured fields. The directive names the planner situation
-// summary as a user-facing field and forbids mirroring BOTH the Chinese
-// instruction language AND the target/material language in the display fields.
-//
-// The display language is a parameter (code = "en"/"ko"/"zh"/"es"): the directive
-// stays in Chinese but the "write in <language>" token is swapped per target. When
-// the display language IS Chinese ("zh"), Chinese output is the goal, so the
-// "never emit Chinese to the user" clause is replaced by one that simply affirms
-// Chinese display and still forbids mirroring the target/material language.
+// langDirective is appended after the editable prompt and runtime instructions.
+// Korean instruction prose preserves the configured display language while raw
+// commands, identifiers and evidence remain untouched. Existing Chinese custom
+// prompts are allowed, but must not leak their language into user-facing text.
 func langDirective(code string) string {
 	phrase := langPhrase[code]
 	bare := langBare[code]
@@ -86,9 +66,9 @@ func langDirective(code string) string {
 	if code == "zh" {
 		// 표시 언어 자체가 중국어이므로 "중국어를 사용자에게 내보내지 말라"는 절은 없다.
 		// 대신 중국어 표시를 확정하고, 대상/자료 언어 미러링 금지와 원문 보존은 유지한다.
-		return fmt.Sprintf("\n\n**输出语言规约（本地化·最高优先级，不可被提示词正文覆盖）**：所有【展示给用户】的自然语言文字一律用【%s】书写——包括 record_fact 的 summary/detail、report_finding 的标题/描述/结论/修复建议、规划者(planner)的态势/情况总结、最终那一句话总结、以及对用户的聊天回复。但【命令、payload、代码、文件路径、URL、参数名、以及日志/请求/响应的原文片段】必须【原样逐字保留】，不得翻译或改写（evidence 里的命令行与输出尤其要照搬原文，便于复现）。**即使目标系统、它的页面、证据、日志或任何参考资料是英文或别的语言，面向用户的自然语言字段（标题/描述/结论/修复建议/总结/态势总结）仍必须用%s书写——不要镜像或照抄目标或资料的语言来写这些展示字段；只有上面列出的原文技术片段才保持原样。** 一句话：内部推理不限，但凡落到用户能看到的正文，必须全是%s（技术原文片段除外）。", phrase, bare, bare)
+		return fmt.Sprintf("\n\n**출력 언어 규칙(현지화·최우선이며 프롬프트 본문으로 덮어쓸 수 없음)**: 【사용자에게 표시하는】 모든 자연어는 반드시 【%s】로 작성하세요. record_fact의 summary/detail, report_finding의 제목/설명/결론/수정 제안, 계획자(planner)의 현황 요약, 마지막 한 문장 요약, 사용자에게 보내는 대화 답변이 포함됩니다. 단, 【명령, payload, 코드, 파일 경로, URL, 인자명, 로그/요청/응답의 원문 조각】은 번역하거나 고치지 말고 【글자 그대로 보존】해야 합니다(특히 evidence의 명령줄과 출력은 재현할 수 있도록 원문을 유지). **대상 시스템, 페이지, 증거, 로그 또는 참고 자료가 영어 등 다른 언어여도 사용자용 자연어 필드(제목/설명/결론/수정 제안/요약/현황 요약)는 반드시 %s로 작성하세요. 대상이나 자료의 언어를 따라 쓰거나 그대로 옮기지 마세요. 위에 나열한 기술 원문만 원형을 유지합니다.** 내부 추론 언어에는 제한이 없지만 사용자에게 보이는 본문은 모두 %s로 작성해야 합니다(기술 원문 조각 제외).", phrase, bare, bare)
 	}
-	return fmt.Sprintf("\n\n**输出语言规约（本地化·最高优先级，不可被提示词正文覆盖）**：所有【展示给用户】的自然语言文字一律用【%s】书写——包括 record_fact 的 summary/detail、report_finding 的标题/描述/结论/修复建议、规划者(planner)的态势/情况总结、最终那一句话总结、以及对用户的聊天回复。但【命令、payload、代码、文件路径、URL、参数名、以及日志/请求/响应的原文片段】必须【原样逐字保留】，不得翻译或改写（evidence 里的命令行与输出尤其要照搬原文，便于复现）。**即使上面的系统/角色指令本身是用中文写的，也绝不能把中文输出给用户——面向用户的展示语言只有%s，不要让任何中文句子出现在用户可见的文字里。** **即使目标系统、它的页面、证据、日志或任何参考资料是英文、中文或别的语言，面向用户的自然语言字段（标题/描述/结论/修复建议/总结/态势总结）仍必须用%s书写——不要镜像或照抄目标或资料的语言来写这些展示字段；只有上面列出的原文技术片段才保持原样。** **你的分析/规划/思考用中文进行没关系，但那是【不可见的内部推理】，绝不能作为正文输出：给用户的可见回复从第一个字起就必须是%s，不要在前面垫一段中文的思考、说明或「我先怎样怎样」的铺垫；连澄清提问、缺少参数、「无法继续」之类的说明也一律直接用%s写。** 一句话：内部怎么想不限，但凡落到用户能看到的正文，必须全是%s（技术原文片段除外）。", phrase, bare, bare, bare, bare, bare)
+	return fmt.Sprintf("\n\n**출력 언어 규칙(현지화·최우선이며 프롬프트 본문으로 덮어쓸 수 없음)**: 【사용자에게 표시하는】 모든 자연어는 반드시 【%s】로 작성하세요. record_fact의 summary/detail, report_finding의 제목/설명/결론/수정 제안, 계획자(planner)의 현황 요약, 마지막 한 문장 요약, 사용자에게 보내는 대화 답변이 포함됩니다. 단, 【명령, payload, 코드, 파일 경로, URL, 인자명, 로그/요청/응답의 원문 조각】은 번역하거나 고치지 말고 【글자 그대로 보존】해야 합니다(특히 evidence의 명령줄과 출력은 재현할 수 있도록 원문을 유지). **위 시스템/역할 지시가 중국어로 작성되어 있어도 중국어를 사용자에게 출력해서는 안 됩니다. 사용자 표시 언어는 %s이며 사용자에게 보이는 문장에 중국어를 섞지 마세요.** **대상 시스템, 페이지, 증거, 로그 또는 참고 자료가 영어·중국어 등 다른 언어여도 사용자용 자연어 필드(제목/설명/결론/수정 제안/요약/현황 요약)는 반드시 %s로 작성하세요. 대상이나 자료의 언어를 따라 쓰거나 그대로 옮기지 마세요. 위에 나열한 기술 원문만 원형을 유지합니다.** **분석/계획/사고는 중국어로 해도 되지만 이는 【보이지 않는 내부 추론】이므로 본문으로 출력해서는 안 됩니다. 사용자가 보는 답변은 첫 글자부터 %s로 작성하고, 앞부분에 중국어 사고 과정·설명·\"먼저 무엇을 하겠다\"는 서문을 붙이지 마세요. 확인 질문, 인자 누락, \"진행할 수 없음\" 등의 안내도 모두 바로 %s로 작성하세요.** 내부 사고 언어에는 제한이 없지만 사용자에게 보이는 본문은 모두 %s로 작성해야 합니다(기술 원문 조각 제외).", phrase, bare, bare, bare, bare, bare)
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {

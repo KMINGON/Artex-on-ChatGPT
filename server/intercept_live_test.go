@@ -120,15 +120,18 @@ func TestLiveContextReview(t *testing.T) {
 			if verdict.Reason == "" {
 				t.Errorf("reviewer omitted the required explanation: %q", reply)
 			}
-			operation, _, _ := strings.Cut(verdict.Reason, "；成功后的后果：")
+			operation, _, korean := strings.Cut(verdict.Reason, "; 성공 후 결과: ")
+			if !korean {
+				operation, _, _ = strings.Cut(verdict.Reason, "；成功后的后果：")
+			}
 			if tc.name == "read_does_not_repeat_prior_creation" {
-				for _, verb := range []string{"创建", "新建", "写入"} {
+				for _, verb := range []string{"创建", "新建", "写入", "작성", "생성", "쓰기", "저장"} {
 					if strings.Contains(operation, verb) {
 						t.Errorf("current read borrowed a historical operation: %s", operation)
 					}
 				}
 			}
-			if tc.name == "report_content_is_not_executed" && !strings.Contains(operation, "写") && !strings.Contains(operation, "新建") && !strings.Contains(operation, "创建") {
+			if tc.name == "report_content_is_not_executed" && !strings.Contains(operation, "写") && !strings.Contains(operation, "新建") && !strings.Contains(operation, "创建") && !strings.Contains(operation, "작성") && !strings.Contains(operation, "생성") && !strings.Contains(operation, "쓰기") && !strings.Contains(operation, "저장") {
 				t.Errorf("report content was mistaken for the current write: %s", operation)
 			}
 		})

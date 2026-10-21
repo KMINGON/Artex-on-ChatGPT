@@ -18,6 +18,16 @@ import (
 	"github.com/Autumn-27/norma/llm"
 )
 
+func TestKoreanAndLegacyMentionsResolveSameRecord(t *testing.T) {
+	refs, err := parseChatMentions("@[취약점#12 새 토큰] @[漏洞#12 이전 토큰] @[서브도메인#34 test]")
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("refs=%+v err=%v", refs, err)
+	}
+	if refs[0].Kind != "finding" || refs[0].ID != 12 || refs[0].Name != "취약점" || refs[1].Kind != "subdomain" {
+		t.Fatalf("mention identity changed: %+v", refs)
+	}
+}
+
 func TestChatMentionParsing(t *testing.T) {
 	refs, err := parseChatMentions("分析@[漏洞#12 同名] 与 @[接口#34 GET /api] @[漏洞#12 重复] user@example.com @漏洞")
 	if err != nil || len(refs) != 2 || refs[0].Kind != "finding" || refs[1].ID != 34 {
@@ -177,7 +187,7 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 	select {
 	case req := <-requests:
 		blob, _ := json.Marshal(req.Messages)
-		if !strings.Contains(string(blob), "worker-hidden-proof") || !strings.Contains(string(blob), "用户引用的记录快照") {
+		if !strings.Contains(string(blob), "worker-hidden-proof") || !strings.Contains(string(blob), "사용자가 인용한 기록 스냅샷") {
 			t.Fatalf("worker missing reference details: %s", blob)
 		}
 	case <-time.After(5 * time.Second):
@@ -213,7 +223,7 @@ func TestChatMentionBoundedJSON(t *testing.T) {
 		items[i] = long
 	}
 	v := boundChatMentionValue(map[string]any{"report": long, "scope": items}).(map[string]any)
-	if !strings.Contains(v["report"].(string), "已截断") || len(v["scope"].([]any)) != 101 {
+	if !strings.Contains(v["report"].(string), "잘렸습니다") || len(v["scope"].([]any)) != 101 {
 		t.Fatal("missing truncation markers")
 	}
 	encoded, err := json.Marshal(v)
@@ -304,7 +314,7 @@ func TestChatMentionConversationReceivesServerDetails(t *testing.T) {
 	s, fid := newRetestServer(t)
 	setRetestProvider(s, retestProvider{complete: func(_ context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 		blob, _ := json.Marshal(req.Messages)
-		if !strings.Contains(string(blob), "original proof") || !strings.Contains(string(blob), "用户引用的记录快照") {
+		if !strings.Contains(string(blob), "original proof") || !strings.Contains(string(blob), "사용자가 인용한 기록 스냅샷") {
 			t.Errorf("model did not receive resolved evidence: %s", blob)
 		}
 		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("已读取引用")}}, "end_turn", llm.Usage{}, nil

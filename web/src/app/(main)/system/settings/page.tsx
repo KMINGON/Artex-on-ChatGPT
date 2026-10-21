@@ -4,7 +4,6 @@ import * as React from "react";
 
 import {
   CpuIcon,
-  FlaskConicalIcon,
   KeyboardIcon,
   LanguagesIcon,
   RadioTowerIcon,
@@ -58,8 +57,6 @@ export default function SystemSettingsPage() {
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
   const [injectWorker, setInjectWorker] = React.useState(true);
-  // 实验功能:noa 上下文压缩(默认关)。
-  const [noaCompaction, setNoaCompaction] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
   const sendModeOptions = useChatSendModeOptions();
@@ -79,7 +76,6 @@ export default function SystemSettingsPage() {
     setWorkers(String(s.workers ?? 3));
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
-    setNoaCompaction(!!s.noa_compaction);
   }, []);
 
   const saveWorkers = () => {
@@ -178,20 +174,6 @@ export default function SystemSettingsPage() {
       .setSettings({ constraints_inject_worker: v })
       .then(apply)
       .catch(() => setInjectWorker(!v)); // revert on failure
-  };
-
-  const toggleNoaCompaction = (v: boolean) => {
-    setNoaCompaction(v); // optimistic
-    api
-      .setSettings({ noa_compaction: v })
-      .then((s) => {
-        apply(s);
-        toast.success(v ? t("toast.noaOn") : t("toast.noaOff"));
-      })
-      .catch((e) => {
-        setNoaCompaction(!v); // revert on failure
-        toast.error(t("toast.saveFailed", { error: (e as Error).message }));
-      });
   };
 
   // Persist a web-search patch (enable and/or backend). Optimistic with refetch.
@@ -408,28 +390,6 @@ export default function SystemSettingsPage() {
                 onCheckedChange={toggleInjectWorker}
               />
             </div>
-          </CardContent>
-        </Card>
-
-        <Card className="mb-4 break-inside-avoid md:mb-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FlaskConicalIcon className="size-4" />
-              {t("experimental.title")}
-            </CardTitle>
-            <CardDescription>{t.rich("experimental.desc", richTags)}</CardDescription>
-          </CardHeader>
-          <CardContent className="flex items-center justify-between gap-4">
-            <Label htmlFor="noa-compaction" className="text-sm font-normal text-muted-foreground">
-              {t("experimental.noaLabel")}
-              {noaCompaction ? t("onSuffix") : t("offSuffix")}
-            </Label>
-            <Switch
-              id="noa-compaction"
-              checked={noaCompaction}
-              disabled={!loaded}
-              onCheckedChange={toggleNoaCompaction}
-            />
           </CardContent>
         </Card>
 

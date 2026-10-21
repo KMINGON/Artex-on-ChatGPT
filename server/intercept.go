@@ -26,7 +26,7 @@ const judgeWorkerLane = "judge"
 // This bounds received output, not upstream token generation or reasoning cost.
 const judgeMaxResponseBytes = 16 << 10
 
-const judgeResponseContract = `本次裁决输出必须是有效 UTF-8 的单个 JSON 对象，恰好包含 decision 和 comment 两个字符串字段；不得重复字段、添加未知字段、代码围栏、前后说明或第二个对象。整个响应最多 16384 字节。继续遵守上述裁决策略及 comment 三段格式；这里只限定输出格式，不改变允许、转人工、拒绝的判定规则。`
+const judgeResponseContract = `이번 판정은 유효한 UTF-8 JSON 객체 하나로 출력하며 문자열 필드 decision과 comment만 정확히 포함해야 합니다. 중복 필드, 알 수 없는 필드, 코드 펜스, 앞뒤 설명 또는 두 번째 객체를 추가하지 마세요. 전체 응답은 최대 16384바이트입니다. 위 판정 정책과 comment의 세 부분 형식을 계속 따르세요. 이 지침은 출력 형식만 제한하며 허용·사용자 승인 요청·거부 규칙은 바꾸지 않습니다.`
 
 var errJudgeOutputRejected = errors.New("판정 응답이 불완전하거나 출력 제한을 벗어나 실행을 차단했습니다")
 

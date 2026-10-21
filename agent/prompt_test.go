@@ -32,13 +32,13 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 
 	// full plannerSystem path: DB body [A] is honored, then the code-owned tail
-	// [C] (中间产物输出规约) is ALWAYS appended — editing the body can't drop it.
+	// [C] (중간 산출물 저장 규칙) is ALWAYS appended — editing the body can't drop it.
 	PromptOverride = func(k string) (string, bool) { return "PLANNER {{.Goal}}", true }
 	got := plannerSystem("拿下X", "/data", "/data")
 	if !strings.HasPrefix(got, "PLANNER 拿下X") {
 		t.Fatalf("plannerSystem body not honored: %q", got)
 	}
-	if !strings.Contains(got, "中间产物输出规约") || !strings.Contains(got, "/data") {
+	if !strings.Contains(got, "중간 산출물 저장 규칙") || !strings.Contains(got, "/data") {
 		t.Fatalf("plannerSystem missing code-owned artifact tail: %q", got)
 	}
 
@@ -60,7 +60,7 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	if strings.Contains(recording, "traffic_refs") {
 		t.Fatalf("worker bypassed shared optional evidence policy: %q", recording)
 	}
-	if !strings.Contains(recording, "中间产物输出规约") {
+	if !strings.Contains(recording, "중간 산출물 저장 규칙") {
 		t.Fatalf("worker missing artifact tail: %q", recording)
 	}
 	// Egress proxy set but capture OFF (no CA): the ProxyAddr template branch still
@@ -81,20 +81,17 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 }
 
-// langMarker is the unambiguous substring that proves langDirective selected a
-// given display language. These are the native-script tokens embedded in the
-// (Chinese) directive, so finding one means the output-language mandate names that
-// language. Used by the directive and role-append tests below.
+// langMarker identifies the selected display language in the Korean directive.
 var langMarker = map[string]string{
 	"ko": "한국어",
 	"en": "English",
-	"zh": "简体中文",
+	"zh": "중국어(간체)",
 	"es": "Español",
-	"ja": "日本語",
+	"ja": "일본어",
 }
 
 // TestLangDirectiveLocalized pins the output-language tail across all
-// four display languages: each language's directive names that language, preserves
+// supported display languages: each language's directive names that language, preserves
 // raw technical strings, forbids mirroring the target/material language, and names
 // the planner situation summary. For every non-Chinese display language the "never
 // emit Chinese to the user" clause is present; for Chinese it is absent (Chinese
@@ -105,19 +102,19 @@ func TestLangDirectiveLocalized(t *testing.T) {
 		if !strings.Contains(dir, langMarker[code]) {
 			t.Fatalf("%s: langDirective must name the display language (%q), got %q", code, langMarker[code], dir)
 		}
-		if !strings.Contains(dir, "payload") || !strings.Contains(dir, "原样逐字保留") {
+		if !strings.Contains(dir, "payload") || !strings.Contains(dir, "글자 그대로 보존") {
 			t.Fatalf("%s: langDirective must keep commands/payloads verbatim, got %q", code, dir)
 		}
-		if !strings.Contains(dir, "不要镜像或照抄目标") {
+		if !strings.Contains(dir, "대상이나 자료의 언어를 따라 쓰거나 그대로 옮기지 마세요") {
 			t.Fatalf("%s: langDirective must forbid mirroring the target/material language, got %q", code, dir)
 		}
-		if !strings.Contains(dir, "态势") {
+		if !strings.Contains(dir, "현황") {
 			t.Fatalf("%s: langDirective must name the planner situation summary as user-facing, got %q", code, dir)
 		}
 		// The anti-Chinese-leak clause applies to every non-Chinese display
 		// language (planner situation-summary drift). When the display language IS
 		// Chinese, Chinese output is correct, so the clause must be absent.
-		hasNoZhClause := strings.Contains(dir, "也绝不能把中文输出给用户")
+		hasNoZhClause := strings.Contains(dir, "중국어를 사용자에게 출력해서는 안 됩니다")
 		if code == "zh" && hasNoZhClause {
 			t.Fatalf("zh: directive must NOT forbid Chinese output when the display language is Chinese, got %q", dir)
 		}

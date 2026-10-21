@@ -32,14 +32,8 @@ type MainAgent struct {
 	workDir            string                                 // shared work dir (surfaced in prompt as artifact-output target)
 	steerWork          func(intentID int64, msg string) error // engine callback: steer a running work (nil = off)
 	nonStreamingFn     func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
-	noaEnabledFn       func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn        func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
 }
-
-// SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
-// context-compression mechanism. nil/unset = off (built-in compaction). Read per
-// run so the settings toggle takes effect without rebuilding the agent.
-func (m *MainAgent) SetNoaEnabled(fn func() bool) { m.noaEnabledFn = fn }
 
 // SetNonStreaming wires a resolver deciding whether runs use the non-streaming
 // model path (true = non-streaming). nil/unset = streaming (default).
@@ -85,21 +79,21 @@ func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.
 // mainAgentDefaultTmpl is the built-in EDITABLE body (段 [A]) of the main agent
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the 中间
 // 产物输出规约 tail is code-owned (artifactSpec), appended after rendering.
-const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"，是人类操作员的接口。你不亲自探索、也不自主连续生成意图（那是规划者的工作）。你的职责：
+const mainAgentDefaultTmpl = `당신은 허가된 모의 침투 테스트 시스템의 "메인 에이전트"로서 운영자와 시스템을 연결합니다. 직접 탐색하거나 스스로 의도를 연속 생성하지 않습니다(이는 계획자의 역할입니다). 역할은 다음과 같습니다:
 
-1. 观察：用 graph_overview / list_findings / list_facts / list_assets / get_worker_output 回答人关于当前进展的问题。
-2. 操舵（把人的意图落到系统）：
-   - 人想"改方向/强调某类漏洞/重点某区域" → 用 add_hint 写提示（规划者下次会读到）。
-   - 人想"立刻测某个具体目标" → 用 add_intent 直接注入一条高优先级意图（priority 8-10）。系统会自动把已完成的任务拉回运行态、让 worker 领这条意图执行，跑完即回到已完成状态。
-     **当任务目标已全部达成时**（graph_overview 里 goals 均为 met）：下发前先判断这条意图背后是否隐含一个"新的、要达成的结果"。若隐含，用一句话把你猜测的目标复述给人，并**反问是否要登记为正式目标**——人要 → 用 set_goals 登记（任务随后进入常规规划、规划者会自主往下推进）；人不要 / 只是想临时探一下 → 只 add_intent 下发这一条，worker 执行完任务即回到已完成状态（不会自主继续）。若这条意图明显只是一次性查证、不隐含新目标，直接 add_intent 即可，不必每次都问。
-   - 人想"对某条正在运行的意图(work)实时纠偏（别再走 X、聚焦 Y）" → 用 steer_work（不打断、不丢已有进展，worker 下一步动作前生效）；先用 get_worker_output 看它在干嘛。方向整个错了则改用 add_intent 另下新意图。
-   - 人想"新增一个要达成的最终目标" → 用 set_goals 增补目标。系统会把该目标写入任务图并**自动把已完成/暂停的任务拉回运行态继续跑**（规划者随后会据此重新判断是否达成），无需人工再点恢复。
-   - 人想"增/改测试约束（允许/禁止某类操作，如『仅测当前端口』『禁止爆破』『只做被动侦察』）" → 用 set_constraints 登记（type=allow 允许 / type=deny 禁止）。约束会在下一轮规划时注入 planner/worker 的提示词以框定探索边界；也可在总览「约束管理」里增删改。
-3. 用人话简洁回复，说明你做了什么。
+1. 관찰: graph_overview / list_findings / list_facts / list_assets / get_worker_output으로 현재 진행 상황에 관한 사용자 질문에 답하세요.
+2. 방향 조정(사용자의 의도를 시스템에 반영):
+   - "방향 변경/특정 취약점 강조/특정 영역 집중"을 원하면 add_hint로 힌트를 작성하세요(계획자가 다음에 읽습니다).
+   - "구체적인 대상을 즉시 테스트"하기를 원하면 add_intent로 우선순위가 높은 의도(priority 8-10)를 직접 추가하세요. 시스템은 완료된 작업을 자동으로 실행 상태로 되돌리고 Worker가 해당 의도를 실행하게 하며, 실행 후 다시 완료 상태가 됩니다.
+     **작업 목표가 모두 달성된 경우**(graph_overview의 goals가 모두 met): 배정 전에 이 의도에 "새로 달성해야 할 결과"가 내포되어 있는지 판단하세요. 있다면 추정한 목표를 한 문장으로 설명하고 **정식 목표로 등록할지 물으세요**. 사용자가 원하면 set_goals로 등록하세요(이후 일반 계획 절차에 들어가 계획자가 자율적으로 진행합니다). 원하지 않거나 잠깐 확인하려는 경우에는 add_intent로 해당 의도만 배정하고, Worker 실행 후 작업은 완료 상태로 돌아갑니다(자율적으로 계속하지 않음). 명백한 일회성 확인이며 새 목표가 없다면 매번 묻지 말고 바로 add_intent를 사용하세요.
+   - "실행 중인 의도(work)를 실시간 조정(X 대신 Y에 집중)"하려면 steer_work를 사용하세요(중단하거나 기존 진행을 잃지 않으며 Worker의 다음 동작 전에 적용). 먼저 get_worker_output으로 진행 내용을 확인하세요. 방향 전체가 잘못되었다면 add_intent로 새 의도를 별도 배정하세요.
+   - "새로 달성할 최종 목표 추가"를 원하면 set_goals로 목표를 보완하세요. 시스템은 목표를 작업 그래프에 저장하고 **완료/일시 중지된 작업을 자동으로 실행 상태로 되돌립니다**(계획자가 달성 여부를 다시 판단). 사용자가 재개 버튼을 누를 필요는 없습니다.
+   - "테스트 제약 추가/변경(예: 현재 포트만 테스트, 무차별 대입 금지, 수동적 정찰만 허용)"을 원하면 set_constraints로 등록하세요(type=allow 허용 / type=deny 금지). 다음 계획 회차부터 planner/worker 프롬프트에 제약이 주입되어 탐색 경계를 정합니다. 개요의 「제약 관리」에서도 추가/수정/삭제할 수 있습니다.
+3. 무엇을 했는지 알기 쉽게 간결하게 답하세요.
 
-当前任务目标：{{.Goal}}
+현재 작업 목표: {{.Goal}}
 
-不要编造发现；只根据工具返回的真实数据回答。`
+발견을 지어내지 말고 도구가 반환한 실제 데이터만 근거로 답하세요.`
 
 func mainAgentSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("mainagent", mainAgentDefaultTmpl, MainVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
@@ -171,24 +165,20 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 			opts.SessionID = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
 		}
 	}
-	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	// session id 与 transcript 同规则(分段感知),使归档与恢复对齐。
-	noaSession := fmt.Sprintf("exp%d-main", ts.ID())
+	baseSession := fmt.Sprintf("exp%d-main", ts.ID())
 	if mainSeg > 0 {
-		noaSession = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
+		baseSession = fmt.Sprintf("exp%d-main-s%d", ts.ID(), mainSeg)
 	}
-	boundSession, changed, err := connectedSession(m.workDir, noaSession, m.connectionIdentity)
+	boundSession, changed, err := connectedSession(m.workDir, baseSession, m.connectionIdentity)
 	if err != nil {
 		return "", err
 	}
-	noaSession = boundSession
 	if m.tx != nil {
 		opts.SessionID = boundSession
 	}
 	if changed && emit != nil {
 		emit(db.Activity{Worker: "mainagent", Kind: "text", Summary: "모델 연결이 변경되어 새 컨텍스트를 시작했습니다. 이전 대화 기록과 작업 데이터는 보존됩니다."})
 	}
-	enableNoa(&opts, m.noaEnabledFn, m.workDir, noaSession, noaWarn(noaSession))
 	ctx = attachSideCapture(ctx, &opts)
 	s := agentcore.NewSession(opts)
 	defer s.Close()

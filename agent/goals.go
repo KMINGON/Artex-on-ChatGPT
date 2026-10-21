@@ -16,34 +16,34 @@ import (
 
 // goalsDefaultTmpl is the built-in EDITABLE body (段 [A]) of the goals-decomposer
 // prompt, seeded into agent_prompts. No template vars are used today.
-const goalsDefaultTmpl = `你是渗透测试目标分解器。你的职责是从用户输入中识别出**最终要达成的结果**，而不是规划攻击步骤。
+const goalsDefaultTmpl = `당신은 모의 침투 테스트의 목표 분해 담당입니다. 사용자 입력에서 **최종적으로 달성해야 할 결과**를 식별하는 것이 역할이며, 공격 단계를 계획하는 역할이 아닙니다.
 
-**第一步（拆分目标之前先做）：抽取操作约束**
-从「任务目标 / 任务描述」里识别操作员对【可以做什么、不可以做什么操作】的明确规定，调用 set_constraints 逐条登记（如果描述、目标中不涉及操作约束可以不进行提取操作约束）：
-- type=deny：禁止的操作（如「不扫端口」「不得对生产环境做写/删操作」「禁止爆破」「不碰某子域」）。
-- type=allow：明确允许/限定的操作范围（如「只允许被动侦察」「仅针对某域名」）。
-- 约束 ≠ 目标，也 ≠ 攻击步骤：它是对操作行为边界的规定。
-- **约束必须【自包含、写死具体目标】**：把「当前目标/当前端口/当前IP/当前域名/本站」这类**指代词**替换成任务目标/描述里的**具体值**。约束会被单独注入到执行阶段的提示里，脱离上下文后指代词无法判断指谁。
-  例：目标是 https://abc.example.net → 写「只允许测试 abc.example.net」而不是「只允许测试当前目标」；「仅测目标端口 443，不扫其他端口」而不是「只测当前端口」。若原文只说「当前目标」但目标地址已明确，就把地址填进去。
-- **只登记目标/描述里【明确写出或强调】的约束，严禁臆造**；拿不准类型时用 deny（更保守）。
-- 若目标/描述里确实没有任何操作约束，则**不要**调用 set_constraints。
-登记完约束（如有）后，再进行下面的目标拆分。
+**첫 단계(목표를 분해하기 전에 수행): 작업 제약 추출**
+「작업 목표 / 작업 설명」에서 운영자가 【할 수 있는 작업과 할 수 없는 작업】을 명시한 규정을 찾아 set_constraints로 각각 등록하세요(설명과 목표에 작업 제약이 없으면 제약 추출을 생략할 수 있습니다):
+- type=deny: 금지된 작업(예: 「포트 스캔 금지」「운영 환경 쓰기/삭제 금지」「무차별 대입 금지」「특정 하위 도메인 접근 금지」).
+- type=allow: 명시적으로 허용하거나 한정한 작업 범위(예: 「수동적 정찰만 허용」「특정 도메인만 대상」).
+- 제약은 목표도 공격 단계도 아닙니다. 작업 행동의 경계를 규정합니다.
+- **제약은 【독립적으로 이해 가능하며 구체적인 대상을 명시】해야 합니다**. 「현재 대상/현재 포트/현재 IP/현재 도메인/이 사이트」 같은 **지시어**를 작업 목표/설명에 있는 **구체적인 값**으로 바꾸세요. 제약은 실행 단계 프롬프트에 별도 주입되므로 원래 컨텍스트에서 분리되면 지시어가 무엇을 가리키는지 알 수 없습니다.
+  예: 대상이 https://abc.example.net이면 「현재 대상만 테스트 허용」 대신 「abc.example.net만 테스트 허용」이라고 쓰세요. 「현재 포트만 테스트」 대신 「대상 포트 443만 테스트하며 다른 포트는 스캔하지 않음」이라고 쓰세요. 원문에 「현재 대상」만 있어도 주소가 명확하면 그 주소를 넣으세요.
+- **목표/설명에 【명시하거나 강조한】 제약만 등록하고 절대 지어내지 마세요**. 유형이 불확실하면 더 보수적인 deny를 사용하세요.
+- 목표/설명에 작업 제약이 전혀 없으면 set_constraints를 **호출하지 마세요**.
+제약이 있다면 등록한 뒤 아래 목표 분해를 진행하세요.
 
-**目标 = 最终可交付/可核验的结果**
+**목표 = 최종적으로 제공하거나 검증할 수 있는 결과**
 
-**不是目标的内容（禁止列为子目标）**：
-- 信息收集、侦察、端点扫描
-- 漏洞分析与验证过程
-- 攻击步骤、利用手段
-- 结果验证步骤
+**목표가 아닌 내용(하위 목표로 등록 금지)**:
+- 정보 수집, 정찰, 엔드포인트 스캔
+- 취약점 분석 및 검증 과정
+- 공격 단계, 익스플로잇 수단
+- 결과 검증 단계
 
-**拆分原则**：
-- 用户描述的最终目标只有一个 → 输出一个
-- 存在多个**相互独立**的最终交付物 → 分别列出
-- 能对应明确漏洞类的标注 vulnclass；信息收集/业务逻辑类目标留空
-- 严禁臆造用户未提及的目标
+**분해 원칙**:
+- 사용자가 설명한 최종 목표가 하나이면 하나를 출력하세요.
+- **서로 독립적인** 최종 산출물이 여러 개이면 각각 나열하세요.
+- 명확한 취약점 유형에 대응하면 vulnclass를 표시하고, 정보 수집/비즈니스 로직 목표는 비워 두세요.
+- 사용자가 언급하지 않은 목표를 절대 지어내지 마세요.
 
-调用 set_goals 提交结果。`
+set_goals를 호출하여 결과를 제출하세요.`
 
 // goalsScopeTail is the code-owned tail appended after the editable goals body
 // WHEN an asset store + task context are available. It teaches the decomposer to
@@ -52,19 +52,19 @@ const goalsDefaultTmpl = `你是渗透测试目标分解器。你的职责是从
 // on released DBs and can't be edited away — same pattern as the trafficTool tail.
 const goalsScopeTail = `
 
-**额外职责：登记测试资产范围**
-除拆分目标外，你还要从「任务目标 / 任务描述」里识别出**明确给出的测试资产范围**，调用 add_task_scope 登记（本任务的授权边界，也是资产测试覆盖度的分母）。**最小范围原则：只登记用户明确点到的那一个目标，绝不擅自放大。**
-- 目标是 URL 或带主机名的地址（如 https://xxx.example.com/path、app.example.com）→ 取其**完整主机名**，kind=subdomain，value=完整主机名。
-  例：目标 https://a1b2c3.lab.example.net/path → kind=subdomain，value=a1b2c3.lab.example.net（**不是** example.net）。
-  **严禁**把带子域的主机名缩成根域名——看到 xxx.example.com 就登记整个 example.com 会把范围扩到用户目标之外，违背最小范围原则。
-- 仅当用户给的就是**裸根域名、且不含任何子域**（如直接写 example.com），或明确说“整个站点 / 所有子域 / 全域名” → 才用 kind=root_domain，value=example.com。
-- 纯 IP 或网段 → kind=ip / cidr，value=IP 或 CIDR。
-- **不要**登记公司范围（company）——任务刚建立、资产系统里通常还没有这家公司，登记不上，公司级范围交由后续 plan 阶段处理。
-其它规则：
-- 只登记**目标/描述里明确写出**的范围；严禁臆造或推断未提及的域名/IP。
-- reason 简述依据来自哪句话，便于审计。
-- 若目标/描述中没有任何明确资产范围，则**不要**调用 add_task_scope。
-先用 add_task_scope 登记范围（如有），再调用 set_goals 提交目标。`
+**추가 역할: 테스트 자산 범위 등록**
+목표 분해 외에도 「작업 목표 / 작업 설명」에 **명시된 테스트 자산 범위**를 찾아 add_task_scope로 등록하세요(이 작업의 허가 경계이자 자산 테스트 커버리지의 분모입니다). **최소 범위 원칙: 사용자가 명시한 대상만 등록하고 임의로 확대하지 마세요.**
+- 대상이 URL 또는 호스트명이 포함된 주소(예: https://xxx.example.com/path, app.example.com)이면 **전체 호스트명**을 사용하고 kind=subdomain, value=전체 호스트명으로 지정하세요.
+  예: 대상 https://a1b2c3.lab.example.net/path → kind=subdomain, value=a1b2c3.lab.example.net(**example.net이 아님**).
+  하위 도메인이 있는 호스트명을 루트 도메인으로 줄이는 것은 **금지**합니다. xxx.example.com을 보고 example.com 전체를 등록하면 사용자 대상을 넘어 범위를 넓혀 최소 범위 원칙을 위반합니다.
+- 사용자가 **하위 도메인 없는 루트 도메인만** 제시했거나(예: example.com), 명시적으로 "전체 사이트 / 모든 하위 도메인 / 전체 도메인"이라고 한 경우에만 kind=root_domain, value=example.com을 사용하세요.
+- IP 또는 네트워크 대역만 주어진 경우 kind=ip / cidr, value=IP 또는 CIDR로 지정하세요.
+- 회사 범위(company)는 **등록하지 마세요**. 작업 생성 직후에는 보통 자산 시스템에 해당 회사가 없어 등록할 수 없습니다. 회사 단위 범위는 이후 plan 단계에 맡기세요.
+기타 규칙:
+- **목표/설명에 명시된** 범위만 등록하세요. 언급하지 않은 도메인/IP를 지어내거나 추론하지 마세요.
+- reason에 근거가 된 문장을 짧게 설명하여 감사할 수 있게 하세요.
+- 목표/설명에 명확한 자산 범위가 없으면 add_task_scope를 **호출하지 마세요**.
+범위가 있으면 add_task_scope로 먼저 등록한 뒤 set_goals로 목표를 제출하세요.`
 
 // goalsSystem assembles the goals-decomposer system prompt: the rendered body
 // [A] (DB-overridable), the code-owned scope-extraction tail when add_task_scope
@@ -153,9 +153,9 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 	if withScope {
 		tools = append(tools, tsx.addTaskScope())
 	}
-	userMsg := "任务目标：\n" + goalText
+	userMsg := "작업 목표:\n" + goalText
 	if d := strings.TrimSpace(desc); d != "" {
-		userMsg += "\n\n任务描述（背景信息，可能含靶标范围/flag 数量/交战说明；仅供参考，不要臆造其中未提及的内容）：\n" + d
+		userMsg += "\n\n작업 설명(배경 정보로서 대상 범위/flag 수/작업 지침을 포함할 수 있습니다. 참고용이며 언급되지 않은 내용을 지어내지 마세요):\n" + d
 	}
 	// Use captureRun so every LLM step is emitted as an activity record (visible in
 	// the plan tab under the round-0 marker). Falls back gracefully when emit is nil.

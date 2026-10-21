@@ -3,6 +3,7 @@ package guard
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/norma/hook"
@@ -36,18 +37,25 @@ func TestPreToolUsePassthrough(t *testing.T) {
 	}
 }
 
-// TestSystemBlockMessagePreservedIsBrainInput pins the platform-governance framing
-// (systemBlockMessage) to its original Chinese bytes. That framing is the model-facing
-// tool_result that steers the pentest agent away from bypassing an intercept block
-// (see guard.go doc comment + the F14 보존 판단). For the ask-block paths the same
-// framed string also lands in the /api/audit record via g.record, so one string serves
-// both the agent input and the audit display — it must NOT be translated, or benchmarked
-// agent behavior could drift. This test fails if the framing is accidentally localized.
-func TestSystemBlockMessagePreservedIsBrainInput(t *testing.T) {
-	got := systemBlockMessage("<原因>")
-	want := "【ARTEX 平台管控·非目标防御】此调用被平台拦截。原因：<原因>。此操作被禁止。"
+// Both model-facing tool results and audit records must identify platform policy.
+func TestSystemBlockMessageKorean(t *testing.T) {
+	got := systemBlockMessage("사용자 거부")
+	want := "[ARTEX 플랫폼 정책 · 대상 시스템의 방어가 아님] 플랫폼이 이 호출을 차단했습니다. 이유: 사용자 거부. 이 작업은 금지되어 있습니다."
 	if got != want {
-		t.Errorf("systemBlockMessage framing drifted (F14 두뇌 보존 — 원문 유지해야 함):\n got %q\nwant %q", got, want)
+		t.Fatalf("platform policy framing lost: %q", got)
+	}
+}
+
+func TestSystemBlockMessageLocalizesOnlyLeadingModelMarker(t *testing.T) {
+	for _, tc := range []struct{ reason, want string }{
+		{"[模型] 금지된 작업", "[모델] 금지된 작업"},
+		{"[模型]금지된 작업", "[모델]금지된 작업"},
+		{"[모델] 금지된 작업", "[모델] 금지된 작업"},
+		{"사용자가 입력한 [模型] 표기", "사용자가 입력한 [模型] 표기"},
+	} {
+		if got := systemBlockMessage(tc.reason); !strings.Contains(got, "이유: "+tc.want+". 이 작업은 금지되어 있습니다.") {
+			t.Errorf("reason %q: unexpected display %q", tc.reason, got)
+		}
 	}
 }
 

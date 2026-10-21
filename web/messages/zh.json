@@ -3095,8 +3095,6 @@
       "pythonSaved": "已保存 Python 解释器配置",
       "bindingOn": "已开启 Agent 自动绑定流量",
       "bindingOff": "已关闭 Agent 自动绑定流量",
-      "noaOn": "已开启 noa 上下文压缩（对之后启动的运行生效）",
-      "noaOff": "已关闭 noa 上下文压缩（恢复内置压缩）",
       "webSearchSaved": "已保存网络搜索配置",
       "braveKeySaved": "已保存 Brave API Key",
       "tavilyKeySaved": "已保存 Tavily API Key",
@@ -3133,11 +3131,6 @@
       "desc": "开启后，把每个任务的<b>操作约束</b>（在任务总览「操作约束」里维护的 allow/deny 条目）拼进对应 Agent 的系统提示，用来框定探索边界（如「仅测当前端口」「禁止爆破」）。<br></br>可分别控制注入到 <b>规划者（planner）</b>与 <b>执行者（worker）</b> ；默认都开。切换即时生效（下一轮读取），无需重建 Agent。关闭后该 Agent 不再看到约束。",
       "injectPlanner": "注入规划者（planner）",
       "injectWorker": "注入执行者（worker）"
-    },
-    "experimental": {
-      "title": "实验功能",
-      "desc": "尚在验证中的机制，默认关闭。可能改变 Agent 行为或影响稳定性，请在了解影响后启用。<br></br><b>noa 上下文压缩</b>：由模型主动压缩长对话历史（norma v0.4.0）。开启后平台接入的四类 Agent（<b>规划者 / 执行者 / 主 Agent / 对话</b>）改用 noa 接管上下文，取代内置压缩，压缩原文会归档到任务工作目录下便于回溯。切换即时生效（对之后启动的运行生效），无需重建 Agent；关闭后立即恢复内置压缩。",
-      "noaLabel": "noa 上下文压缩"
     },
     "webSearch": {
       "title": "网络搜索",

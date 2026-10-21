@@ -48,8 +48,8 @@ type sessionConnection struct {
 
 // Record the last observed connection separately from v1 replay. An existing
 // unbound transcript remains readable; its historical account is not inferred.
-// Once a change is known, use a fresh transcript and Noa archive, retaining both
-// old history and conversation working files.
+// Once a change is known, use a fresh transcript, retaining both old history
+// and conversation working files.
 func connectedSession(workDir, base string, identity func() string) (string, bool, error) {
 	if identity == nil {
 		return base, false, nil
