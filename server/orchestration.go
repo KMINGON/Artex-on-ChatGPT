@@ -238,6 +238,12 @@ func (s *Server) toolListLLMProfiles() actool.CoreTool {
 		})
 }
 
+// Only an explicit conversation pin is inherited. The chat agent's own role
+// binding remains scoped to that role and must not override child task roles.
+type conversationProfileKey struct{}
+
+const spawnTaskProfileDescription = "선택: 하위 작업 planner/worker의 LLM 설정 id(list_llm_profiles 참조). 생략하면 상위 작업, 현재 대화에서 지정한 설정, 전역 활성 설정 순으로 상속합니다"
+
 func (s *Server) toolSpawnTask() actool.CoreTool {
 	return wrTool("spawn_task",
 		"하위 작업을 생성하고 탐색 엔진을 시작한 뒤 task_id를 반환합니다. 하나의 문제나 목표를 독립 작업으로 배정할 때 사용합니다. parent_ref는 선택 사항이며 현재 조정에 연결된 상위 작업 id를 입력하면 상하위 관계를 설정합니다.",
@@ -246,12 +252,12 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"goal":                   strParam("작업 목표(달성할 결과)"),
 			"parent_ref":             strParam("선택: 상위 작업 id(상하위 관계 설정)"),
 			"source_task_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": fmt.Sprintf("선택: 읽기 전용으로 상속할 원본 작업 id 목록(최대 %d개). 하위 작업이 이미 확인된 자산/결론을 시작점으로 참조합니다. 단순 상하위 연결인 parent_ref와 달리 내용을 상속합니다.", db.MaxTaskSourceCount)},
-			"llm_profile_id":         map[string]any{"type": "integer", "description": "선택: 하위 작업 planner/worker의 LLM 설정 id(list_llm_profiles 참조). 생략하면 상위 작업을 상속하고, 없으면 전역 활성 설정을 사용합니다"},
+			"llm_profile_id":         map[string]any{"type": "integer", "description": spawnTaskProfileDescription},
 			"timeout_seconds":        map[string]any{"type": "integer", "description": "선택: 작업 시간 제한(초). 도달하면 마무리 과정을 거쳐 timeout으로 종료합니다. 생략 또는 0이면 무제한입니다"},
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "선택: planner 주기적 실행 간격(초). 이전 계획 종료/작업 시작 이후 이 시간이 지나도록 다른 실행 계기가 없으면 계획을 한 차례 실행합니다(교착 방지 및 실행 중 Worker 감독). 생략 또는 0이면 기본 600초(10분)입니다"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "선택: 간단한 작업에서 사용합니다. 생성 시 초기 의도 하나(설명+목표)를 바로 배정해 Worker가 첫 planner를 기다리지 않고 테스트를 시작합니다. 기본 false이며 계획 후 실행하는 표준 흐름을 따릅니다."},
 		}, "description", "goal"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Description          string          `json:"description"`
 				Goal                 string          `json:"goal"`
@@ -289,7 +295,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				seenSources[id] = true
 				sourceIDs = append(sourceIDs, id)
 			}
-			// LLM profile resolution: explicit id > inherit parent's pin > active(nil).
+			// Explicit argument > parent task pin > conversation pin > active(nil).
 			var pin *int64
 			if id := parseProfileID(a.LLMProfileID); id > 0 {
 				if _, ok := s.loadProfileConfig(id); !ok {
@@ -298,7 +304,15 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				pin = &id
 			} else if a.ParentRef != "" {
 				if pt, ok := s.m.Task(a.ParentRef); ok {
-					pin = pt.LLMProfileID
+					pin = pt.llmStateSnapshot().ProfileID
+				}
+			}
+			if pin == nil {
+				if id, ok := ctx.Value(conversationProfileKey{}).(int64); ok && id > 0 {
+					if _, available := s.loadProfileConfig(id); !available {
+						return actool.Errorf(fmt.Sprintf("대화에서 선택한 LLM 설정 #%d을(를) 찾을 수 없습니다", id)), nil
+					}
+					pin = &id
 				}
 			}
 			var llmIDs []int64
@@ -487,6 +501,9 @@ func (s *Server) seedOrchestrationTools() {
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
 	}
 	s.refreshBuiltinToolSchemas()
+	if err := s.refreshSpawnTaskModelHint(); err != nil {
+		log.Printf("[tools] spawn_task 모델 상속 설명 갱신 실패: %v", err)
+	}
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedPlannerListAssetsBinding()
@@ -506,6 +523,15 @@ func (s *Server) seedOrchestrationTools() {
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
 	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
+}
+
+// Update only the prior shipped description leaf; edited schemas and bindings
+// must survive upgrades. The exact-match predicate makes this idempotent.
+func (s *Server) refreshSpawnTaskModelHint() error {
+	const previous = "선택: 하위 작업 planner/worker의 LLM 설정 id(list_llm_profiles 참조). 생략하면 상위 작업을 상속하고, 없으면 전역 활성 설정을 사용합니다"
+	_, err := s.m.pg.Exec(`UPDATE tools SET schema=jsonb_set(schema,'{properties,llm_profile_id,description}',to_jsonb($1::text),false),updated_at=now()
+WHERE key='spawn_task' AND system AND kind='builtin' AND schema #>> '{properties,llm_profile_id,description}'=$2`, spawnTaskProfileDescription, previous)
+	return err
 }
 
 // refreshBuiltinToolSchemas propagates code schema/description changes on the

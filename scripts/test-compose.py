@@ -83,6 +83,8 @@ class Smoke:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
         self.env["ARTEX_PORT"] = str(self.port)
+        # Runtime smoke stays private; validate the public default separately.
+        self.env["ARTEX_BIND_IP"] = "127.0.0.1"
         self.project = "artex-smoke-" + uuid.uuid4().hex
         self.compose_args = [
             "docker", "compose", "--project-name", self.project,
@@ -143,6 +145,18 @@ class Smoke:
         return parse_json(raw, "container inspection")[0]
 
     def check_configuration(self):
+        public_env = dict(self.env)
+        public_env.pop("ARTEX_BIND_IP")
+        raw = command(self.compose_args + ["config", "--format", "json"], public_env,
+                      "validate default public web binding")
+        public = parse_json(raw, "default Compose configuration")["services"]["artex"]
+        require(public["ports"][0].get("host_ip") == "0.0.0.0",
+                "default web binding does not accept LAN connections")
+        hosts = public.get("extra_hosts", {})
+        if isinstance(hosts, list):
+            hosts = dict(item.replace(":", "=", 1).split("=", 1) for item in hosts)
+        require(hosts.get("host.docker.internal") == "host-gateway",
+                "Docker host access mapping is missing")
         raw = self.compose("config", "--format", "json", label="validate isolated Compose configuration")
         config = parse_json(raw, "Compose configuration")
         require(config.get("name") == self.project, "Compose project isolation was overridden")

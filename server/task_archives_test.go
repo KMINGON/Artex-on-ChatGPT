@@ -54,7 +54,9 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("running archive status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if err := m.pg.SetPaused(taskID, true); err != nil {
+	// Use the real pause path so the scheduler's in-memory state and PostgreSQL
+	// agree even when the missing model has already put the task in its queue.
+	if _, err := s.applyTaskControl(task, "pause"); err != nil {
 		t.Fatal(err)
 	}
 	recorder = request(http.MethodPost, "/api/tasks/"+task.ID+"/archive", "{}")

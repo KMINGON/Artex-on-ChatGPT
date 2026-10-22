@@ -610,6 +610,11 @@ func (s *Server) runConversationTurn(ctx context.Context, cancel context.CancelC
 	if ctx.Err() != nil {
 		return
 	}
+	// Snapshot the conversation's explicit choice for spawn_task. A later UI edit
+	// must not change model inheritance halfway through this running turn.
+	if c.LLMProfileID != nil {
+		ctx = context.WithValue(ctx, conversationProfileKey{}, *c.LLMProfileID)
+	}
 	// precedence: the conversation agent's own binding → this conversation's pin → global.
 	if ca == nil {
 		ca = s.resolveChatAgent(c)

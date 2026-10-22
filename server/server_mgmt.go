@@ -1947,6 +1947,11 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	// the active profile too: the global fallback and explicit task chains must
 	// repopulate the same provider-cache entry and therefore share one limiter.
 	s.invalidateProfileAgents()
+	activated, err := s.activateFirstUsableProfile(id)
+	if err != nil {
+		writeErr(w, 503, s.blockProfileReload().Error())
+		return
+	}
 	// Hot-apply. Not just when the ACTIVE profile changed: with failover on, any
 	// profile's key/model/priority/pool_exclude edit reshapes the chain, so the
 	// engine's provider has to be rebuilt either way.
@@ -1954,7 +1959,39 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"id": id})
+	writeJSON(w, 200, map[string]any{"id": id, "activated": activated})
+}
+
+// activateFirstUsableProfile is called under profileUpdateMu, so concurrent saves
+// and explicit activation cannot overwrite each other between commit and apply.
+// Existing selections (including temporarily unavailable accounts) and an env
+// provider remain deliberate choices; only an unconfigured installation is filled.
+func (s *Server) activateFirstUsableProfile(id int64) (bool, error) {
+	active, err := s.m.pg.ActiveProfile()
+	if err != nil {
+		return false, err
+	}
+	if active != nil {
+		return false, nil
+	}
+	if provider, _, configured := s.globalProvider(); configured {
+		// A failed database reload is not an environment selection. Let a later
+		// successful save recover an installation that still has no default.
+		if _, reloadFailed := provider.(profileReloadError); !reloadFailed {
+			return false, nil
+		}
+	}
+	p, err := s.m.pg.ProfileByID(id)
+	if err != nil {
+		return false, err
+	}
+	if !s.resolutionFromProfile(p, "global_profile").Available {
+		return false, nil
+	}
+	if err := s.m.pg.SetActiveProfile(id); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // pgGetLLMRetryPolicy 返回全局重试策略(五层各自的次数+间隔)。未配置过 → 全零，

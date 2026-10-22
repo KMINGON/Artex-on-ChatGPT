@@ -48,6 +48,11 @@ Artex uses a local module replacement for these limited runtime extensions:
   are removed. All ARTEX agents use built-in compaction. Generic compactor,
   context-view, and tool contracts remain tested; old user archives and
   transcripts are not deleted.
+- WebFetch (and WebSearch's shared HTTP client) uses an explicitly direct
+  transport when no proxy is configured, including the direct retry path.
+  WebFetch reports interrupted body reads as errors with any received partial
+  content, marks its 2 MiB receive limit separately from the 50,000-byte display
+  limit, and preserves UTF-8 boundaries when shortening either output.
 
 Checkpoints now use `checkpoint_begin`, `checkpoint_part`, and
 `checkpoint_commit` records with version 1, an ID, count, ordered indices, and a

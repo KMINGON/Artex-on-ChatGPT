@@ -43,8 +43,10 @@ services:
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-}
       ARTEX_LLM_PROXY: ${ARTEX_LLM_PROXY:-}
     ports:
-      # Public default credentials are for this PC only. DB/proxy are not published.
-      - "127.0.0.1:${ARTEX_PORT:-8787}:8787"
+      # Set ARTEX_BIND_IP=127.0.0.1 for PC-only access. DB/proxy stay unpublished.
+      - "${ARTEX_BIND_IP:-0.0.0.0}:${ARTEX_PORT:-8787}:8787"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - artex-data:/app/data
       - artex-auth:/app/auth

@@ -41,7 +41,7 @@ type goalSpec struct {
 const (
 	goalBreakdownRound0Summary       = "0차 목표 분해"
 	queuedConcurrencyLimitSummaryFmt = "대기열 등록: 동시 실행 상한 %d개에 도달해, 빈자리가 나면 자동으로 시작합니다"
-	queuedNoLLMSummary               = "대기열 등록: 현재 실행 가능한 LLM 설정이 없어, 설정이 복구되면 자동으로 시작합니다"
+	queuedNoLLMSummary               = "실행 대기: 사용 가능한 Planner/Worker LLM 설정이 없습니다. 시스템 → LLM 설정에서 설정을 활성화하거나 작업·에이전트에 모델을 지정하면 자동으로 시작합니다"
 	queuedFIFOSummary                = "대기열 등록: 먼저 대기 중인 작업이 있어, FIFO 순서대로 자동으로 시작합니다"
 )
 
@@ -170,7 +170,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	// planner/workers are still live. Still compare-and-commit the persisted
 	// status: a concurrent terminal transition must win instead of being silently
 	// reported as a successful follow-up admission.
-	if !wasTerminal && !wasPaused && !wasQueued && s.engine.Started(t.ID) && (!enabled || ready) {
+	if !wasTerminal && !wasPaused && !wasQueued && s.engine.Started(t.ID) && ready {
 		if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, lifecycle.Status, false, "resume", false); err != nil {
 			return false, err
 		}
@@ -191,7 +191,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 
 	readyBacklog := enabled && s.hasReadyQueuedTask(t.ID)
 	atCapacity := enabled && s.runningTaskCount(t.ID) >= limit
-	shouldQueue := enabled && (!ready || readyBacklog || atCapacity)
+	shouldQueue := !ready || readyBacklog || atCapacity
 
 	// Install the execution barrier before reviving a terminal/paused task. Without
 	// this ordering, its already-running worker loops can claim the newly-opened
@@ -275,27 +275,24 @@ func (s *Server) reconcileConcurrency() {
 	defer s.concMu.Unlock()
 	enabled, limit := s.m.ConcurrencyLimit()
 
-	// A task whose provider chain becomes unavailable cannot do useful work and
-	// must not reserve a limited running slot forever. Park it persistently so a
-	// later profile edit/recovery can re-enter through the same FIFO path.
-	if enabled {
-		for _, task := range s.m.List() {
-			lifecycle := task.lifecycleSnapshot()
-			if lifecycle.Queued || lifecycle.Paused || s.engine.IsPaused(task.ID) || s.engine.IsDeleting(task.ID) ||
-				isTerminalStatus(lifecycle.Status) || s.engine.ReadyFor(task) || s.engine.ActiveLLMCalls(task.ID) > 0 {
-				continue
-			}
-			mode := s.resumeAdmissionMode(task)
-			s.engine.Pause(task.ID, agent.Causef("llm_unavailable_queued", "LLM을 사용할 수 없어 작업을 대기열에 추가했습니다",
-				"실행 가능한 Planner/Worker LLM 설정을 찾을 수 없어 동시 실행 슬롯을 반환했습니다. 설정이 복구되면 대기열 순서대로 계속합니다"))
-			if err := s.m.EnqueueTask(task.ID, mode); err != nil {
-				s.engine.Resume(task)
-				log.Printf("[concurrency] task %s LLM 사용 불가에 따른 대기열 추가 실패: %v", task.ID, err)
-				continue
-			}
-			s.engine.emitActivity(task, db.Activity{Worker: "system", Kind: "text",
-				Summary: queuedNoLLMSummary})
+	// Park unavailable tasks even with the concurrency limit disabled. Otherwise
+	// a missing model starts a failing run instead of waiting for configuration.
+	for _, task := range s.m.List() {
+		lifecycle := task.lifecycleSnapshot()
+		if lifecycle.Queued || lifecycle.Paused || s.engine.IsPaused(task.ID) || s.engine.IsDeleting(task.ID) ||
+			isTerminalStatus(lifecycle.Status) || s.engine.ReadyFor(task) || s.engine.ActiveLLMCalls(task.ID) > 0 {
+			continue
 		}
+		mode := s.resumeAdmissionMode(task)
+		s.engine.Pause(task.ID, agent.Causef("llm_unavailable_queued", "LLM을 사용할 수 없어 작업을 대기열에 추가했습니다",
+			"실행 가능한 Planner/Worker LLM 설정을 찾을 수 없어 실행을 대기합니다. 설정이 복구되면 자동으로 계속합니다"))
+		if err := s.m.EnqueueTask(task.ID, mode); err != nil {
+			s.engine.Resume(task)
+			log.Printf("[concurrency] task %s LLM 사용 불가에 따른 대기열 추가 실패: %v", task.ID, err)
+			continue
+		}
+		s.engine.emitActivity(task, db.Activity{Worker: "system", Kind: "text",
+			Summary: queuedNoLLMSummary})
 	}
 
 	type queuedTask struct {
@@ -343,7 +340,7 @@ func (s *Server) reconcileConcurrency() {
 		// Keep FIFO order, but do not consume a concurrency slot for a task
 		// whose explicit chain/global provider is unavailable. It will be retried
 		// after the user configures or resets its LLM chain.
-		if lifecycle.Paused || (enabled && !s.engine.ReadyFor(task)) {
+		if lifecycle.Paused || !s.engine.ReadyFor(task) {
 			continue
 		}
 		mode := lifecycle.QueueMode
@@ -402,13 +399,17 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 		as = s.m.Assets()
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	s.engine.BeginLLMCall(t.ID)
-	goalRuntime := s.agentsForTask(t).runtime
-	decomposed := agent.DecomposeGoalsWithProvider(ctx, goalRuntime, s.m.dir, t.Goal, t.Description, as, t.Store, taskID, goalRuntime.nonStreaming(), goalRuntime.maxTokens(), emit)
-	s.engine.EndLLMCall(t.ID)
-	for _, g := range decomposed {
-		if strings.TrimSpace(g.Text) != "" {
-			specs = append(specs, goalSpec{Text: g.Text, VulnClass: g.VulnClass})
+	// Goals has its own role binding. Planner/worker can be ready while goals is
+	// unconfigured; use the existing raw-goal fallback without a failing model run.
+	if s.taskRuntimeAvailable(t, "goals") {
+		s.engine.BeginLLMCall(t.ID)
+		goalRuntime := s.agentsForTask(t).runtime
+		decomposed := agent.DecomposeGoalsWithProvider(ctx, goalRuntime, s.m.dir, t.Goal, t.Description, as, t.Store, taskID, goalRuntime.nonStreaming(), goalRuntime.maxTokens(), emit)
+		s.engine.EndLLMCall(t.ID)
+		for _, g := range decomposed {
+			if strings.TrimSpace(g.Text) != "" {
+				specs = append(specs, goalSpec{Text: g.Text, VulnClass: g.VulnClass})
+			}
 		}
 	}
 	if len(specs) == 0 {

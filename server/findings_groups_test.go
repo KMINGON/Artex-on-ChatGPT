@@ -173,9 +173,8 @@ func TestDeepenFindingCreatesAuditedIntentAndRevivesTask(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // admission is exercised without starting background planner/worker work
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx}
+	// A ready stub exercises immediate admission without real model calls.
+	s := newAdmissionTestServer(m, nil)
 	live, unsubscribe := s.engine.Broadcaster().Subscribe(task.ID)
 	defer unsubscribe()
 	body := bytes.NewBufferString(`{"description":"验证完整利用链并保留可复现证据"}`)

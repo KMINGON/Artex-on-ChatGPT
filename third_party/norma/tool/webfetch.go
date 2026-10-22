@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/norma/permission"
 	"golang.org/x/net/html"
@@ -69,10 +70,9 @@ const maxFetchBytes = 2 << 20 // 2 MiB
 
 // newFetchClient returns an HTTP client honoring the proxy / TLS config.
 func newFetchClient(cfg WebFetchConfig) *http.Client {
-	if cfg.Proxy == "" && !cfg.InsecureTLS && cfg.CACert == "" {
-		return &http.Client{}
-	}
-	tr := &http.Transport{}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// Empty means direct, including retries; never inherit HTTP(S)_PROXY.
+	tr.Proxy = nil
 	if cfg.Proxy != "" {
 		if pu, err := url.Parse(cfg.Proxy); err == nil {
 			tr.Proxy = http.ProxyURL(pu)
@@ -204,7 +204,19 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 			return Errorf("Error fetching URL: " + err.Error()), nil
 		}
 		defer resp.Body.Close()
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes+1))
+		bodyTruncated := len(body) > maxFetchBytes
+		if bodyTruncated {
+			body = body[:maxFetchBytes]
+			// A byte limit can leave a partial UTF-8 character at the end.
+			for len(body) > 0 {
+				_, size := utf8.DecodeLastRune(body)
+				if size != 1 || body[len(body)-1] < utf8.RuneSelf {
+					break
+				}
+				body = body[:len(body)-1]
+			}
+		}
 
 		header := fmt.Sprintf("[%d %s] %s\n", resp.StatusCode, http.StatusText(resp.StatusCode), in.URL)
 		// Cheap fingerprint signal that HTML→Markdown would otherwise hide.
@@ -213,6 +225,12 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		}
 		if xp := resp.Header.Get("X-Powered-By"); xp != "" {
 			header += "X-Powered-By: " + xp + "\n"
+		}
+		if readErr != nil {
+			header += fmt.Sprintf("[본문 수신 실패: %v. 아래 내용은 수신된 %d바이트의 일부 응답이며 완전한 결과가 아닙니다.]\n", readErr, len(body))
+		}
+		if bodyTruncated {
+			header += fmt.Sprintf("[본문 수신 제한: %d바이트를 초과하여 이후 내용은 읽지 않았습니다.]\n", maxFetchBytes)
 		}
 
 		var out string
@@ -231,7 +249,24 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		} else {
 			out = string(body)
 		}
-		return Text(truncate(header+strings.TrimSpace(out), 50000)), nil
+		// Keep notices outside the display cap, and never split Korean characters.
+		const maxOutputBytes = 50000
+		out = strings.TrimSpace(out)
+		if len(out) > maxOutputBytes {
+			headEnd, tailStart := maxOutputBytes/2, len(out)-maxOutputBytes/2
+			for headEnd > 0 && !utf8.RuneStart(out[headEnd]) {
+				headEnd--
+			}
+			for tailStart < len(out) && !utf8.RuneStart(out[tailStart]) {
+				tailStart++
+			}
+			header += fmt.Sprintf("[출력 표시 제한: 수신한 본문 중 %d바이트를 생략하고 앞뒤 합계 최대 %d바이트만 표시합니다.]\n", tailStart-headEnd, maxOutputBytes)
+			out = out[:headEnd] + "\n…\n" + out[tailStart:]
+		}
+		if readErr != nil {
+			return Errorf(header + out), nil
+		}
+		return Text(header + out), nil
 	}
 }
 

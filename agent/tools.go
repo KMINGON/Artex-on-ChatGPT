@@ -510,7 +510,11 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// the original task (root) so the planner always has it, not just the
 	// decomposed goals.
 	if description, goal, err := t.ts.Root(); err == nil {
-		out["task"] = map[string]any{"description": description, "goal": goal}
+		root := map[string]any{"description": description, "goal": goal}
+		if id, _ := t.ts.OriginFactID(); id > 0 {
+			root["id"] = id
+		}
+		out["task"] = root
 	}
 	// Direct source tasks are a live, read-only blackboard view. Keep their
 	// summaries in a separate field so their intents never enter this task's
@@ -548,6 +552,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			}
 		}
 	}
+	limitCurrentOverviewText(out)
 	return out
 }
 
@@ -558,6 +563,7 @@ func inheritedMap(m map[string]any, sourceTaskID int64) map[string]any {
 }
 
 const (
+	currentOverviewTotalTextRunes      = 32_000
 	relatedOverviewTotalTextRunes      = 48_000
 	relatedOverviewMaxTextPerSource    = 8_000
 	relatedOverviewMaxGoalsPerSource   = 8
@@ -569,9 +575,8 @@ const (
 	relatedOverviewMaxDigestsPerSource = 6
 )
 
-// overviewTextBudget bounds inherited prompt text while preserving a fair slice
-// for every direct source. Full evidence remains available through the on-demand
-// read tools, so truncation here does not discard persisted blackboard data.
+// Text budgets exclude structural IDs, states and counters. Only rendered
+// summaries change; node_detail still returns the persisted originals.
 type overviewTextBudget struct {
 	remaining int
 	truncated bool
@@ -624,6 +629,71 @@ func (b *overviewTextBudget) take(value any, fieldLimit int) string {
 	}
 	b.remaining -= len(runes)
 	return text
+}
+
+func (b *overviewTextBudget) takeField(entry map[string]any, field string, limit int) {
+	if entry[field] == nil {
+		return
+	}
+	part := overviewTextBudget{remaining: min(b.remaining, limit)}
+	before := part.remaining
+	entry[field] = part.take(entry[field], limit)
+	b.remaining -= before - part.remaining
+	if part.truncated {
+		entry[field+"_truncated"] = true
+		b.truncated = true
+	}
+}
+
+func (b *overviewTextBudget) takeRows(rows []map[string]any, field string, sectionLimit, fieldLimit int) {
+	if len(rows) == 0 {
+		return
+	}
+	// Give every row a preview, even when hundreds of live intents are present.
+	limit := min(fieldLimit, sectionLimit/len(rows))
+	for _, row := range rows {
+		b.takeField(row, field, limit)
+	}
+}
+
+const overviewTruncationNote = "summary_truncated=true 또는 *_truncated=true가 표시된 개요에는 생략된 내용이 있습니다. 목표·힌트가 생략되면 계획·완료 판단 전에 해당 id를 node_detail로 조회하세요. task.id는 원래 작업 설명·목표를 담은 시작 노드이며, digest 전문도 node_detail(id) 또는 expand_digest(id)로 조회할 수 있습니다. 원문은 저장소에 그대로 보존됩니다."
+
+func limitCurrentOverviewText(out map[string]any) {
+	budget := overviewTextBudget{remaining: currentOverviewTotalTextRunes}
+	if task, ok := out["task"].(map[string]any); ok {
+		budget.takeField(task, "goal", 4_000)
+		budget.takeField(task, "description", 1_000)
+	}
+	for _, section := range []struct {
+		key, field        string
+		total, fieldLimit int
+	}{
+		{"goals", "text", 6_000, 1_000},
+		{"hints", "text", 6_000, 1_200},
+		{"open_intents", "summary", 4_000, 800},
+		{"running_intents", "summary", 4_000, 800},
+		{"finding_list", "summary", 1_500, 800},
+		{"recent_facts", "summary", 1_500, 800},
+		{"recent_done_intents", "summary", 1_500, 800},
+		{"cold_digests", "body", 1_500, 1_000},
+	} {
+		rows, _ := out[section.key].([]map[string]any)
+		budget.takeRows(rows, section.field, section.total, section.fieldLimit)
+	}
+	// Keep evidence IDs and roles intact; free-form reference notes share the budget.
+	hints, _ := out["hints"].([]map[string]any)
+	for _, hint := range hints {
+		refs, _ := hint["traffic_refs"].([]any)
+		for _, ref := range refs {
+			if entry, ok := ref.(map[string]any); ok {
+				budget.takeField(entry, "note", 200)
+			}
+		}
+	}
+	if budget.truncated {
+		out["summary_truncated"] = true
+		out["summary_note"] = overviewTruncationNote
+	}
 }
 
 func recentTerminalIntents(store *db.ExplorationStore, limit int) []*db.Node {
@@ -682,6 +752,9 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 				"goal":        budget.take(source.Task.Goal, 800),
 				"status":      source.Task.Status,
 			},
+		}
+		if id, _ := ts.OriginFactID(); id > 0 {
+			item["task"].(map[string]any)["id"] = id
 		}
 		stats, statsErr := ts.Stats()
 
@@ -806,6 +879,7 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		// resolvable via expand_digest(id)/node_detail(id), which search source tasks.
 		if cds, more := coldDigestsRecent(ts, relatedOverviewMaxDigestsPerSource); len(cds) > 0 {
 			for _, cd := range cds {
+				budget.takeField(cd, "body", 800)
 				cd["inherited"] = true
 				cd["source_task_id"] = source.Task.TaskID
 			}
@@ -854,6 +928,7 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		}
 		if budget.truncated {
 			item["summary_truncated"] = true
+			item["summary_note"] = overviewTruncationNote
 		}
 		out = append(out, item)
 	}

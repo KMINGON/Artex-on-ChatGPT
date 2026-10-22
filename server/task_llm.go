@@ -69,8 +69,9 @@ func (e *taskLLMError) Error() string {
 	return e.cause.Error()
 }
 
-func (e *taskLLMError) Unwrap() error  { return e.cause }
-func (e *taskLLMError) NoReplay() bool { return true }
+func (e *taskLLMError) Unwrap() error    { return e.cause }
+func (e *taskLLMError) NoReplay() bool   { return true }
+func (e *taskLLMError) NoFallback() bool { return true }
 
 func isTaskLLMRuntimeError(err error) bool {
 	var target *taskLLMError
@@ -145,7 +146,7 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 		sel.profileID = *pt.ActiveLLMProfileID
 		prov, cfg, ok := r.s.providerForProfile(sel.profileID)
 		if !ok {
-			return sel, fmt.Errorf("LLM profile #%d is missing or invalid", sel.profileID)
+			return sel, &taskLLMError{taskID: r.taskID, cause: fmt.Errorf("LLM 설정 #%d을(를) 찾을 수 없습니다. 작업의 모델 설정을 확인해 주세요", sel.profileID)}
 		}
 		sel.provider, sel.retry = prov, cfg.Retry
 		sel.connectionIdentity = cfg.ConnectionIdentity()
@@ -154,7 +155,7 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 	}
 	prov, cfg, ok := r.s.globalProvider()
 	if !ok {
-		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
+		return sel, &taskLLMError{taskID: r.taskID, cause: fmt.Errorf("사용 가능한 LLM 설정이 없습니다 (%s). 시스템 → LLM 설정에서 설정을 활성화하거나 작업·에이전트에 사용할 설정을 지정해 주세요", r.agentKey)}
 	}
 	sel.provider, sel.retry = prov, cfg.Retry
 	sel.connectionIdentity = cfg.ConnectionIdentity()
