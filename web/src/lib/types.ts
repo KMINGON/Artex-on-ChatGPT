@@ -1044,9 +1044,13 @@ export interface ChatGPTStatus {
 
 export interface ModelCapabilities {
   known: boolean;
+  reasoning_efforts_known?: boolean;
+  access_programs_known?: boolean;
+  default_reasoning_effort?: string;
+  source?: "account_catalog" | "documentation" | "unknown";
   reasoning_efforts?: string[];
   access_programs_cyber?: string[];
-  daybreak_available: boolean;
+  daybreak_available: boolean | null;
   source_url?: string;
   checked_at?: string;
 }

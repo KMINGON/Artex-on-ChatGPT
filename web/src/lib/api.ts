@@ -997,7 +997,7 @@ export const api = {
     pool_exclude?: boolean; // true=不作为故障转移目标
     max_tokens?: number; // 单次回复输出上限；0=不发送，由服务端默认值决定
     retry?: LLMRetryOverride; // 本配置的重试覆盖；各项留 0 = 跟随全局重试策略
-  }) => post<{ id: number }>("/llm/profiles", p),
+  }) => post<{ id: number; activated?: boolean }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),
   // 轮询链的实际顺序 + 各配置的熔断状态。

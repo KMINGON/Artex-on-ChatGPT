@@ -187,8 +187,7 @@ func TestAccessProgramProfileRoundTripAndValidation(t *testing.T) {
 		t.Fatal("reset did not preserve profile ID/key")
 	}
 	for _, body := range []string{
-		`{"name":"bad","model":"gpt-6-sol","auth_mode":"api_key","access_program_cyber":"daybreak_red"}`,
-		`{"name":"bad","model":"gpt-6-astra","auth_mode":"api_key","reasoning_effort":"none"}`,
+		`{"name":"bad","model":"gpt-6-sol","auth_mode":"api_key","access_program_cyber":"invented"}`,
 		`{"name":"bad","model":"account-model","auth_mode":"chatgpt_plan","access_program_cyber":"daybreak_blue"}`,
 	} {
 		if got := save(body); got.Code != 400 {

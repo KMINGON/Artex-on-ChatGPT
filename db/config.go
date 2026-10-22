@@ -88,8 +88,8 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 // UnsupportedReason keeps legacy rows visible without sending their credentials
 // to a different provider. Explicitly saving a replacement preserves the row ID.
 func (p *LLMProfile) UnsupportedReason() string {
-	if p.AuthMode == "chatgpt_plan" && p.AccessProgramCyber != "" {
-		return "ChatGPT 구독의 Daybreak 요청 설정은 공식 지원이 확인되지 않았습니다. 기본값을 사용해 주세요"
+	if p.AuthMode == "chatgpt_plan" && p.AccessProgramCyber != "" && p.AccessProgramCyber != "standard" {
+		return "ChatGPT 구독의 Daybreak 명시 요청은 실제 적용값과 일치하지 않을 수 있습니다. 자동 선택 또는 Standard를 사용해 주세요"
 	}
 	switch p.AccessProgramCyber {
 	case "", "standard", "daybreak_blue", "daybreak_red":

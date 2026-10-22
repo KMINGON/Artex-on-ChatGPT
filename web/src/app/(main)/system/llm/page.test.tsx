@@ -4,6 +4,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
+import type { ChatGPTModel, LLMProfile, ModelCapabilities } from "@/lib/types";
 
 import messages from "../../../../../messages/ko.json";
 import LLMPage from "./page";
@@ -22,60 +23,142 @@ vi.mock("@/lib/api", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-describe("ChatGPT model profile", () => {
+const account = { id: "account-id", email: "user@example.test", connected: true, plan_enabled: true };
+const catalogCapabilities: ModelCapabilities = {
+  known: true,
+  reasoning_efforts_known: true,
+  access_programs_known: true,
+  reasoning_efforts: ["none", "low", "medium", "high"],
+  default_reasoning_effort: "medium",
+  access_programs_cyber: ["standard", "daybreak_blue"],
+  daybreak_available: true,
+  source: "account_catalog",
+};
+const subscriptionModel: ChatGPTModel = {
+  id: "gpt-6-sol",
+  name: "GPT-6 Sol",
+  context_window: 272000,
+  capabilities: catalogCapabilities,
+};
+
+function savedProfile(patch: Partial<LLMProfile> = {}): LLMProfile {
+  return {
+    id: "19",
+    name: "저장된 연결",
+    model: "gpt-6-sol",
+    auth_mode: "api_key",
+    connected: true,
+    api_key_hint: "sk-…saved",
+    rate_per_second: 0,
+    rate_per_minute: 0,
+    is_default: false,
+    ...patch,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function showPage() {
+  await act(async () => {
+    render(
+      <NextIntlClientProvider locale="ko" messages={messages}>
+        <LLMPage />
+      </NextIntlClientProvider>,
+    );
+  });
+}
+
+async function openNewProfile() {
+  await showPage();
+  fireEvent.click(screen.getByRole("button", { name: "모델 설정 추가" }));
+  return within(await screen.findByRole("dialog"));
+}
+
+async function choose(trigger: HTMLElement, name: string | RegExp) {
+  fireEvent.keyDown(trigger, { key: "ArrowDown" });
+  fireEvent.click(await screen.findByRole("option", { name }));
+}
+
+async function loadSubscriptionModel(dialog: ReturnType<typeof within>, name = /GPT-6 Sol/) {
+  fireEvent.click(dialog.getByRole("button", { name: "계정 모델 조회" }));
+  const select = await dialog.findByRole("combobox", { name: "모델" });
+  await choose(select, name);
+}
+
+function expandAdvanced(dialog: ReturnType<typeof within>) {
+  const summary = dialog.getByText("고급 설정", { selector: "summary" });
+  fireEvent.click(summary);
+}
+
+describe("OpenAI model profiles", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     Element.prototype.scrollIntoView = vi.fn();
     vi.mocked(api.llmProfiles).mockResolvedValue([]);
     vi.mocked(api.llmPool).mockResolvedValue({ enabled: false, bind_fallback: false, chain: [] });
-    vi.mocked(api.chatgptStatus).mockResolvedValue({
-      accounts: [{ id: "account-id", email: "user@example.test", connected: true, plan_enabled: true }],
-      pending: false,
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [account], pending: false });
+    vi.mocked(api.chatgptModels).mockResolvedValue([subscriptionModel]);
+    vi.mocked(api.fetchLLMModels).mockResolvedValue({
+      ok: true,
+      model_details: [{ ...subscriptionModel, capabilities: { ...catalogCapabilities, source: "documentation" } }],
     });
-    vi.mocked(api.chatgptModels).mockResolvedValue([
-      { id: "returned-model-id", name: "계정에서 제공한 모델", context_window: 128000 },
-    ]);
     vi.mocked(api.saveLLMProfile).mockResolvedValue({ id: 9 });
+    vi.mocked(api.activateLLMProfile).mockResolvedValue({ ok: true });
+    vi.mocked(api.testLLM).mockResolvedValue({
+      ok: true,
+      model: "gpt-6-sol",
+      actual_model: "gpt-6-sol",
+      actual_access_program_cyber: "daybreak_blue",
+      access_programs_present: true,
+      latency_ms: 1200,
+      reply: "OK",
+    });
   });
 
   afterEach(() => cleanup());
 
-  async function openChatGPTProfile() {
-    await act(async () =>
-      render(
-        <NextIntlClientProvider locale="ko" messages={messages}>
-          <LLMPage />
-        </NextIntlClientProvider>,
-      ),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "새로 만들기" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.keyDown(within(dialog).getByRole("combobox", { name: "모델 연결 방식" }), { key: "ArrowDown" });
-    fireEvent.click(await screen.findByRole("option", { name: "ChatGPT 구독 계정" }));
-    return within(dialog);
-  }
+  it("keeps account login separate and adds model profiles from inside the models tab", async () => {
+    await showPage();
+    expect(screen.getByText("ChatGPT 계정 연결")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "ChatGPT로 계속" })).toBeInTheDocument();
+    const panel = screen.getByRole("tabpanel", { name: messages.llmPage.page.tab.profiles });
+    expect(within(panel).getByRole("button", { name: "모델 설정 추가" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: messages.llmPage.page.poolConfig })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "새로 만들기" })).not.toBeInTheDocument();
+  });
 
-  it("saves a server-listed model without API credentials or unsupported request options", async () => {
-    const dialog = await openChatGPTProfile();
+  it("prefills the sole connected account and loads models only when explicitly requested", async () => {
+    const dialog = await openNewProfile();
+    expect(dialog.getByRole("combobox", { name: "모델 연결 방식" })).toHaveTextContent("ChatGPT 구독 계정");
+    expect(dialog.getByRole("combobox", { name: "ChatGPT 계정" })).toHaveTextContent(account.email);
     expect(dialog.queryByLabelText("API Key")).not.toBeInTheDocument();
-    expect(dialog.queryByLabelText(messages.llmPage.profile.baseUrl.label)).not.toBeInTheDocument();
-    expect(dialog.getByLabelText("모델")).toHaveAttribute("readonly");
-    expect(dialog.getByRole("button", { name: "새로 만들기" })).toBeDisabled();
+    expect(dialog.queryByRole("combobox", { name: "모델" })).not.toBeInTheDocument();
+    expect(dialog.getByText(/프로그램 지원 정보 미확인/)).toBeInTheDocument();
+    expect(dialog.queryByRole("switch", { name: "Daybreak 자동" })).not.toBeInTheDocument();
+    expect(api.chatgptModels).not.toHaveBeenCalled();
 
-    fireEvent.change(dialog.getByLabelText("이름"), { target: { value: "개인 구독" } });
-    fireEvent.click(dialog.getByTitle(messages.llmPage.profile.model.loadTitle));
-    fireEvent.click(await screen.findByRole("button", { name: /계정에서 제공한 모델/ }));
-    expect(api.chatgptModels).toHaveBeenCalledWith("account-id");
-    fireEvent.click(dialog.getByRole("button", { name: "새로 만들기" }));
-
+    await loadSubscriptionModel(dialog);
+    expect(api.chatgptModels).toHaveBeenCalledExactlyOnceWith("account-id");
+    expect(dialog.getByRole("switch", { name: "Daybreak 자동" })).toBeChecked();
+    expect((dialog.getByLabelText("이름") as HTMLInputElement).value).toContain("GPT-6 Sol");
+    await choose(dialog.getByRole("combobox", { name: "모델" }), /GPT-6 Sol/);
+    expect(api.chatgptModels).toHaveBeenCalledTimes(1);
+    expect(api.testLLM).not.toHaveBeenCalled();
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
     await waitFor(() =>
       expect(api.saveLLMProfile).toHaveBeenCalledWith(
         expect.objectContaining({
-          name: "개인 구독",
           auth_mode: "chatgpt_plan",
           chatgpt_account_id: "account-id",
-          model: "returned-model-id",
-          context_window_k: 128,
+          model: "gpt-6-sol",
+          context_window_k: 272,
+          access_program_cyber: "",
           api_key: "",
           max_tokens: 0,
           pool_exclude: true,
@@ -84,136 +167,196 @@ describe("ChatGPT model profile", () => {
     );
   });
 
-  it("requires a connected eligible account before loading models or saving", async () => {
-    vi.mocked(api.chatgptStatus).mockResolvedValue({
-      accounts: [{ id: "account-id", email: "user@example.test", connected: false, plan_enabled: true }],
-      pending: false,
-    });
-    const dialog = await openChatGPTProfile();
-    expect(dialog.getByTitle(messages.llmPage.profile.model.loadTitle)).toBeDisabled();
-    expect(dialog.getByRole("button", { name: "새로 만들기" })).toBeDisabled();
-    expect(api.chatgptModels).not.toHaveBeenCalled();
-  });
-  it("offers only OpenAI API settings and preserves the chosen model/output cap", async () => {
-    await act(async () =>
-      render(
-        <NextIntlClientProvider locale="ko" messages={messages}>
-          <LLMPage />
-        </NextIntlClientProvider>,
+  it("sends explicit Standard from the subscription toggle and preserves a manually named profile", async () => {
+    const dialog = await openNewProfile();
+    fireEvent.change(dialog.getByLabelText("이름"), { target: { value: "개인 구독" } });
+    await loadSubscriptionModel(dialog);
+    expect(dialog.getByLabelText("이름")).toHaveValue("개인 구독");
+    fireEvent.click(dialog.getByRole("switch", { name: "Daybreak 자동" }));
+    fireEvent.click(dialog.getByRole("button", { name: "저장하고 사용" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ name: "개인 구독", access_program_cyber: "standard", auth_mode: "chatgpt_plan" }),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: "새로 만들기" }));
-    const dialog = within(await screen.findByRole("dialog"));
-    for (const label of [
-      messages.llmPage.profile.baseUrl.label,
-      messages.llmPage.profile.sessionHeader.label,
-      messages.llmPage.profile.streaming.label,
-      messages.llmPage.profile.thinkingType.label,
-      messages.llmPage.profile.maxTokensField.label,
-    ]) {
-      expect(dialog.queryByText(label)).not.toBeInTheDocument();
-    }
-    fireEvent.change(dialog.getByLabelText("이름"), { target: { value: "OpenAI API" } });
-    fireEvent.change(dialog.getByLabelText("모델"), { target: { value: "existing-openai-model" } });
+    await waitFor(() => expect(api.activateLLMProfile).toHaveBeenCalledWith("9"));
+  });
+
+  it.each([
+    { programs: ["standard"], expected: "standard", label: "Standard", blue: false },
+    { programs: ["daybreak_blue"], expected: "", label: "Daybreak 자동", blue: true },
+  ])("uses only the account catalog choices: $programs", async ({ programs, expected, label, blue }) => {
+    vi.mocked(api.chatgptModels).mockResolvedValue([
+      {
+        ...subscriptionModel,
+        capabilities: { ...catalogCapabilities, access_programs_cyber: programs, daybreak_available: blue },
+      },
+    ]);
+    const dialog = await openNewProfile();
+    await loadSubscriptionModel(dialog);
+    expect(dialog.queryByRole("switch", { name: "Daybreak 자동" })).not.toBeInTheDocument();
+    expect(dialog.getByText(new RegExp(`^${label} ·`))).toBeInTheDocument();
+    if (!blue) expect(dialog.queryByText("Daybreak 자동", { exact: true })).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(expect.objectContaining({ access_program_cyber: expected })),
+    );
+  });
+
+  it("does not infer Daybreak eligibility from the model name when the catalog omits program metadata", async () => {
+    vi.mocked(api.chatgptModels).mockResolvedValue([
+      {
+        id: "gpt-daybreak-blue-latest",
+        name: "Daybreak Blue Latest",
+        capabilities: {
+          known: false,
+          access_programs_known: false,
+          reasoning_efforts_known: false,
+          daybreak_available: null,
+          source: "unknown",
+        },
+      },
+    ]);
+    const dialog = await openNewProfile();
+    await loadSubscriptionModel(dialog, /Daybreak Blue Latest/);
+    expect(dialog.getByText(/프로그램 지원 정보 미확인/)).toBeInTheDocument();
+    expect(dialog.queryByText("Daybreak 자동", { exact: true })).not.toBeInTheDocument();
+    expect(dialog.queryByRole("switch", { name: "Daybreak 자동" })).not.toBeInTheDocument();
+  });
+
+  it("ignores a late catalog response after switching subscription accounts", async () => {
+    const otherAccount = { ...account, id: "other-account", email: "other@example.test" };
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [account, otherAccount], pending: false });
+    const pending = deferred<ChatGPTModel[]>();
+    vi.mocked(api.chatgptModels).mockReturnValueOnce(pending.promise);
+    const dialog = await openNewProfile();
+    await choose(dialog.getByRole("combobox", { name: "모델 연결 방식" }), "ChatGPT 구독 계정");
+    await choose(dialog.getByRole("combobox", { name: "ChatGPT 계정" }), new RegExp(account.email));
+    fireEvent.click(dialog.getByRole("button", { name: "계정 모델 조회" }));
+    await choose(dialog.getByRole("combobox", { name: "ChatGPT 계정" }), new RegExp(otherAccount.email));
+    await act(async () => pending.resolve([subscriptionModel]));
+    expect(dialog.queryByRole("combobox", { name: "모델" })).not.toBeInTheDocument();
+    expect(dialog.queryByRole("switch", { name: "Daybreak 자동" })).not.toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "계정 모델 조회" })).toBeEnabled();
+  });
+
+  it("requires an eligible account before subscription lookup or saving", async () => {
+    vi.mocked(api.chatgptStatus).mockResolvedValue({
+      accounts: [{ ...account, connected: false }],
+      pending: false,
+    });
+    const dialog = await openNewProfile();
+    await choose(dialog.getByRole("combobox", { name: "모델 연결 방식" }), "ChatGPT 구독 계정");
+    expect(dialog.getByRole("button", { name: "계정 모델 조회" })).toBeDisabled();
+    expect(dialog.getByRole("button", { name: "저장" })).toBeDisabled();
+    expect(api.chatgptModels).not.toHaveBeenCalled();
+  });
+
+  it("requires an API key before lookup and saves the selected model with API-only output settings", async () => {
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [], pending: false });
+    const dialog = await openNewProfile();
+    expect(dialog.getByRole("button", { name: "API 모델 조회" })).toBeDisabled();
+    expect(dialog.queryByRole("combobox", { name: "모델" })).not.toBeInTheDocument();
     fireEvent.change(dialog.getByLabelText("API Key"), { target: { value: "test-api-key" } });
+    fireEvent.click(dialog.getByRole("button", { name: "API 모델 조회" }));
+    await choose(await dialog.findByRole("combobox", { name: "모델" }), /GPT-6 Sol/);
+    expect(api.fetchLLMModels).toHaveBeenCalledExactlyOnceWith("test-api-key", "", undefined);
+    expandAdvanced(dialog);
     fireEvent.change(dialog.getByLabelText(messages.llmPage.profile.maxTokens.label), { target: { value: "4096" } });
-    fireEvent.click(dialog.getByRole("button", { name: "새로 만들기" }));
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
     await waitFor(() => expect(api.saveLLMProfile).toHaveBeenCalled());
     const body = vi.mocked(api.saveLLMProfile).mock.calls[0][0];
-    expect(body).toEqual(
-      expect.objectContaining({ auth_mode: "api_key", model: "existing-openai-model", max_tokens: 4096 }),
-    );
+    expect(body).toEqual(expect.objectContaining({ auth_mode: "api_key", model: "gpt-6-sol", max_tokens: 4096 }));
     for (const key of ["format", "base_url", "thinking_type", "streaming", "max_tokens_field", "session_header_key"])
       expect(body).not.toHaveProperty(key);
   });
 
-  it("keeps a retired profile visible and requires an explicit replacement model", async () => {
-    vi.mocked(api.llmProfiles).mockResolvedValue([
-      {
-        id: "17",
-        name: "이전 연결",
-        model: "legacy-model",
-        auth_mode: "api_key",
-        configuration_error: "OpenAI 모델과 인증을 다시 선택해 주세요",
-        rate_per_second: 0,
-        rate_per_minute: 0,
-        is_default: false,
-      },
-    ]);
-    await act(async () =>
-      render(
-        <NextIntlClientProvider locale="ko" messages={messages}>
-          <LLMPage />
-        </NextIntlClientProvider>,
-      ),
-    );
-    expect(screen.getByText("legacy-model")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /이전 연결/ }));
+  it("uses a saved API credential for catalog lookup without asking for the key again", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([savedProfile()]);
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
     const dialog = within(await screen.findByRole("dialog"));
-    expect(dialog.getByRole("alert")).toHaveTextContent("OpenAI 모델과 인증을 다시 선택해 주세요");
-    expect(dialog.getByLabelText("모델")).toHaveValue("");
-    expect(api.saveLLMProfile).not.toHaveBeenCalled();
-  });
-  it("disables activation of an API draft without a key", async () => {
-    vi.mocked(api.llmProfiles).mockResolvedValue([
-      {
-        id: "18",
-        name: "초안",
-        model: "saved-model",
-        auth_mode: "api_key",
-        connected: false,
-        rate_per_second: 0,
-        rate_per_minute: 0,
-        is_default: false,
-      },
-    ]);
-    await act(async () =>
-      render(
-        <NextIntlClientProvider locale="ko" messages={messages}>
-          <LLMPage />
-        </NextIntlClientProvider>,
-      ),
-    );
-    expect(screen.getByRole("button", { name: "활성으로 설정" })).toBeDisabled();
-    expect(api.activateLLMProfile).not.toHaveBeenCalled();
+    expect(dialog.getByLabelText("API Key")).toHaveValue("");
+    expect(dialog.getByRole("combobox", { name: "모델" })).toHaveTextContent("gpt-6-sol");
+    fireEvent.click(dialog.getByRole("button", { name: "모델 목록 새로고침" }));
+    await waitFor(() => expect(api.fetchLLMModels).toHaveBeenCalledExactlyOnceWith("", "", 19));
   });
 
-  it("preserves the model and distinguishes explicit none effort and API Daybreak from defaults", async () => {
-    vi.mocked(api.llmProfiles).mockResolvedValue([
-      {
-        id: "19",
-        name: "기능 확인 프로필",
-        model: "gpt-6-sol",
-        auth_mode: "api_key",
-        connected: true,
-        rate_per_second: 0,
-        rate_per_minute: 0,
-        is_default: false,
-        capabilities: {
-          known: true,
-          reasoning_efforts: ["none", "low", "high"],
-          access_programs_cyber: ["standard", "daybreak_blue"],
-          daybreak_available: true,
-        },
-      },
-    ]);
-    await act(async () =>
-      render(
-        <NextIntlClientProvider locale="ko" messages={messages}>
-          <LLMPage />
-        </NextIntlClientProvider>,
-      ),
+  it("discards an API catalog response if its key was replaced while loading", async () => {
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [], pending: false });
+    const pending = deferred<Awaited<ReturnType<typeof api.fetchLLMModels>>>();
+    vi.mocked(api.fetchLLMModels).mockReturnValueOnce(pending.promise);
+    const dialog = await openNewProfile();
+    fireEvent.change(dialog.getByLabelText("API Key"), { target: { value: "first-test-key" } });
+    fireEvent.click(dialog.getByRole("button", { name: "API 모델 조회" }));
+    fireEvent.change(dialog.getByLabelText("API Key"), { target: { value: "second-test-key" } });
+    await act(async () => pending.resolve({ ok: true, model_details: [subscriptionModel] }));
+    expect(dialog.queryByRole("combobox", { name: "모델" })).not.toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "API 모델 조회" })).toBeEnabled();
+  });
+
+  it("shows the actual subscription program after testing and clears it when the requested program changes", async () => {
+    const dialog = await openNewProfile();
+    await loadSubscriptionModel(dialog);
+    fireEvent.click(dialog.getByRole("button", { name: "연결 확인" }));
+    const result = await dialog.findByRole("region", { name: "최근 연결 확인" });
+    expect(result).toHaveTextContent("Daybreak Blue");
+    expect(result).toHaveTextContent("gpt-6-sol");
+    expect(api.testLLM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auth_mode: "chatgpt_plan",
+        chatgpt_account_id: "account-id",
+        access_program_cyber: "",
+      }),
     );
-    fireEvent.click(screen.getByRole("button", { name: /기능 확인 프로필/ }));
-    const dialog = within(await screen.findByRole("dialog"));
-    fireEvent.keyDown(dialog.getByRole("combobox", { name: messages.llmPage.profile.effort.label }), {
-      key: "ArrowDown",
+    fireEvent.click(dialog.getByRole("switch", { name: "Daybreak 자동" }));
+    expect(dialog.queryByRole("region", { name: "최근 연결 확인" })).not.toBeInTheDocument();
+  });
+
+  it("does not display an in-flight test result for a changed configuration", async () => {
+    const pending = deferred<Awaited<ReturnType<typeof api.testLLM>>>();
+    vi.mocked(api.testLLM).mockReturnValueOnce(pending.promise);
+    const dialog = await openNewProfile();
+    await loadSubscriptionModel(dialog);
+    fireEvent.click(dialog.getByRole("button", { name: "연결 확인" }));
+    fireEvent.click(dialog.getByRole("switch", { name: "Daybreak 자동" }));
+    await act(async () =>
+      pending.resolve({
+        ok: true,
+        actual_model: "gpt-6-sol",
+        access_programs_present: true,
+        actual_access_program_cyber: "daybreak_blue",
+      }),
+    );
+    expect(dialog.queryByRole("region", { name: "최근 연결 확인" })).not.toBeInTheDocument();
+  });
+
+  it("preserves an unrecognized actual program returned by OpenAI instead of calling it absent", async () => {
+    vi.mocked(api.testLLM).mockResolvedValue({
+      ok: true,
+      actual_model: "gpt-6-sol",
+      access_programs_present: true,
+      actual_access_program_cyber: "future_program",
+      reply: "OK",
     });
-    expect(screen.queryByRole("option", { name: "max" })).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("option", { name: "none" }));
-    fireEvent.keyDown(dialog.getByRole("combobox", { name: "API 액세스 프로그램" }), { key: "ArrowDown" });
-    expect(screen.queryByRole("option", { name: "daybreak_red" })).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("option", { name: "daybreak_blue" }));
+    const dialog = await openNewProfile();
+    await loadSubscriptionModel(dialog);
+    fireEvent.click(dialog.getByRole("button", { name: "연결 확인" }));
+    const result = await dialog.findByRole("region", { name: "최근 연결 확인" });
+    expect(result).toHaveTextContent("future_program");
+    expect(result).not.toHaveTextContent("명시 없음");
+  });
+
+  it("preserves explicit none effort and the API program selector on an existing profile", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      savedProfile({ capabilities: { ...catalogCapabilities, source: "documentation" } }),
+    ]);
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    await choose(dialog.getByRole("combobox", { name: messages.llmPage.profile.effort.label }), "none");
+    expandAdvanced(dialog);
+    await choose(dialog.getByRole("combobox", { name: "API 액세스 프로그램" }), "daybreak_blue");
     fireEvent.click(dialog.getByRole("button", { name: "저장" }));
     await waitFor(() =>
       expect(api.saveLLMProfile).toHaveBeenCalledWith(
@@ -228,31 +371,93 @@ describe("ChatGPT model profile", () => {
     );
   });
 
-  it("labels unknown model capabilities without replacing its model or effort", async () => {
-    vi.mocked(api.llmProfiles).mockResolvedValue([
-      {
-        id: "20",
-        name: "미확인 모델",
-        model: "future-model",
-        reasoning_effort: "ultra",
-        auth_mode: "api_key",
-        connected: true,
-        rate_per_second: 0,
-        rate_per_minute: 0,
-        is_default: false,
-      },
-    ]);
-    await act(async () =>
-      render(
-        <NextIntlClientProvider locale="ko" messages={messages}>
-          <LLMPage />
-        </NextIntlClientProvider>,
+  it("preserves an explicit API program when selecting a different supported model", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([savedProfile({ access_program_cyber: "daybreak_blue" })]);
+    vi.mocked(api.fetchLLMModels).mockResolvedValue({
+      ok: true,
+      model_details: [
+        {
+          id: "gpt-6.1-sol",
+          name: "GPT-6.1 Sol",
+          capabilities: { ...catalogCapabilities, source: "documentation" },
+        },
+      ],
+    });
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.click(dialog.getByRole("button", { name: "모델 목록 새로고침" }));
+    await waitFor(() => expect(api.fetchLLMModels).toHaveBeenCalled());
+    await choose(dialog.getByRole("combobox", { name: "모델" }), "GPT-6.1 Sol");
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "gpt-6.1-sol", access_program_cyber: "daybreak_blue" }),
       ),
     );
-    fireEvent.click(screen.getByRole("button", { name: /미확인 모델/ }));
+  });
+
+  it("aligns Standard-only catalog display with the saved subscription request after refreshing an old profile", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      savedProfile({ auth_mode: "chatgpt_plan", chatgpt_account_id: account.id, api_key_hint: undefined }),
+    ]);
+    vi.mocked(api.chatgptModels).mockResolvedValue([
+      {
+        ...subscriptionModel,
+        capabilities: {
+          ...catalogCapabilities,
+          access_programs_cyber: ["standard"],
+          daybreak_available: false,
+        },
+      },
+    ]);
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
     const dialog = within(await screen.findByRole("dialog"));
-    expect(dialog.getByText(/모델 기능 호환성 미확인/)).toBeInTheDocument();
-    expect(dialog.getByLabelText("모델")).toHaveValue("future-model");
+    expect(dialog.getByText(/프로그램 지원 정보 미확인/)).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "모델 목록 새로고침" }));
+    await dialog.findByText(/^Standard ·/);
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ auth_mode: "chatgpt_plan", access_program_cyber: "standard" }),
+      ),
+    );
+  });
+
+  it("treats documentation gaps as advisory and preserves explicit API options", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      savedProfile({
+        reasoning_effort: "ultra",
+        access_program_cyber: "daybreak_red",
+        capabilities: { ...catalogCapabilities, source: "documentation" },
+      }),
+    ]);
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByRole("button", { name: "연결 확인" })).toBeEnabled();
+    expect(dialog.getByRole("button", { name: "저장" })).toBeEnabled();
+    fireEvent.click(dialog.getByRole("button", { name: "연결 확인" }));
+    await waitFor(() =>
+      expect(api.testLLM).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoning_effort: "ultra", access_program_cyber: "daybreak_red" }),
+      ),
+    );
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api.saveLLMProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoning_effort: "ultra", access_program_cyber: "daybreak_red" }),
+      ),
+    );
+  });
+
+  it("keeps an unknown saved model and effort editable without inferring capabilities", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([savedProfile({ model: "future-model", reasoning_effort: "ultra" })]);
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByRole("combobox", { name: "모델" })).toHaveTextContent("future-model");
     expect(dialog.getByRole("combobox", { name: messages.llmPage.profile.effort.label })).toHaveTextContent("ultra");
     fireEvent.click(dialog.getByRole("button", { name: "저장" }));
     await waitFor(() =>
@@ -260,5 +465,25 @@ describe("ChatGPT model profile", () => {
         expect.objectContaining({ model: "future-model", reasoning_effort: "ultra" }),
       ),
     );
+  });
+
+  it("keeps retired profiles visible and requires choosing a replacement model", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      savedProfile({ model: "legacy-model", configuration_error: "OpenAI 모델과 인증을 다시 선택해 주세요" }),
+    ]);
+    await showPage();
+    expect(screen.getByText("legacy-model")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getByRole("alert")).toHaveTextContent("OpenAI 모델과 인증을 다시 선택해 주세요");
+    expect(dialog.getByRole("button", { name: "저장" })).toBeDisabled();
+    expect(api.saveLLMProfile).not.toHaveBeenCalled();
+  });
+
+  it("disables activation of an API draft without a key", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([savedProfile({ connected: false, api_key_hint: undefined })]);
+    await showPage();
+    expect(screen.getByRole("button", { name: "활성으로 설정" })).toBeDisabled();
+    expect(api.activateLLMProfile).not.toHaveBeenCalled();
   });
 });

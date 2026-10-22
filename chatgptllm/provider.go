@@ -5,9 +5,7 @@ package chatgptllm
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"iter"
 	"net/http"
 	"strconv"
@@ -306,22 +304,5 @@ func Models(ctx context.Context, authorize Authorize, client *http.Client) ([]Mo
 	if resp.StatusCode != http.StatusOK {
 		return nil, httpFailure(resp)
 	}
-	var catalog struct {
-		Models []struct {
-			Slug          string `json:"slug"`
-			DisplayName   string `json:"display_name"`
-			Visibility    string `json:"visibility"`
-			ContextWindow int    `json:"context_window"`
-		} `json:"models"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&catalog); err != nil || catalog.Models == nil {
-		return nil, failure("invalid_catalog", "ChatGPT 모델 목록을 읽을 수 없습니다", err)
-	}
-	out := make([]Model, 0, len(catalog.Models))
-	for _, model := range catalog.Models {
-		if model.Visibility == "list" && model.Slug != "" {
-			out = append(out, Model{ID: model.Slug, Name: model.DisplayName, ContextWindow: model.ContextWindow, Capabilities: Capabilities(model.Slug, "chatgpt_plan")})
-		}
-	}
-	return out, nil
+	return DecodeModels(resp.Body, "chatgpt_plan")
 }

@@ -2177,7 +2177,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSpace(req.APIKey)
-	if key == "" && req.ProfileID != nil && s.m.pg != nil {
+	if key == "" && req.ProfileID != nil && s.m != nil && s.m.pg != nil {
 		p, err := s.m.pg.ProfileByID(*req.ProfileID)
 		if err != nil {
 			writeErr(w, 500, "프로필을 읽을 수 없습니다")
@@ -2224,23 +2224,16 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": fmt.Sprintf("OpenAI 모델 목록 요청 실패 (HTTP %d)", response.StatusCode)})
 		return
 	}
-	var parsed struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&parsed); err != nil {
+	details, err := chatgptllm.DecodeModels(response.Body, "api_key")
+	if err != nil {
 		writeJSON(w, 200, map[string]any{"ok": false, "error": "모델 목록 응답을 읽을 수 없습니다"})
 		return
 	}
-	models := make([]string, 0, len(parsed.Data))
-	details := make([]chatgptllm.Model, 0, len(parsed.Data))
-	for _, model := range parsed.Data {
-		if model.ID != "" {
-			models = append(models, model.ID)
-			details = append(details, chatgptllm.Model{ID: model.ID, Name: model.ID, Capabilities: chatgptllm.Capabilities(model.ID, "api_key")})
-		}
+	models := make([]string, 0, len(details))
+	for _, model := range details {
+		models = append(models, model.ID)
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"ok": true, "models": models, "model_details": details})
 }
 

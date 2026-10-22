@@ -50,8 +50,8 @@ func TestDaybreakOptionsAndObservedSelection(t *testing.T) {
 		})
 	}
 	for _, model := range []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"} {
-		if err := ValidateOptions(model, "api_key", "medium", "daybreak_red"); err == nil {
-			t.Errorf("invalid red accepted for %s", model)
+		if contains(Capabilities(model, "api_key").AccessProgramsCyber, "daybreak_red") {
+			t.Errorf("API documentation incorrectly advertises Red for %s", model)
 		}
 	}
 	if _, err := New(Config{Model: "catalog-model", Authorize: auth, AccessProgramCyber: "daybreak_blue"}); err == nil {
@@ -77,7 +77,7 @@ func TestSIWCCatalogDaybreakModelPassesWithoutAccessOption(t *testing.T) {
 	if err != nil || len(models) != 1 {
 		t.Fatalf("models=%+v err=%v", models, err)
 	}
-	if models[0].Capabilities.DaybreakAvailable {
+	if models[0].Capabilities.DaybreakAvailable != nil {
 		t.Fatal("catalog ID falsely asserted explicit-option support")
 	}
 	p, err := New(Config{Model: models[0].ID, Authorize: auth, HTTPClient: client, MaxRetries: -1})
@@ -194,7 +194,7 @@ func TestResponseMetadataNullAbsentAndZeroUsage(t *testing.T) {
 func TestDocumentedReasoningOptionsPreserveDefaults(t *testing.T) {
 	for _, model := range []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"} {
 		c := Capabilities(model, "api_key")
-		if !c.Known || c.CheckedAt != "2026-10-21" {
+		if !c.Known || c.CheckedAt != capabilityCheckedAt {
 			t.Fatalf("capability snapshot %+v", c)
 		}
 		for _, effort := range append([]string{""}, c.ReasoningEfforts...) {
@@ -205,8 +205,8 @@ func TestDocumentedReasoningOptionsPreserveDefaults(t *testing.T) {
 	}
 	for _, model := range []string{"gpt-6.1-sol", "gpt-6-astra"} {
 		for _, effort := range []string{"none", "minimal"} {
-			if err := ValidateOptions(model, "api_key", effort, ""); err == nil {
-				t.Fatalf("unsupported effort %s on %s", effort, model)
+			if contains(Capabilities(model, "api_key").ReasoningEfforts, effort) {
+				t.Fatalf("API documentation incorrectly advertises effort %s on %s", effort, model)
 			}
 		}
 	}
@@ -246,7 +246,7 @@ func TestQuotaErrorHookRunsBeforeConsumerStopsOnTerminalUsage(t *testing.T) {
 }
 
 func TestCatalogAndUnknownModelEffortsAreNotRestrictedByAPISnapshot(t *testing.T) {
-	for _, cfg := range []Config{{Model: "gpt-daybreak-blue-latest", Authorize: auth, ReasoningEffort: "ultra"}, {Model: "gpt-6.1-sol", Authorize: auth, ReasoningEffort: "ultra"}, {Model: "future-model", APIKey: "test-secret", ReasoningEffort: "ultra"}} {
+	for _, cfg := range []Config{{Model: "gpt-daybreak-blue-latest", Authorize: auth, ReasoningEffort: "ultra"}, {Model: "gpt-6.1-sol", Authorize: auth, ReasoningEffort: "ultra"}, {Model: "future-model", APIKey: "test-secret", ReasoningEffort: "ultra"}, {Model: "gpt-6.1-sol", APIKey: "test-secret", ReasoningEffort: "ultra"}} {
 		t.Run(cfg.Model+authMode(cfg.APIKey), func(t *testing.T) {
 			cfg.HTTPClient = fakeClient(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -273,7 +273,7 @@ func TestCatalogAndUnknownModelEffortsAreNotRestrictedByAPISnapshot(t *testing.T
 			}
 		})
 	}
-	if err := ValidateOptions("gpt-6.1-sol", "api_key", "ultra", ""); err == nil {
-		t.Fatal("known API contract constraint lost")
+	if err := ValidateOptions("gpt-6.1-sol", "api_key", "ultra", "daybreak_red"); err != nil {
+		t.Fatal("static API documentation blocked account-specific options", err)
 	}
 }
