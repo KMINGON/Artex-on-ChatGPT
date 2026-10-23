@@ -13,21 +13,22 @@ import (
 // ---------- LLM profiles ----------
 
 type LLMProfile struct {
-	ConfigurationError string  `json:"configuration_error,omitempty"`
-	APIKeySet          bool    `json:"-"`
-	AuthMode           string  `json:"auth_mode"`
-	ChatGPTAccountID   string  `json:"chatgpt_account_id,omitempty"`
-	AccessProgramCyber string  `json:"access_program_cyber,omitempty"`
-	ID                 int64   `json:"id"`
-	Name               string  `json:"name"`
-	Format             string  `json:"-"`
-	BaseURL            string  `json:"-"`
-	Proxy              string  `json:"proxy,omitempty"` // LLM 出站代理(http/https/socks5);空=用环境变量
-	Model              string  `json:"model"`
-	APIKey             string  `json:"-"` // never serialized to UI
-	APIKeyHint         string  `json:"api_key_hint,omitempty"`
-	RatePerSecond      float64 `json:"rate_per_second"`
-	RatePerMinute      float64 `json:"rate_per_minute"`
+	ConfigurationError string              `json:"configuration_error,omitempty"`
+	APIKeySet          bool                `json:"-"`
+	AuthMode           string              `json:"auth_mode"`
+	ChatGPTAccountID   string              `json:"chatgpt_account_id,omitempty"`
+	AccessProgramCyber string              `json:"access_program_cyber,omitempty"`
+	ConnectionCheck    *LLMConnectionCheck `json:"connection_check,omitempty"`
+	ID                 int64               `json:"id"`
+	Name               string              `json:"name"`
+	Format             string              `json:"-"`
+	BaseURL            string              `json:"-"`
+	Proxy              string              `json:"proxy,omitempty"` // LLM 出站代理(http/https/socks5);空=用环境变量
+	Model              string              `json:"model"`
+	APIKey             string              `json:"-"` // never serialized to UI
+	APIKeyHint         string              `json:"api_key_hint,omitempty"`
+	RatePerSecond      float64             `json:"rate_per_second"`
+	RatePerMinute      float64             `json:"rate_per_minute"`
 	// ContextWindowK is the model's context window in K tokens, used to size
 	// compaction thresholds. 0 = use a 200K default; capped at 1000 (1M).
 	ContextWindowK int `json:"context_window_k"`
@@ -58,6 +59,14 @@ type LLMProfile struct {
 	Retry RetryOverride `json:"retry"`
 }
 
+// LLMConnectionCheck is display-only history from the settings UI. It never
+// authorizes a model or changes the program sent by the execution engine.
+type LLMConnectionCheck struct {
+	Model              string    `json:"model"`
+	AccessProgramCyber string    `json:"access_program_cyber,omitempty"`
+	CheckedAt          time.Time `json:"checked_at"`
+}
+
 // RetryOverride exposes the adapter retry budget. Empty and Stream remain only
 // to read legacy columns; editing a profile never changes those stored values.
 type RetryOverride struct {
@@ -69,18 +78,22 @@ type RetryOverride struct {
 // profileCols is the read column list (hint variant, no api key) shared by the
 // list query; profileColsKey is the same with api_key for the single-row loads.
 const profileRetryCols = `COALESCE(retry_connect_attempts,0),COALESCE(retry_connect_interval_ms,0),COALESCE(retry_empty_attempts,0),COALESCE(retry_empty_interval_ms,0),COALESCE(retry_stream_attempts,0),COALESCE(retry_stream_interval_ms,0)`
-const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(TRIM(COALESCE(api_key,'')) <> ''),access_program_cyber`
-const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(TRIM(COALESCE(api_key,'')) <> ''),access_program_cyber`
+const profileCols = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key_hint,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(TRIM(COALESCE(api_key,'')) <> ''),access_program_cyber,connection_check`
+const profileColsKey = `id,name,format,COALESCE(base_url,''),COALESCE(proxy,''),model,COALESCE(api_key,''),rate_per_second,rate_per_minute,context_window_k,COALESCE(reasoning_effort,''),is_default,priority,pool_exclude,COALESCE(thinking_type,''),COALESCE(streaming,true),COALESCE(max_tokens,0),COALESCE(max_tokens_field,''),COALESCE(session_header_key,''),` + profileRetryCols + `,auth_mode,chatgpt_account_id,(TRIM(COALESCE(api_key,'')) <> ''),access_program_cyber,connection_check`
 
 // scanProfile reads one row in the profileCols / profileColsKey column order. The
 // 7th column lands in APIKeyHint or APIKey depending on which list the caller used.
 func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile) error {
+	var connectionCheck []byte
 	err := sc.Scan(&p.ID, &p.Name, &p.Format, &p.BaseURL, &p.Proxy, &p.Model, into,
 		&p.RatePerSecond, &p.RatePerMinute, &p.ContextWindowK, &p.ReasoningEffort, &p.IsDefault, &p.Priority, &p.PoolExclude, &p.ThinkingType, &p.Streaming,
 		&p.MaxTokens, &p.MaxTokensField, &p.SessionHeaderKey,
 		&p.Retry.Connect.Attempts, &p.Retry.Connect.IntervalMS,
 		&p.Retry.Empty.Attempts, &p.Retry.Empty.IntervalMS,
-		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS, &p.AuthMode, &p.ChatGPTAccountID, &p.APIKeySet, &p.AccessProgramCyber)
+		&p.Retry.Stream.Attempts, &p.Retry.Stream.IntervalMS, &p.AuthMode, &p.ChatGPTAccountID, &p.APIKeySet, &p.AccessProgramCyber, &connectionCheck)
+	if err == nil && len(connectionCheck) > 0 {
+		err = json.Unmarshal(connectionCheck, &p.ConnectionCheck)
+	}
 	p.ConfigurationError = p.UnsupportedReason()
 	return err
 }
@@ -196,21 +209,25 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 		hint = "…" + p.APIKey[len(p.APIKey)-4:]
 	}
 	r := p.Retry.Clamped()
+	connectionCheck, err := json.Marshal(p.ConnectionCheck)
+	if err != nil {
+		return 0, err
+	}
 	if p.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,max_tokens,retry_connect_attempts,retry_connect_interval_ms,auth_mode,chatgpt_account_id,access_program_cyber)
-VALUES ($1,'openai-responses',NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
-			p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.AccessProgramCyber).Scan(&id)
+		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,max_tokens,retry_connect_attempts,retry_connect_interval_ms,auth_mode,chatgpt_account_id,access_program_cyber,connection_check)
+VALUES ($1,'openai-responses',NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+			p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.AccessProgramCyber, connectionCheck).Scan(&id)
 		return id, err
 	}
 	// Retired option columns are intentionally untouched. The user explicitly
 	// replaces the connection, while historical values remain available for rollback.
-	_, err := d.Exec(`UPDATE llm_profiles SET name=$1,format='openai-responses',base_url=NULL,proxy=NULLIF($2,''),model=$3,
+	_, err = d.Exec(`UPDATE llm_profiles SET name=$1,format='openai-responses',base_url=NULL,proxy=NULLIF($2,''),model=$3,
  api_key=CASE WHEN $4='' AND $15='api_key' THEN api_key ELSE NULLIF($4,'') END,
  api_key_hint=CASE WHEN $4='' AND $15='api_key' THEN api_key_hint ELSE NULLIF($5,'') END,
  rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,max_tokens=$12,
- retry_connect_attempts=$13,retry_connect_interval_ms=$14,auth_mode=$15,chatgpt_account_id=$16,access_program_cyber=$18 WHERE id=$17`,
-		p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.ID, p.AccessProgramCyber)
+ retry_connect_attempts=$13,retry_connect_interval_ms=$14,auth_mode=$15,chatgpt_account_id=$16,access_program_cyber=$18,connection_check=$19 WHERE id=$17`,
+		p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.ID, p.AccessProgramCyber, connectionCheck)
 	return p.ID, err
 }
 

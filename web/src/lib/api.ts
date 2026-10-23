@@ -968,6 +968,7 @@ export const api = {
     profile_id?: number;
     auth_mode?: LLMAuthMode;
     chatgpt_account_id?: string;
+    max_tokens?: number;
   }) =>
     post<{
       ok: boolean;
@@ -978,6 +979,7 @@ export const api = {
       actual_model?: string;
       actual_access_program_cyber?: string;
       access_programs_present?: boolean;
+      checked_at?: string;
     }>("/llm/test", params),
   llmProfiles: () => get<{ profiles: LLMProfile[] }>("/llm/profiles").then((r) => arr(r.profiles)),
   saveLLMProfile: (p: {
@@ -992,6 +994,7 @@ export const api = {
     rate_per_minute?: number;
     context_window_k?: number;
     access_program_cyber?: string;
+    connection_check?: LLMProfile["connection_check"];
     reasoning_effort?: string; // ""(不发送)|"low"|"medium"|"high"|"xhigh"|"max"
     priority?: number; // 轮询顺位，越大越先用
     pool_exclude?: boolean; // true=不作为故障转移目标

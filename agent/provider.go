@@ -296,7 +296,7 @@ func TestConnection(ctx context.Context, c Config) (lat time.Duration, reply str
 	req := llm.CompletionRequest{
 		System:    []string{"Reply with exactly OK, without explanation."},
 		Messages:  []llm.Message{llm.UserText("ping")},
-		MaxTokens: 8192,
+		MaxTokens: c.MaxTokens,
 	}
 	msg, stop, _, completeErr := prov.Complete(ctx, req)
 	err = completeErr

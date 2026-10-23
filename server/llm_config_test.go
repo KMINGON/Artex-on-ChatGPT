@@ -5,10 +5,21 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 )
+
+func TestProfileDTOIncludesObservedConnectionWithoutChangingRequest(t *testing.T) {
+	p := &db.LLMProfile{Model: "requested-model", ConnectionCheck: &db.LLMConnectionCheck{
+		Model: "resolved-model", AccessProgramCyber: "daybreak_blue", CheckedAt: time.Now().UTC(),
+	}}
+	dto := llmProfileDTO(p)
+	if dto.ConnectionCheck == nil || *dto.ConnectionCheck != *p.ConnectionCheck || dto.Model != p.Model || dto.AccessProgramCyber != "" {
+		t.Fatalf("connection display metadata lost or applied to request: %+v", dto)
+	}
+}
 
 func TestSavedAPIKeyRejectsUnsupportedEnvironmentConnection(t *testing.T) {
 	for _, cfg := range []agent.Config{

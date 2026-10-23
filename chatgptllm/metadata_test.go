@@ -172,14 +172,25 @@ func TestFailedUsagePreservedAtomicallyAndRetriesCountEachReportOnce(t *testing.
 }
 
 func TestResponseMetadataNullAbsentAndZeroUsage(t *testing.T) {
-	for _, raw := range []string{`{}`, `{"access_programs":null}`, `{"usage":{"input_tokens":0,"output_tokens":0}}`} {
+	for _, tc := range []struct {
+		raw     string
+		present bool
+		program string
+	}{
+		{`{}`, false, ""},
+		{`{"access_programs":null}`, true, "standard"},
+		{`{"access_programs":{}}`, true, ""},
+		{`{"access_programs":{"cyber":"standard"}}`, true, "standard"},
+		{`{"access_programs":{"cyber":"daybreak_blue"}}`, true, "daybreak_blue"},
+		{`{"usage":{"input_tokens":0,"output_tokens":0}}`, false, ""},
+	} {
 		var r response
-		if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		if err := json.Unmarshal([]byte(tc.raw), &r); err != nil {
 			t.Fatal(err)
 		}
 		meta := r.metadata()
-		if meta.AccessProgramsPresent != (raw == `{"access_programs":null}`) || meta.UsageReceived != (r.Usage != nil) {
-			t.Fatalf("%s => %+v", raw, meta)
+		if meta.AccessProgramsPresent != tc.present || meta.AccessProgramCyber != tc.program || meta.UsageReceived != (r.Usage != nil) {
+			t.Fatalf("%s => %+v", tc.raw, meta)
 		}
 	}
 	calls := 0

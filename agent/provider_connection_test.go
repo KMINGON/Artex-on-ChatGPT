@@ -63,9 +63,34 @@ func TestConnectionUsesOneToolFreeResponsesRequest(t *testing.T) {
 	defer srv.Close()
 	cfg := apiFixtureConfig(t, srv)
 	cfg.ReasoningEffort = "high"
+	cfg.MaxTokens = 8192
 	_, reply, err := TestConnection(context.Background(), cfg)
 	if err != nil || reply != "OK" || calls.Load() != 1 {
 		t.Fatalf("reply=%q err=%v calls=%d", reply, err, calls.Load())
+	}
+}
+
+func TestConnectionUsesConfiguredOutputLimit(t *testing.T) {
+	for _, limit := range []int{0, 256} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+				}
+				got, present := req["max_output_tokens"]
+				if (limit == 0 && present) || (limit > 0 && got != float64(limit)) {
+					t.Errorf("max_output_tokens=%v present=%v, configured=%d", got, present, limit)
+				}
+				writeCompleted(w, textOutput("OK"))
+			}))
+			defer srv.Close()
+			cfg := apiFixtureConfig(t, srv)
+			cfg.MaxTokens = limit
+			if _, _, err := TestConnection(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

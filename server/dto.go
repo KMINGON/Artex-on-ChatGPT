@@ -591,6 +591,7 @@ type LLMProfileDTO struct {
 	AuthMode           string                       `json:"auth_mode"`
 	ChatGPTAccountID   string                       `json:"chatgpt_account_id,omitempty"`
 	AccessProgramCyber string                       `json:"access_program_cyber,omitempty"`
+	ConnectionCheck    *db.LLMConnectionCheck       `json:"connection_check,omitempty"`
 	Capabilities       chatgptllm.ModelCapabilities `json:"capabilities"`
 	Connected          bool                         `json:"connected"`
 	PlanBlocked        bool                         `json:"plan_blocked,omitempty"`
@@ -616,6 +617,7 @@ func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
 	return LLMProfileDTO{
 		ConfigurationError: p.UnsupportedReason(),
 		AccessProgramCyber: p.AccessProgramCyber,
+		ConnectionCheck:    p.ConnectionCheck,
 		Capabilities:       chatgptllm.Capabilities(p.Model, p.AuthMode),
 		AuthMode:           p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: p.APIKeySet || p.APIKeyHint != "" || p.APIKey != "",
 		ID:              i64s(p.ID),

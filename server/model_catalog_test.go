@@ -109,7 +109,7 @@ func TestSubscriptionStandardProfileSaveReloadAndRuntimeConfig(t *testing.T) {
 func TestAPIProfilePreservesOptionsBeyondDocumentationSnapshot(t *testing.T) {
 	pg := profileSelectionDB(t)
 	s := &Server{m: &Manager{pg: pg, dir: t.TempDir()}, provByProfile: map[int64]*provEntry{}}
-	id := saveProfileForTest(t, s, `{"name":"account-options","model":"gpt-6.1-sol","auth_mode":"api_key","api_key":"fixture-key","access_program_cyber":"daybreak_blue","reasoning_effort":"ultra"}`)
+	id := saveProfileForTest(t, s, `{"name":"account-options","model":"gpt-6.1-sol","auth_mode":"api_key","api_key":"fixture-key","access_program_cyber":"daybreak_blue","reasoning_effort":"ultra","connection_check":{"model":"resolved-model","access_program_cyber":"daybreak_blue","checked_at":"2026-10-23T01:02:03Z"}}`)
 	p, err := pg.ProfileByID(id)
 	if err != nil || p == nil {
 		t.Fatalf("profile reload: %v", err)
@@ -121,5 +121,25 @@ func TestAPIProfilePreservesOptionsBeyondDocumentationSnapshot(t *testing.T) {
 	dto := llmProfileDTO(p)
 	if dto.ReasoningEffort != "ultra" || dto.Capabilities.Source != "documentation" {
 		t.Fatal("stored API setting was replaced or static capabilities claimed account access")
+	}
+	w := httptest.NewRecorder()
+	s.pgListProfiles(w, httptest.NewRequest("GET", "/api/llm/profiles", nil))
+	var listed struct {
+		Profiles []LLMProfileDTO `json:"profiles"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &listed) != nil || len(listed.Profiles) != 1 {
+		t.Fatalf("list profiles: %d %s", w.Code, w.Body.String())
+	}
+	check := listed.Profiles[0].ConnectionCheck
+	if check == nil || check.Model != "resolved-model" || check.AccessProgramCyber != "daybreak_blue" || check.CheckedAt.Format(time.RFC3339) != "2026-10-23T01:02:03Z" {
+		t.Fatalf("saved connection observation lost on list: %+v", check)
+	}
+	if strings.Contains(w.Body.String(), "fixture-key") || cfg.Model != "gpt-6.1-sol" {
+		t.Fatal("connection observation exposed credentials or replaced requested model")
+	}
+	saveProfileForTest(t, s, fmt.Sprintf(`{"id":%d,"name":"account-options","model":"gpt-6.1-sol","auth_mode":"api_key","access_program_cyber":"standard","reasoning_effort":"ultra"}`, id))
+	p, err = pg.ProfileByID(id)
+	if err != nil || p == nil || p.ConnectionCheck != nil || p.AccessProgramCyber != "standard" {
+		t.Fatalf("saving without a new observation retained stale metadata: %+v, %v", p, err)
 	}
 }

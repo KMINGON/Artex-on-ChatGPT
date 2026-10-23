@@ -1540,6 +1540,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		ReasoningEffort    string `json:"reasoning_effort"`
 		AccessProgramCyber string `json:"access_program_cyber"`
 		ProfileID          *int64 `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
+		MaxTokens          int    `json:"max_tokens"`
 	}
 	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1553,6 +1554,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
 	cfg.ReasoningEffort = req.ReasoningEffort
 	cfg.AccessProgramCyber = req.AccessProgramCyber
+	cfg.MaxTokens = max(0, req.MaxTokens)
 	if req.ProfileID != nil {
 		p, err := s.m.pg.ProfileByID(*req.ProfileID)
 		if err != nil || p == nil {
@@ -1606,6 +1608,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "latency_ms": lat.Milliseconds(), "model": cfg.Model, "reply": truncateReply(reply),
 		"actual_model": observed.Model, "actual_access_program_cyber": observed.AccessProgramCyber,
 		"access_programs_present": observed.AccessProgramsPresent,
+		"checked_at":              time.Now().UTC(),
 	})
 }
 

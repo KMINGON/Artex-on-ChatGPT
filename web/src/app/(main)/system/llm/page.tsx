@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import {
+  CheckIcon,
   Loader2Icon,
   PlugZapIcon,
   PlusIcon,
@@ -51,6 +52,18 @@ const PROGRAM_LABELS: Record<string, string> = {
 };
 const fromStore = (v?: string) => (v ? v : NONE);
 const toStore = (v: string) => (v === NONE ? "" : v);
+
+function programLabel(program?: string) {
+  return program ? PROGRAM_LABELS[program] || program : "프로그램 미확인";
+}
+
+function catalogProgramLabel(model: ChatGPTModel) {
+  const c = model.capabilities;
+  if (c?.source !== "account_catalog" || !c.access_programs_known) return "미확인";
+  const programs = c.access_programs_cyber ?? [];
+  if (programs.includes("daybreak_blue") || programs.includes("daybreak_red")) return "Daybreak";
+  return programs.includes("standard") ? "Standard" : "미확인";
+}
 
 function cooldownText(secs: number) {
   if (secs <= 0) return "";
@@ -328,6 +341,10 @@ function ProfileSheet({
   const accessPrograms = capabilities?.access_programs_cyber ?? [];
   const supportsBlue = accountProgramsKnown && accessPrograms.includes("daybreak_blue");
   const supportsStandard = accountProgramsKnown && accessPrograms.includes("standard");
+  const keepSavedStandard =
+    profile?.auth_mode === "chatgpt_plan" &&
+    profile.access_program_cyber === "standard" &&
+    accessProgram === "standard";
   React.useEffect(() => {
     if (supportsStandard && !supportsBlue && accessProgram === NONE) setAccessProgram("standard");
   }, [supportsStandard, supportsBlue, accessProgram]);
@@ -341,11 +358,26 @@ function ProfileSheet({
       ...(accessProgram !== NONE ? [accessProgram] : []),
     ]),
   ];
-  const fingerprint = JSON.stringify([authMode, accountId, model, apiKey, proxy, effort, accessProgram]);
+  const outputLimit = isChatGPT ? 0 : Math.max(0, Number(maxTokens) || 0);
+  const fingerprint = JSON.stringify([
+    authMode,
+    accountId,
+    accountReady,
+    model,
+    apiKey,
+    proxy,
+    effort,
+    accessProgram,
+    outputLimit,
+  ]);
   const currentFingerprint = React.useRef(fingerprint);
   currentFingerprint.current = fingerprint;
   const visibleTest = testResult?.fingerprint === fingerprint ? testResult : null;
   const actualProgram = visibleTest?.result.actual_access_program_cyber ?? "";
+  const connected = Boolean(visibleTest?.result.ok);
+  const connectionLabel = connected
+    ? `${visibleTest?.result.actual_model || visibleTest?.result.model || model} · ${programLabel(actualProgram)} · 연결됨`
+    : "연결 확인";
   const credentialsReady = isChatGPT ? accountReady : Boolean(apiKey.trim() || keyHint);
   const profileId = profile ? Number(profile.id) : undefined;
   const catalogIdentity = JSON.stringify([authMode, accountId, apiKey, proxy, profileId]);
@@ -436,7 +468,7 @@ function ProfileSheet({
     const c = selected?.capabilities;
     if (!nameEdited.current) setName(`${selected?.name || id} · ${isChatGPT ? "ChatGPT" : "API"}`);
     setCw(selected?.context_window ? String(Math.floor(selected.context_window / 1000)) : "0");
-    if (isChatGPT)
+    if (isChatGPT && !keepSavedStandard)
       setAccessProgram(
         c?.source === "account_catalog" &&
           c.access_programs_known &&
@@ -448,14 +480,14 @@ function ProfileSheet({
   }
 
   async function testConnection() {
-    if (testing || !model || !credentialsReady || effortUnsupported || accessUnsupported) return;
+    if (testing || saving || !model.trim() || !credentialsReady || effortUnsupported || accessUnsupported) return;
     const request = ++testRequest.current;
     const snapshot = fingerprint;
     setTesting(true);
     setTestResult(null);
     try {
       const result = await api.testLLM({
-        model,
+        model: model.trim(),
         api_key: isChatGPT ? "" : apiKey,
         proxy,
         reasoning_effort: toStore(effort),
@@ -463,15 +495,16 @@ function ProfileSheet({
         profile_id: profileId,
         auth_mode: authMode,
         chatgpt_account_id: isChatGPT ? accountId : undefined,
+        max_tokens: outputLimit,
       });
       if (request !== testRequest.current || snapshot !== currentFingerprint.current) return;
-      setTestResult({ result, fingerprint: snapshot, checkedAt: new Date().toLocaleString("ko-KR") });
+      setTestResult({ result, fingerprint: snapshot, checkedAt: result.checked_at || new Date().toISOString() });
     } catch (e) {
       if (request === testRequest.current && snapshot === currentFingerprint.current)
         setTestResult({
           result: { ok: false, error: (e as Error).message },
           fingerprint: snapshot,
-          checkedAt: new Date().toLocaleString("ko-KR"),
+          checkedAt: new Date().toISOString(),
         });
     } finally {
       if (request === testRequest.current) setTesting(false);
@@ -487,7 +520,8 @@ function ProfileSheet({
       toast.error(t("profile.toast.nameModelRequired"));
       return;
     }
-    if (saving || effortUnsupported || accessUnsupported) return;
+    if (saving || testing || !credentialsReady || !visibleTest?.result.ok || effortUnsupported || accessUnsupported)
+      return;
     setSaving(true);
     try {
       const { id, activated } = await api.saveLLMProfile({
@@ -503,9 +537,14 @@ function ProfileSheet({
         context_window_k: Number(cw) || 0,
         reasoning_effort: toStore(effort),
         access_program_cyber: toStore(accessProgram),
+        connection_check: {
+          model: visibleTest?.result.actual_model || visibleTest?.result.model || model.trim(),
+          access_program_cyber: actualProgram,
+          checked_at: visibleTest.checkedAt,
+        },
         priority: isChatGPT ? 0 : Number(priority) || 0,
         pool_exclude: isChatGPT || poolExclude,
-        max_tokens: isChatGPT ? 0 : Math.max(0, Number(maxTokens) || 0),
+        max_tokens: outputLimit,
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
         retry,
@@ -592,7 +631,7 @@ function ProfileSheet({
                 value={accountId || NONE}
                 onValueChange={(value) => {
                   setAccountId(toStore(value));
-                  setAccessProgram(NONE);
+                  if (!keepSavedStandard) setAccessProgram(NONE);
                   setModel("");
                   setModels([]);
                   setModelsLoaded(false);
@@ -679,6 +718,7 @@ function ProfileSheet({
                     {models.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
                         {item.name || item.id}
+                        {isChatGPT && <Badge variant="outline">{catalogProgramLabel(item)}</Badge>}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -717,6 +757,24 @@ function ProfileSheet({
             )}
             {!isChatGPT && !credentialsReady && (
               <p className="text-muted-foreground text-xs">API Key를 입력한 뒤 모델을 조회하세요.</p>
+            )}
+            {!isChatGPT && model && (
+              <div className="grid gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={testing || saving || !credentialsReady || effortUnsupported || accessUnsupported}
+                  onClick={() => void testConnection()}
+                >
+                  {testing ? <Loader2Icon className="animate-spin" /> : <ZapIcon />}
+                  Daybreak 확인
+                </Button>
+                <p className="text-muted-foreground text-xs">
+                  {accessProgram === NONE
+                    ? "사용 가능한 프로그램을 자동 선택합니다. 연결 확인에서도 실제 프로그램을 확인할 수 있습니다."
+                    : `현재 고급 설정의 ${programLabel(toStore(accessProgram))} 프로그램으로 연결을 확인합니다.`}
+                </p>
+              </div>
             )}
           </div>
 
@@ -766,28 +824,21 @@ function ProfileSheet({
           {isChatGPT && (
             <div className="grid gap-2 rounded-lg border p-3">
               <Label>프로그램</Label>
-              {supportsBlue && supportsStandard ? (
-                <>
-                  <div className="flex items-center justify-between gap-3">
-                    <Label htmlFor="p-daybreak">{accessProgram === "standard" ? "Standard" : "Daybreak 자동"}</Label>
-                    <Switch
-                      id="p-daybreak"
-                      aria-label="Daybreak 자동"
-                      checked={accessProgram === NONE}
-                      onCheckedChange={(checked) => setAccessProgram(checked ? NONE : "standard")}
-                    />
-                  </div>
-                  <p className="text-muted-foreground text-xs">
-                    켜면 서버가 프로그램을 자동 선택하고, 끄면 Standard를 요청합니다.
-                  </p>
-                </>
-              ) : supportsBlue ? (
-                <p className="text-sm">Daybreak 자동 · 이 계정의 모델 목록에는 Blue만 제공됩니다.</p>
+              {supportsBlue ? (
+                <p className="text-sm">Daybreak · 계정 모델 목록에서 지원하며, 연결 확인에서 실제 적용을 확인합니다.</p>
               ) : supportsStandard ? (
-                <p className="text-sm">Standard · 이 계정의 모델 목록에는 Standard만 제공됩니다.</p>
+                <p className="text-sm">Standard · 계정 모델 목록에서 Standard만 제공됩니다.</p>
               ) : (
                 <p className="text-muted-foreground text-sm">
                   프로그램 지원 정보 미확인{accessProgram === "standard" ? " · 저장된 설정: Standard" : ""}
+                </p>
+              )}
+              {supportsBlue && accessProgram === "standard" && !accessUnsupported && (
+                <p className="text-muted-foreground text-xs">
+                  저장된 설정은 Standard입니다.{" "}
+                  <button type="button" className="underline" onClick={() => setAccessProgram(NONE)}>
+                    자동 선택으로 변경
+                  </button>
                 </p>
               )}
             </div>
@@ -802,26 +853,26 @@ function ProfileSheet({
           )}
           {visibleTest && (
             <section aria-label="최근 연결 확인" className="grid gap-1 rounded-lg border p-3 text-sm">
-              <p className="font-medium">최근 연결 확인 · {visibleTest.result.ok ? "성공" : "실패"}</p>
               {visibleTest.result.ok ? (
                 <>
-                  <p>응답 모델: {visibleTest.result.actual_model || visibleTest.result.model || model}</p>
-                  <p>
-                    실제 프로그램:{" "}
-                    {visibleTest.result.access_programs_present
-                      ? PROGRAM_LABELS[actualProgram] || actualProgram || "명시 없음 (서버 기본값)"
-                      : "정보 미제공"}
+                  <p className="font-medium">{connectionLabel}</p>
+                  <p className="text-muted-foreground text-xs">
+                    응답 시간: {((visibleTest.result.latency_ms ?? 0) / 1000).toFixed(1)}초
                   </p>
-                  <p>
-                    응답 시간: {((visibleTest.result.latency_ms ?? 0) / 1000).toFixed(1)}초 · {visibleTest.result.reply}
-                  </p>
+                  {supportsBlue && accessProgram === NONE && actualProgram === "standard" && (
+                    <p className="text-muted-foreground text-xs">
+                      계정 모델 목록은 Daybreak를 지원하지만, 이번 응답은 Standard로 반환되었습니다.
+                    </p>
+                  )}
                 </>
               ) : (
                 <p role="alert" className="text-destructive">
                   {visibleTest.result.error || "연결을 확인하지 못했습니다."}
                 </p>
               )}
-              <p className="text-muted-foreground text-xs">{visibleTest.checkedAt} 확인 · 해당 요청의 결과입니다.</p>
+              <p className="text-muted-foreground text-xs">
+                {new Date(visibleTest.checkedAt).toLocaleString("ko-KR")} 확인 · 해당 요청의 결과입니다.
+              </p>
             </section>
           )}
           <details className="rounded-lg border p-3">
@@ -954,27 +1005,49 @@ function ProfileSheet({
         <div className="flex flex-wrap gap-2 border-t px-4 py-3">
           <Button
             variant="outline"
+            className="h-auto min-h-9 w-full whitespace-normal break-all py-2"
+            aria-label="연결 확인"
             onClick={() => void testConnection()}
             disabled={testing || saving || !model || !credentialsReady || effortUnsupported || accessUnsupported}
           >
-            {testing ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />}
-            {testing ? "연결 확인 중…" : "연결 확인"}
+            {testing && <Loader2Icon className="animate-spin" />}
+            {!testing && (connected ? <CheckIcon /> : <PlugZapIcon />)}
+            {testing ? "연결 확인 중…" : connectionLabel}
           </Button>
           <Button
             variant="outline"
             onClick={() => void save()}
-            disabled={saving || !model || effortUnsupported || accessUnsupported || (isChatGPT && !accountReady)}
+            disabled={
+              saving ||
+              testing ||
+              !connected ||
+              !name.trim() ||
+              !credentialsReady ||
+              effortUnsupported ||
+              accessUnsupported
+            }
           >
             <SaveIcon /> 저장
           </Button>
           <Button
             className="flex-1"
             onClick={() => void save(true)}
-            disabled={saving || !model || !credentialsReady || effortUnsupported || accessUnsupported}
+            disabled={
+              saving ||
+              testing ||
+              !connected ||
+              !name.trim() ||
+              !credentialsReady ||
+              effortUnsupported ||
+              accessUnsupported
+            }
           >
             {saving ? <Loader2Icon className="animate-spin" /> : <PlusIcon />}
             {profile?.is_default ? "저장하고 적용" : "저장하고 사용"}
           </Button>
+          {!connected && (
+            <p className="w-full text-muted-foreground text-xs">연결 확인에 성공하면 저장할 수 있습니다.</p>
+          )}
         </div>
       </SheetContent>
     </Sheet>
@@ -1173,7 +1246,19 @@ export default function LLMPage() {
                             {h.label}
                           </Badge>
                         </div>
-                        <code className="mt-1 block truncate font-mono text-muted-foreground text-xs">{p.model}</code>
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <code className="truncate font-mono text-muted-foreground text-xs">{p.model}</code>
+                          <Badge
+                            variant="outline"
+                            title={
+                              p.connection_check
+                                ? `${p.connection_check.model} · ${new Date(p.connection_check.checked_at).toLocaleString("ko-KR")} 연결 확인 결과`
+                                : "연결을 확인하면 실제 프로그램이 표시됩니다."
+                            }
+                          >
+                            {programLabel(p.connection_check?.access_program_cyber)}
+                          </Badge>
+                        </div>
                       </div>
                     </div>
 
@@ -1192,7 +1277,6 @@ export default function LLMPage() {
                         {p.rate_per_second}/s · {p.rate_per_minute}/min
                       </span>
                       {p.proxy && <span className="truncate">{t("card.proxy", { proxy: p.proxy })}</span>}
-                      {p.access_program_cyber && <span>{p.access_program_cyber}</span>}
                       {p.reasoning_effort && (
                         <span>
                           {t("card.thinking", {

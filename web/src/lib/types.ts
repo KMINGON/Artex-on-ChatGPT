@@ -1078,6 +1078,11 @@ export interface LLMProfile {
   context_window_k?: number;
   reasoning_effort?: string;
   access_program_cyber?: string;
+  connection_check?: {
+    model: string;
+    access_program_cyber?: string;
+    checked_at: string;
+  };
   capabilities?: ModelCapabilities;
   is_default: boolean;
   priority?: number;

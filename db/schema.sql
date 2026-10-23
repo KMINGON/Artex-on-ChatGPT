@@ -413,6 +413,7 @@ CREATE TRIGGER trg_llm_upd BEFORE UPDATE ON llm_profiles
 -- 轮询顺位/排除标记；补旧库。默认 0 / false = 全部配置都参与轮询。
 -- Explicit API access program; empty preserves the model/server default.
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS access_program_cyber TEXT NOT NULL DEFAULT '';
+ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS connection_check JSONB;
 
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS priority     INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS pool_exclude BOOLEAN NOT NULL DEFAULT false;

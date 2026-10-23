@@ -1,6 +1,7 @@
 package chatgptllm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -43,6 +44,11 @@ func (r response) metadata() ResponseMetadata {
 	}
 	if json.Unmarshal(r.AccessPrograms, &access) == nil {
 		m.AccessProgramCyber = safeToken(access.Cyber)
+	}
+	// The Responses contract uses explicit null for implicit Standard; an absent
+	// field or empty object does not establish the program used by the server.
+	if bytes.Equal(bytes.TrimSpace(r.AccessPrograms), []byte("null")) {
+		m.AccessProgramCyber = "standard"
 	}
 	return m
 }
