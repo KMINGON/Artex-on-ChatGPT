@@ -2,10 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"github.com/Autumn-27/artex/traffic"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -193,5 +197,69 @@ func TestHTTPToolTruncatesLargeBody(t *testing.T) {
 	out := res.Flatten()
 	if len(out) >= 40000 {
 		t.Fatalf("oversized http body was not truncated: len=%d", len(out))
+	}
+}
+
+func TestHTTPToolRecordingProxyKeepsSingleScheme(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != "http://target.invalid/api" {
+			t.Errorf("proxy target = %q", r.URL.String())
+		}
+		io.WriteString(w, "recording route works")
+	}))
+	defer proxy.Close()
+	server := &Server{m: &Manager{globalProxy: proxy.URL}}
+	raw := json.RawMessage(`{"url":"http://target.invalid/api","use_recording_proxy":true}`)
+	res, err := server.runHTTPTool(context.Background(), raw, nil, nil)
+	if err != nil || res.IsError || !strings.Contains(res.Flatten(), "recording route works") {
+		t.Fatalf("err=%v result=%q", err, res.Flatten())
+	}
+}
+
+func TestHTTPToolRejectsInvalidProxyWithoutDirectRequest(t *testing.T) {
+	for _, address := range []string{"localhost:8788", "http://", "ftp://proxy.invalid"} {
+		tr, err := (&Server{}).httpProxyTransport(httpExec{Proxy: address})
+		if err == nil || tr != nil {
+			t.Fatalf("invalid proxy %q accepted", address)
+		}
+	}
+}
+
+func TestHTTPToolDirectIgnoresInheritedProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	tr, err := (&Server{}).httpProxyTransport(httpExec{})
+	if err != nil || tr.Proxy != nil {
+		t.Fatalf("direct transport inherits proxy: err=%v", err)
+	}
+	defer tr.CloseIdleConnections()
+}
+
+func TestHTTPToolRecordingCAExtendsSystemRoots(t *testing.T) {
+	recorder, err := traffic.Open(t.TempDir(), "127.0.0.1:8788")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recorder.Close()
+	s := &Server{m: &Manager{traffic: recorder, trafficOn: true}}
+	tr, err := s.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.CloseIdleConnections()
+	pem, err := os.ReadFile(recorder.CACertPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots, _ := x509.SystemCertPool()
+	if roots == nil {
+		roots = x509.NewCertPool()
+	}
+	roots.AppendCertsFromPEM(pem)
+	if tr.TLSClientConfig == nil || !tr.TLSClientConfig.RootCAs.Equal(roots) {
+		t.Fatal("recorder CA replaced system roots")
+	}
+	proxy, err := tr.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "target.invalid"}})
+	if err != nil || proxy.String() != recorder.ProxyAddr() {
+		t.Fatalf("proxy=%v err=%v", proxy, err)
 	}
 }

@@ -27,6 +27,7 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { getDateLocale } from "@/i18n/datetime";
 import { api } from "@/lib/api";
 import { chatGPTAccountLabel } from "@/lib/chatgpt";
 import type {
@@ -53,16 +54,16 @@ const PROGRAM_LABELS: Record<string, string> = {
 const fromStore = (v?: string) => (v ? v : NONE);
 const toStore = (v: string) => (v === NONE ? "" : v);
 
-function programLabel(program?: string) {
-  return program ? PROGRAM_LABELS[program] || program : "프로그램 미확인";
+function programLabel(program: string | undefined, tf: ReturnType<typeof useTranslations>) {
+  return program ? PROGRAM_LABELS[program] || program : tf("programUnverified");
 }
 
-function catalogProgramLabel(model: ChatGPTModel) {
+function catalogProgramLabel(model: ChatGPTModel, tf: ReturnType<typeof useTranslations>) {
   const c = model.capabilities;
-  if (c?.source !== "account_catalog" || !c.access_programs_known) return "미확인";
+  if (c?.source !== "account_catalog" || !c.access_programs_known) return tf("unverified");
   const programs = c.access_programs_cyber ?? [];
   if (programs.includes("daybreak_blue") || programs.includes("daybreak_red")) return "Daybreak";
-  return programs.includes("standard") ? "Standard" : "미확인";
+  return programs.includes("standard") ? "Standard" : tf("unverified");
 }
 
 function cooldownText(secs: number) {
@@ -284,6 +285,7 @@ function ProfileSheet({
   onSaved: (id: string) => void;
 }) {
   const t = useTranslations("llmPage");
+  const tf = useTranslations("forkUI");
   const isNew = !profile;
   const [name, setName] = React.useState("");
   const [authMode, setAuthMode] = React.useState<LLMAuthMode>("api_key");
@@ -376,8 +378,11 @@ function ProfileSheet({
   const actualProgram = visibleTest?.result.actual_access_program_cyber ?? "";
   const connected = Boolean(visibleTest?.result.ok);
   const connectionLabel = connected
-    ? `${visibleTest?.result.actual_model || visibleTest?.result.model || model} · ${programLabel(actualProgram)} · 연결됨`
-    : "연결 확인";
+    ? tf("connectedModel", {
+        model: visibleTest?.result.actual_model || visibleTest?.result.model || model,
+        program: programLabel(actualProgram, tf),
+      })
+    : tf("testConnection");
   const credentialsReady = isChatGPT ? accountReady : Boolean(apiKey.trim() || keyHint);
   const profileId = profile ? Number(profile.id) : undefined;
   const catalogIdentity = JSON.stringify([authMode, accountId, apiKey, proxy, profileId]);
@@ -432,7 +437,7 @@ function ProfileSheet({
   async function loadModels() {
     if (loadingModels || !credentialsReady) return;
     if (isChatGPT && !accountReady) {
-      toast.error("사용 가능한 ChatGPT 계정을 먼저 연결하고 선택해 주세요.");
+      toast.error(tf("connectAndSelectAnAvailableChatGPTAccount"));
       return;
     }
     const request = ++modelRequest.current;
@@ -453,7 +458,7 @@ function ProfileSheet({
       } else {
         setModels([]);
         setModelsLoaded(true);
-        setModelError(r.error ?? "조회된 모델이 없습니다.");
+        setModelError(r.error ?? tf("noModelsWereReturned"));
       }
     } catch (e) {
       if (request === modelRequest.current) setModelError((e as Error).message);
@@ -513,7 +518,7 @@ function ProfileSheet({
 
   async function save(useNow = false) {
     if (isChatGPT && !accountReady) {
-      toast.error("사용 가능한 ChatGPT 계정을 먼저 연결하고 선택해 주세요.");
+      toast.error(tf("connectAndSelectAnAvailableChatGPTAccount"));
       return;
     }
     if (!name.trim() || !model.trim()) {
@@ -555,14 +560,12 @@ function ProfileSheet({
         } catch (e) {
           onSaved(String(id));
           onOpenChange(false);
-          toast.error(`설정은 저장했지만 기본 모델로 전환하지 못했습니다: ${(e as Error).message}`);
+          toast.error(tf("activationFailed", { error: (e as Error).message }));
           return;
         }
       }
       toast.success(
-        activated || useNow || profile?.is_default
-          ? "모델 설정을 저장하고 사용 설정했습니다."
-          : "모델 설정을 저장했습니다.",
+        activated || useNow || profile?.is_default ? tf("modelSettingsSavedAndActivated") : tf("modelSettingsSaved"),
       );
       onSaved(String(id));
       onOpenChange(false);
@@ -598,7 +601,7 @@ function ProfileSheet({
             </p>
           )}
           <div className="grid gap-2">
-            <Label htmlFor="p-auth-mode">모델 연결 방식</Label>
+            <Label htmlFor="p-auth-mode">{tf("connectionMethod")}</Label>
             <Select
               value={authMode}
               onValueChange={(value) => {
@@ -619,14 +622,14 @@ function ProfileSheet({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="api_key">OpenAI API 키</SelectItem>
-                <SelectItem value="chatgpt_plan">ChatGPT 구독 계정</SelectItem>
+                <SelectItem value="api_key">{tf("openAIAPIKey")}</SelectItem>
+                <SelectItem value="chatgpt_plan">{tf("chatGPTSubscription")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
           {isChatGPT && (
             <div className="grid gap-2 rounded-lg border p-3">
-              <Label htmlFor="p-chatgpt-account">ChatGPT 계정</Label>
+              <Label htmlFor="p-chatgpt-account">{tf("chatGPTAccount")}</Label>
               <Select
                 value={accountId || NONE}
                 onValueChange={(value) => {
@@ -640,10 +643,10 @@ function ProfileSheet({
                 }}
               >
                 <SelectTrigger id="p-chatgpt-account">
-                  <SelectValue placeholder="연결할 계정 선택" />
+                  <SelectValue placeholder={tf("selectAnAccount")} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NONE}>계정을 선택해 주세요</SelectItem>
+                  <SelectItem value={NONE}>{tf("chooseAnAccount")}</SelectItem>
                   {accounts.map((account) => (
                     <SelectItem
                       key={account.id}
@@ -651,21 +654,16 @@ function ProfileSheet({
                       disabled={!account.connected || !account.plan_enabled}
                     >
                       {chatGPTAccountLabel(account)}
-                      {account.connected && account.plan_enabled ? "" : " (연결 확인 필요)"}
+                      {account.connected && account.plan_enabled ? "" : tf("connectionNeedsVerification")}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {!accountReady && (
-                <p className="text-destructive text-xs">설정을 닫고 ChatGPT 계정 연결에서 로그인해 주세요.</p>
-              )}
+              {!accountReady && <p className="text-destructive text-xs">{tf("closeTheseSettingsAndSignInThrough")}</p>}
               <p className="text-muted-foreground text-xs">
-                스트리밍으로만 응답하며 temperature와 서버 출력 토큰 상한은 지원하지 않습니다. ChatGPT 요금제의 사용
-                한도가 적용되며 API 키 설정으로 자동 전환하지 않습니다.
+                {tf("responsesAreStreamedTemperatureAndServerOutputtoken")}
               </p>
-              <p className="text-muted-foreground text-xs">
-                요약·판정의 로컬 시간·수신량 제한도 서버의 생성 토큰 수나 사용량 상한을 보장하지 않습니다.
-              </p>
+              <p className="text-muted-foreground text-xs">{tf("localTimeAndResponsesizeLimitsForSummaries")}</p>
             </div>
           )}
           <div className="grid gap-4 sm:grid-cols-2">
@@ -701,24 +699,26 @@ function ProfileSheet({
           )}
 
           <div className="grid gap-2">
-            <Label htmlFor="p-model">모델</Label>
+            <Label htmlFor="p-model">{tf("model")}</Label>
             {model || modelsLoaded ? (
               <div className="flex gap-2">
                 <Select value={model || NONE} onValueChange={(value) => selectModel(toStore(value))}>
-                  <SelectTrigger id="p-model" className="min-w-0 flex-1" aria-label="모델">
-                    <SelectValue placeholder="모델을 선택하세요" />
+                  <SelectTrigger id="p-model" className="min-w-0 flex-1" aria-label={tf("model")}>
+                    <SelectValue placeholder={tf("chooseAModel")} />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={NONE} disabled>
-                      모델을 선택하세요
+                      {tf("chooseAModel")}
                     </SelectItem>
                     {model && !models.some((item) => item.id === model) && (
-                      <SelectItem value={model}>{model} (저장된 모델)</SelectItem>
+                      <SelectItem value={model}>
+                        {model} {tf("savedModel")}
+                      </SelectItem>
                     )}
                     {models.map((item) => (
                       <SelectItem key={item.id} value={item.id}>
                         {item.name || item.id}
-                        {isChatGPT && <Badge variant="outline">{catalogProgramLabel(item)}</Badge>}
+                        {isChatGPT && <Badge variant="outline">{catalogProgramLabel(item, tf)}</Badge>}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -727,7 +727,7 @@ function ProfileSheet({
                   type="button"
                   variant="outline"
                   size="icon"
-                  aria-label="모델 목록 새로고침"
+                  aria-label={tf("refreshModelList")}
                   disabled={loadingModels || !credentialsReady}
                   onClick={() => void loadModels()}
                 >
@@ -742,12 +742,12 @@ function ProfileSheet({
                 onClick={() => void loadModels()}
               >
                 {loadingModels && <Loader2Icon className="animate-spin" />}
-                {isChatGPT ? "계정 모델 조회" : "API 모델 조회"}
+                {isChatGPT ? tf("loadAccountModels") : tf("loadAPIModels")}
               </Button>
             )}
             {loadingModels && (
               <p role="status" className="text-muted-foreground text-xs">
-                사용 가능한 모델을 조회하고 있습니다…
+                {tf("loadingAvailableModels")}
               </p>
             )}
             {modelError && (
@@ -756,7 +756,7 @@ function ProfileSheet({
               </p>
             )}
             {!isChatGPT && !credentialsReady && (
-              <p className="text-muted-foreground text-xs">API Key를 입력한 뒤 모델을 조회하세요.</p>
+              <p className="text-muted-foreground text-xs">{tf("enterAnAPIKeyThenLoadModels")}</p>
             )}
             {!isChatGPT && model && (
               <div className="grid gap-2">
@@ -767,12 +767,12 @@ function ProfileSheet({
                   onClick={() => void testConnection()}
                 >
                   {testing ? <Loader2Icon className="animate-spin" /> : <ZapIcon />}
-                  Daybreak 확인
+                  {tf("checkDaybreak")}
                 </Button>
                 <p className="text-muted-foreground text-xs">
                   {accessProgram === NONE
-                    ? "사용 가능한 프로그램을 자동 선택합니다. 연결 확인에서도 실제 프로그램을 확인할 수 있습니다."
-                    : `현재 고급 설정의 ${programLabel(toStore(accessProgram))} 프로그램으로 연결을 확인합니다.`}
+                    ? tf("selectsAnAvailableProgramAutomaticallyTheConnection")
+                    : tf("checkSelectedProgram", { program: programLabel(toStore(accessProgram), tf) })}
                 </p>
               </div>
             )}
@@ -786,7 +786,7 @@ function ProfileSheet({
                 </Label>
                 <p className="text-muted-foreground text-xs">
                   {capabilities?.default_reasoning_effort
-                    ? `계정 모델 목록의 기본값: ${capabilities.default_reasoning_effort}`
+                    ? tf("catalogDefaultEffort", { effort: capabilities.default_reasoning_effort })
                     : t("profile.effort.hint")}
                 </p>
               </div>
@@ -801,7 +801,7 @@ function ProfileSheet({
                       {value}
                       {reasoningKnown &&
                         !efforts.includes(value) &&
-                        (accountCapabilities ? " (지원하지 않는 저장값)" : " (문서에 없는 저장값)")}
+                        (accountCapabilities ? tf("savedValueIsUnsupported") : tf("savedValueIsUndocumented"))}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -811,33 +811,34 @@ function ProfileSheet({
 
           <p className="text-muted-foreground text-xs">
             {capabilities?.source === "account_catalog"
-              ? "선택한 계정의 모델 목록에서 제공한 지원 정보입니다. 실제 적용 결과는 연결 확인에서 볼 수 있습니다."
+              ? tf("capabilitiesComeFromTheSelectedAccountsModel")
               : capabilities?.source === "documentation" || capabilities?.known
-                ? "공식 문서의 모델 지원 정보입니다. API 키의 실제 사용 권한은 연결 확인에서 확인하세요."
-                : "모델 기능 호환성 미확인: 제공된 지원 정보가 없습니다. 저장된 모델과 추론 강도는 유지합니다."}
+                ? tf("modelCapabilitiesComeFromOfficialDocumentationTest")
+                : tf("modelCapabilitiesAreUnverifiedNoSupportInformation")}
           </p>
           {effortUnsupported && (
             <p role="alert" className="text-destructive text-xs">
-              이 모델은 저장된 추론 강도를 지원하지 않습니다. 기본값 또는 표시된 지원 값을 직접 선택해 주세요.
+              {tf("thisModelDoesNotSupportTheSaved")}
             </p>
           )}
           {isChatGPT && (
             <div className="grid gap-2 rounded-lg border p-3">
-              <Label>프로그램</Label>
+              <Label>{tf("program")}</Label>
               {supportsBlue ? (
-                <p className="text-sm">Daybreak · 계정 모델 목록에서 지원하며, 연결 확인에서 실제 적용을 확인합니다.</p>
+                <p className="text-sm">{tf("daybreakSupportedByTheAccountModelCatalog")}</p>
               ) : supportsStandard ? (
-                <p className="text-sm">Standard · 계정 모델 목록에서 Standard만 제공됩니다.</p>
+                <p className="text-sm">{tf("standardTheAccountModelCatalogOnlyOffers")}</p>
               ) : (
                 <p className="text-muted-foreground text-sm">
-                  프로그램 지원 정보 미확인{accessProgram === "standard" ? " · 저장된 설정: Standard" : ""}
+                  {tf("programSupportIsUnverified")}
+                  {accessProgram === "standard" ? tf("savedSettingStandard") : ""}
                 </p>
               )}
               {supportsBlue && accessProgram === "standard" && !accessUnsupported && (
                 <p className="text-muted-foreground text-xs">
-                  저장된 설정은 Standard입니다.{" "}
+                  {tf("theSavedSettingIsStandard")}{" "}
                   <button type="button" className="underline" onClick={() => setAccessProgram(NONE)}>
-                    자동 선택으로 변경
+                    {tf("switchToAutomaticSelection")}
                   </button>
                 </p>
               )}
@@ -845,38 +846,38 @@ function ProfileSheet({
           )}
           {accessUnsupported && (
             <p role="alert" className="text-destructive text-xs">
-              현재 연결에서 지원하지 않는 저장 프로그램입니다.{" "}
+              {tf("theSavedProgramIsNotSupportedBy")}{" "}
               <button type="button" className="underline" onClick={() => setAccessProgram(NONE)}>
-                자동 선택으로 변경
+                {tf("switchToAutomaticSelection")}
               </button>
             </p>
           )}
           {visibleTest && (
-            <section aria-label="최근 연결 확인" className="grid gap-1 rounded-lg border p-3 text-sm">
+            <section aria-label={tf("latestConnectionTest")} className="grid gap-1 rounded-lg border p-3 text-sm">
               {visibleTest.result.ok ? (
                 <>
                   <p className="font-medium">{connectionLabel}</p>
                   <p className="text-muted-foreground text-xs">
-                    응답 시간: {((visibleTest.result.latency_ms ?? 0) / 1000).toFixed(1)}초
+                    {tf("responseTime")}
+                    {((visibleTest.result.latency_ms ?? 0) / 1000).toFixed(1)}
+                    {tf("s")}
                   </p>
                   {supportsBlue && accessProgram === NONE && actualProgram === "standard" && (
-                    <p className="text-muted-foreground text-xs">
-                      계정 모델 목록은 Daybreak를 지원하지만, 이번 응답은 Standard로 반환되었습니다.
-                    </p>
+                    <p className="text-muted-foreground text-xs">{tf("theAccountModelCatalogSupportsDaybreakBut")}</p>
                   )}
                 </>
               ) : (
                 <p role="alert" className="text-destructive">
-                  {visibleTest.result.error || "연결을 확인하지 못했습니다."}
+                  {visibleTest.result.error || tf("couldNotVerifyTheConnection")}
                 </p>
               )}
               <p className="text-muted-foreground text-xs">
-                {new Date(visibleTest.checkedAt).toLocaleString("ko-KR")} 확인 · 해당 요청의 결과입니다.
+                {new Date(visibleTest.checkedAt).toLocaleString(getDateLocale())} {tf("checkedResultOfThisRequestOnly")}
               </p>
             </section>
           )}
           <details className="rounded-lg border p-3">
-            <summary className="cursor-pointer font-medium text-sm">고급 설정</summary>
+            <summary className="cursor-pointer font-medium text-sm">{tf("advancedSettings")}</summary>
             <div className="mt-4 grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="p-proxy">{t("profile.proxy.label")}</Label>
@@ -970,30 +971,28 @@ function ProfileSheet({
               {!isChatGPT && (
                 <>
                   <div className="grid gap-2">
-                    <Label htmlFor="p-model-manual">모델 ID 직접 입력</Label>
+                    <Label htmlFor="p-model-manual">{tf("enterModelIDManually")}</Label>
                     <Input id="p-model-manual" value={model} onChange={(e) => selectModel(e.target.value)} />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="p-access-program">API 액세스 프로그램</Label>
+                    <Label htmlFor="p-access-program">{tf("aPIAccessProgram")}</Label>
                     <Select value={accessProgram} onValueChange={setAccessProgram}>
                       <SelectTrigger id="p-access-program">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value={NONE}>자동 선택 (기본값)</SelectItem>
+                        <SelectItem value={NONE}>{tf("automaticSelectionDefault")}</SelectItem>
                         {accessChoices.map((value) => (
                           <SelectItem key={value} value={value}>
                             {value}
                             {programsKnown &&
                               !accessPrograms.includes(value) &&
-                              (accountCapabilities ? " (지원하지 않는 저장값)" : " (문서에 없는 저장값)")}
+                              (accountCapabilities ? tf("savedValueIsUnsupported") : tf("savedValueIsUndocumented"))}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <p className="text-muted-foreground text-xs">
-                      API 프로그램 선택은 모델 지원과 해당 조직·프로젝트의 승인이 필요합니다.
-                    </p>
+                    <p className="text-muted-foreground text-xs">{tf("aPIProgramSelectionRequiresModelSupportAnd")}</p>
                   </div>
                 </>
               )}
@@ -1006,13 +1005,13 @@ function ProfileSheet({
           <Button
             variant="outline"
             className="h-auto min-h-9 w-full whitespace-normal break-all py-2"
-            aria-label="연결 확인"
+            aria-label={tf("testConnection")}
             onClick={() => void testConnection()}
             disabled={testing || saving || !model || !credentialsReady || effortUnsupported || accessUnsupported}
           >
             {testing && <Loader2Icon className="animate-spin" />}
             {!testing && (connected ? <CheckIcon /> : <PlugZapIcon />)}
-            {testing ? "연결 확인 중…" : connectionLabel}
+            {testing ? tf("testingConnection") : connectionLabel}
           </Button>
           <Button
             variant="outline"
@@ -1027,7 +1026,7 @@ function ProfileSheet({
               accessUnsupported
             }
           >
-            <SaveIcon /> 저장
+            <SaveIcon /> {tf("save")}
           </Button>
           <Button
             className="flex-1"
@@ -1043,10 +1042,10 @@ function ProfileSheet({
             }
           >
             {saving ? <Loader2Icon className="animate-spin" /> : <PlusIcon />}
-            {profile?.is_default ? "저장하고 적용" : "저장하고 사용"}
+            {profile?.is_default ? tf("saveAndApply") : tf("saveAndActivate")}
           </Button>
           {!connected && (
-            <p className="w-full text-muted-foreground text-xs">연결 확인에 성공하면 저장할 수 있습니다.</p>
+            <p className="w-full text-muted-foreground text-xs">{tf("aSuccessfulConnectionTestIsRequiredBefore")}</p>
           )}
         </div>
       </SheetContent>
@@ -1058,6 +1057,7 @@ function ProfileSheet({
 
 export default function LLMPage() {
   const t = useTranslations("llmPage");
+  const tf = useTranslations("forkUI");
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [accounts, setAccounts] = React.useState<ChatGPTAccount[]>([]);
   const [pool, setPool] = React.useState<LLMPoolStatus | null>(null);
@@ -1079,18 +1079,18 @@ export default function LLMPage() {
         (p.plan_blocked || accounts.find((account) => account.id === p.chatgpt_account_id)?.plan_blocked)
       ) {
         return {
-          label: "한도 재확인 필요",
+          label: tf("usageLimitRecheckRequired"),
           cls: "border-amber-500/50 text-amber-600",
-          hint: "ChatGPT 계정 연결 카드에서 사용 한도를 확인하고 명시적으로 재확인하세요.",
+          hint: tf("reviewUsageLimitsAndRunARecheck"),
         };
       }
       if (p.configuration_error)
-        return { label: "설정 재선택 필요", cls: "text-destructive", hint: p.configuration_error };
+        return { label: tf("updateConfiguration"), cls: "text-destructive", hint: p.configuration_error };
       if (p.auth_mode === "chatgpt_plan" && !p.connected) {
         return {
-          label: "ChatGPT 연결 필요",
+          label: tf("chatGPTConnectionRequired"),
           cls: "border-muted-foreground/40 text-muted-foreground",
-          hint: "ChatGPT 계정 연결 상태를 확인해 주세요.",
+          hint: tf("checkTheChatGPTAccountConnectionStatus"),
         };
       }
       if (p.auth_mode !== "chatgpt_plan" && !(p.connected ?? p.api_key_hint)) {
@@ -1118,11 +1118,11 @@ export default function LLMPage() {
         };
       }
       return {
-        label: p.auth_mode === "chatgpt_plan" ? "ChatGPT 연결됨" : t("health.ok"),
+        label: p.auth_mode === "chatgpt_plan" ? tf("chatGPTConnected") : t("health.ok"),
         cls: "border-emerald-500/50 text-emerald-600 dark:text-emerald-400",
       };
     },
-    [t, accounts],
+    [t, accounts, tf],
   );
 
   const loadPool = React.useCallback(async () => {
@@ -1240,7 +1240,7 @@ export default function LLMPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium text-sm">{p.name}</span>
                           <Badge variant="outline" className="uppercase">
-                            {p.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : "OpenAI API"}
+                            {p.auth_mode === "chatgpt_plan" ? tf("chatGPTSubscriptionLabel") : "OpenAI API"}
                           </Badge>
                           <Badge variant="outline" className={cn("ml-auto", h.cls)} title={h.hint}>
                             {h.label}
@@ -1252,11 +1252,14 @@ export default function LLMPage() {
                             variant="outline"
                             title={
                               p.connection_check
-                                ? `${p.connection_check.model} · ${new Date(p.connection_check.checked_at).toLocaleString("ko-KR")} 연결 확인 결과`
-                                : "연결을 확인하면 실제 프로그램이 표시됩니다."
+                                ? tf("connectionCheckAt", {
+                                    model: p.connection_check.model,
+                                    time: new Date(p.connection_check.checked_at).toLocaleString(getDateLocale()),
+                                  })
+                                : tf("testTheConnectionToDisplayTheActual")
                             }
                           >
-                            {programLabel(p.connection_check?.access_program_cyber)}
+                            {programLabel(p.connection_check?.access_program_cyber, tf)}
                           </Badge>
                         </div>
                       </div>
@@ -1330,8 +1333,8 @@ export default function LLMPage() {
             )}
           </div>
           <div className="flex justify-center py-6">
-            <Button variant="outline" onClick={() => openEditor(null)} aria-label="모델 설정 추가">
-              <PlusIcon /> 모델 설정 추가
+            <Button variant="outline" onClick={() => openEditor(null)} aria-label={tf("addModelSettings")}>
+              <PlusIcon /> {tf("addModelSettings")}
             </Button>
           </div>
         </TabsContent>

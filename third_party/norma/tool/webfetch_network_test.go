@@ -39,7 +39,7 @@ func TestWebFetchIgnoresInheritedProxy(t *testing.T) {
 		http.DefaultTransport = original
 		poisoned.CloseIdleConnections()
 	})
-	for _, cfg := range []WebFetchConfig{{}, {Proxy: "http://127.0.0.1:1"}} {
+	for _, cfg := range []WebFetchConfig{{}, {Proxy: "http://127.0.0.1:1", RecordingProxy: true}} {
 		raw, _ := json.Marshal(map[string]any{"url": target.URL})
 		res, err := NewWebFetch(cfg).Call(context.Background(), raw, &ToolContext{})
 		if err != nil || res.IsError || !strings.Contains(res.Flatten(), "direct target") {
@@ -130,5 +130,37 @@ func TestWebFetchBodyAndDisplayLimits(t *testing.T) {
 				t.Fatal("display cap must preserve head and tail")
 			}
 		})
+	}
+}
+
+func TestWebFetchRecordingFallbackPreservesExternalProxy(t *testing.T) {
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "target.invalid" {
+			t.Errorf("target = %q", r.URL.Host)
+		}
+		io.WriteString(w, "external egress preserved")
+	}))
+	defer external.Close()
+	res, err := NewWebFetch(WebFetchConfig{
+		Proxy: "http://127.0.0.1:1", RecordingProxy: true, FallbackProxy: external.URL,
+	}).Call(context.Background(), json.RawMessage(`{"url":"http://target.invalid/"}`), &ToolContext{})
+	if err != nil || res.IsError || !strings.Contains(res.Flatten(), "external egress preserved") || !strings.Contains(res.Flatten(), "트래픽 기록 누락") {
+		t.Fatalf("err=%v result=%q", err, res.Flatten())
+	}
+}
+
+func TestWebFetchNeverBypassesOrdinaryProxy(t *testing.T) {
+	called := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		io.WriteString(w, "must not reach directly")
+	}))
+	defer target.Close()
+	raw, _ := json.Marshal(map[string]string{"url": target.URL})
+	for _, proxy := range []string{"http://127.0.0.1:1", "://invalid", "http://", "file:///tmp/proxy"} {
+		res, err := NewWebFetch(WebFetchConfig{Proxy: proxy}).Call(context.Background(), raw, &ToolContext{})
+		if err != nil || !res.IsError || called {
+			t.Fatalf("proxy bypassed: called=%v err=%v result=%q", called, err, res.Flatten())
+		}
 	}
 }

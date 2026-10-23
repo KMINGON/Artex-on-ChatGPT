@@ -186,6 +186,13 @@ func activityWithUsage(activity db.Activity, usage *llm.Usage) db.Activity {
 func blocksText(blocks []llm.ContentBlock) string {
 	var b strings.Builder
 	for _, bl := range blocks {
+		if bl.Type == llm.BlockImage {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(bl.Image.Description())
+			continue
+		}
 		if bl.Type == llm.BlockText && bl.Text != "" {
 			if b.Len() > 0 {
 				b.WriteByte('\n')

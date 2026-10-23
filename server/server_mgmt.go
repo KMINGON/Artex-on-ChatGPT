@@ -242,6 +242,12 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 			delete(s.taskAgents, id)
 			s.taskAgentMu.Unlock()
 			deleted = true
+			if s.browsers != nil {
+				taskID, _ := strconv.ParseInt(id, 10, 64)
+				if cleanupErr := s.browsers.removeTask(taskID); cleanupErr != nil {
+					err = errors.Join(err, fmt.Errorf(trMsg("브라우저 인증 세션 정리 실패: %w"), cleanupErr))
+				}
+			}
 			writeCommittedTaskDelete(w, result, err)
 			return
 		}
@@ -256,6 +262,13 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	delete(s.taskAgents, id)
 	s.taskAgentMu.Unlock()
 	deleted = true
+	if s.browsers != nil {
+		taskID, _ := strconv.ParseInt(id, 10, 64)
+		if cleanupErr := s.browsers.removeTask(taskID); cleanupErr != nil {
+			writeCommittedTaskDelete(w, result, fmt.Errorf(trMsg("브라우저 인증 세션 정리 실패: %w"), cleanupErr))
+			return
+		}
+	}
 	writeJSON(w, 200, result)
 }
 

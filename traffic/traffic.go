@@ -396,6 +396,15 @@ func (s *sink) Response(f *mproxy.Flow) {
 	s.t.record(f)
 }
 
+// StreamResponseModifier runs after the library elects not to buffer SSE/large
+// exchanges. Record their headers without consuming or delaying the stream.
+func (s *sink) StreamResponseModifier(f *mproxy.Flow, in io.Reader) io.Reader {
+	if f.Stream && f.Request != nil && f.Response != nil {
+		s.t.record(f)
+	}
+	return in
+}
+
 // RequestError fires when a request through an established MITM tunnel fails. If
 // the failure looks proxy/protocol-caused (h2 quirks, HEAD-with-body, protocol
 // errors) — not a plain target-unreachable error — we flag the host for
@@ -449,6 +458,9 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	url := f.Request.URL.String()
 	reqHead := fmt.Sprintf("%s %s %s\n%s", method, f.Request.URL.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request))
 	respHead := fmt.Sprintf("HTTP %d\n%s", f.Response.StatusCode, headerLines(f.Response.Header))
+	if f.Stream {
+		respHead += "\n[부분 기록: 스트리밍/SSE 또는 대용량 요청·응답입니다. 본문은 수집하지 않았으며 전송 완료 여부는 확인되지 않았습니다.]\n"
+	}
 	// Bodies are spilled before the transaction opens: blob writes are filesystem
 	// work and must not sit inside the SQLite write lock.
 	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))

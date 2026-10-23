@@ -93,7 +93,8 @@ grep -rhoaE '([A-Z_][A-Z0-9_]*):\{name:"[^"]*",link:"/[^"]+"\}' js | head
 {
   "baseUrl": "https://target/",
   "runtimeMode": "both",
-  "chromium": "/usr/bin/chromium",
+  "chromium": "",
+  "ignoreHTTPSErrors": false,
 
   "cookies": [
     { "name": "auth", "value": "b64json:{\"id\":1,\"username\":\"admin\",\"role\":\"admin\",\"func\":{},\"permissions\":[\"*\"]}" }
@@ -273,7 +274,7 @@ grep -rhoaE '/api/[a-zA-Z0-9_./-]+' js | sort -u
 | 모든 API가 로그인으로 이동 | 인터셉터 조건 → `neutralize` 확인. 중첩 필드는 순회 로직 확장 필요 |
 | WS 프레임이 0 | 사용자 상호작용 후에만 subscribe될 수 있음. `perRouteMs` 증가 |
 | 응답 본문이 비어 있음 | `forward: true`일 때만 실제 응답 존재 |
-| Chromium 없음 | chromium 설치 또는 `config.chromium` / `CHROMIUM` 설정 |
+| Chromium 없음 | ARTEX Docker의 내장 런타임 사용. 로컬은 `npm ci` + `npx playwright install chromium`; 필요 시 `config.chromium` / `CHROMIUM` 설정 |
 | Mock이 많은데도 로그인으로 돌아감 | Hook이 늦거나 `location.href` setter 누락 → document-start + preload |
 | 목록이 모두 비어 있음 | L3의 빈 배열은 정상. 탭/설정/상세 정보를 계속 클릭 |
 | Redux action을 경로로 오인 | get/set/change/clear/toggle/upload를 포함한 내부 path 필터링 |

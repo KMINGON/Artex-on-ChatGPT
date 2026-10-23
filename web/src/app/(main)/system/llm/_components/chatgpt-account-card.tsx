@@ -3,6 +3,7 @@
 import * as React from "react";
 
 import { ExternalLinkIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,7 @@ export function ChatGPTAccountCard({
   onChanged: () => Promise<void>;
   profiles?: LLMProfile[];
 }) {
+  const tf = useTranslations("forkUI");
   const [status, setStatus] = React.useState<ChatGPTStatus>({ accounts: [], pending: false });
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
@@ -72,7 +74,7 @@ export function ChatGPTAccountCard({
         clearTimeout(timer);
         setDeadline(0);
         setLoginUrl("");
-        setError("로그인 확인 시간이 지났습니다. 상태를 새로고침하거나 다시 연결해 주세요.");
+        setError(tf("signinVerificationTimedOutRefreshTheStatus"));
       },
       Math.max(0, deadline - Date.now()),
     );
@@ -81,7 +83,7 @@ export function ChatGPTAccountCard({
       if (Date.now() >= deadline) {
         setDeadline(0);
         setLoginUrl("");
-        setError("로그인 확인 시간이 지났습니다. 상태를 새로고침하거나 다시 연결해 주세요.");
+        setError(tf("signinVerificationTimedOutRefreshTheStatus"));
         return;
       }
       try {
@@ -105,7 +107,7 @@ export function ChatGPTAccountCard({
       clearTimeout(timer);
       clearTimeout(expire);
     };
-  }, [deadline, acceptStatus, onChanged]);
+  }, [deadline, acceptStatus, onChanged, tf]);
 
   async function refresh() {
     setLoading(true);
@@ -132,7 +134,7 @@ export function ChatGPTAccountCard({
     try {
       const result = await api.chatgptLogin(accountId);
       const url = new URL(result.url);
-      if (url.protocol !== "https:") throw new Error("서버가 올바른 로그인 주소를 반환하지 않았습니다.");
+      if (url.protocol !== "https:") throw new Error(tf("theServerReturnedAnInvalidSigninURL"));
       setLoginUrl(url.href);
       setStatus((previous) => ({ ...previous, pending: true }));
       const expiresAt = Date.parse(result.expires_at);
@@ -169,7 +171,7 @@ export function ChatGPTAccountCard({
     try {
       const result = await api.chatgptRecheck(profileId);
       await refresh();
-      if (!result.ok) setError(result.error ?? "사용 한도를 재확인할 수 없습니다.");
+      if (!result.ok) setError(result.error ?? tf("couldNotRecheckTheUsageLimit"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -181,17 +183,11 @@ export function ChatGPTAccountCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>ChatGPT 계정 연결</CardTitle>
-        <CardDescription>
-          ARTEX 관리자 로그인과 별개인 모델 연결입니다. OpenAI 로그인 화면에서 계정을 연결한 뒤 모델 설정에서
-          선택하세요.
-        </CardDescription>
+        <CardTitle>{tf("chatGPTAccounts")}</CardTitle>
+        <CardDescription>{tf("thisModelConnectionIsSeparateFromThe")}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
-        <p className="text-muted-foreground text-sm">
-          ChatGPT 요금제의 사용 한도가 적용되며, API 키 설정으로 자동 전환하지 않습니다. 응답 품질이나 속도를 보장하지
-          않습니다.
-        </p>
+        <p className="text-muted-foreground text-sm">{tf("chatGPTPlanUsageLimitsApplyRequestsDo")}</p>
         {error && (
           <p role="alert" className="text-destructive text-sm">
             {error}
@@ -200,15 +196,15 @@ export function ChatGPTAccountCard({
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => void login()} disabled={loading || busy || waiting}>
             {(busy || waiting) && <Loader2Icon className="animate-spin" />}
-            ChatGPT로 계속
+            {tf("continueWithChatGPT")}
           </Button>
           <Button variant="outline" onClick={() => void refresh()} disabled={loading || busy}>
-            <RefreshCwIcon className={loading ? "animate-spin" : ""} /> 연결 상태 새로고침
+            <RefreshCwIcon className={loading ? "animate-spin" : ""} /> {tf("refreshConnectionStatus")}
           </Button>
         </div>
         {waiting && (
           <p role="status" className="text-muted-foreground text-sm">
-            브라우저에서 로그인을 완료해 주세요. 완료되면 계정 상태를 자동으로 갱신합니다.
+            {tf("completeSigninInYourBrowserTheAccount")}
           </p>
         )}
         {loginUrl && (
@@ -218,11 +214,12 @@ export function ChatGPTAccountCard({
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-sm underline"
           >
-            로그인 화면 열기 <ExternalLinkIcon className="size-3.5" />
+            {tf("openSigninPage")}
+            <ExternalLinkIcon className="size-3.5" />
           </a>
         )}
         {!loading && status.accounts.length === 0 && (
-          <p className="text-muted-foreground text-sm">연결된 계정이 없습니다.</p>
+          <p className="text-muted-foreground text-sm">{tf("noAccountsConnected")}</p>
         )}
         {status.accounts.map((account) => {
           const candidates = profiles.filter(
@@ -241,37 +238,44 @@ export function ChatGPTAccountCard({
             >
               <span className="min-w-0 flex-1 break-all text-sm">{label}</span>
               <Badge variant="outline">
-                {!account.connected && "다시 연결 필요"}
-                {account.connected && account.plan_blocked && "한도 재확인 필요"}
-                {account.connected && !account.plan_blocked && (account.plan_enabled ? "연결됨" : "요금제 사용 불가")}
+                {!account.connected && tf("reconnectRequired")}
+                {account.connected && account.plan_blocked && tf("usageLimitRecheckRequired")}
+                {account.connected &&
+                  !account.plan_blocked &&
+                  (account.plan_enabled ? tf("connected") : tf("planUnavailable"))}
               </Badge>
               <Button size="sm" variant="outline" onClick={() => void login(account.id)} disabled={busy || waiting}>
-                다시 연결
+                {tf("reconnect")}
               </Button>
               <Button size="sm" variant="ghost" onClick={() => void logout(account.id)} disabled={busy || waiting}>
-                연결 해제
+                {tf("disconnect")}
               </Button>
               {account.plan_blocked && (
                 <div className="grid w-full gap-2 border-t pt-3">
                   <p className="text-sm">
-                    이 등록의 새 모델 요청이 사용 한도로 중지되었습니다. 로그인만으로 한도가 초기화되지는 않습니다.{" "}
+                    {tf("newModelRequestsForThisConnectionAre")}{" "}
                     <a className="underline" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">
-                      ChatGPT 사용량 확인
+                      {tf("viewChatGPTUsage")}
                     </a>
                   </p>
                   {account.plan_blocked_at && (
-                    <p className="text-muted-foreground text-xs">확인 시점: {account.plan_blocked_at}</p>
+                    <p className="text-muted-foreground text-xs">
+                      {tf("checkedAt")}
+                      {account.plan_blocked_at}
+                    </p>
                   )}
-                  <Label htmlFor={`recheck-${account.id}`}>재확인에 사용할 저장 프로필</Label>
+                  <Label htmlFor={`recheck-${account.id}`}>{tf("savedProfileToUseForRecheck")}</Label>
                   <Select
                     value={profileId || "_none"}
                     onValueChange={(value) => setProbeProfiles((previous) => ({ ...previous, [account.id]: value }))}
                   >
                     <SelectTrigger id={`recheck-${account.id}`}>
-                      <SelectValue placeholder="프로필을 먼저 저장해 주세요" />
+                      <SelectValue placeholder={tf("saveAProfileFirst")} />
                     </SelectTrigger>
                     <SelectContent>
-                      {candidates.length === 0 && <SelectItem value="_none">사용 가능한 저장 프로필 없음</SelectItem>}
+                      {candidates.length === 0 && (
+                        <SelectItem value="_none">{tf("noAvailableSavedProfiles")}</SelectItem>
+                      )}
                       {candidates.map((profile) => (
                         <SelectItem key={profile.id} value={profile.id}>
                           {profile.name} · {profile.model}
@@ -279,10 +283,7 @@ export function ChatGPTAccountCard({
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-muted-foreground text-xs">
-                    선택한 모델에 실제 요청 한 번을 보내며 구독 사용량이 발생할 수 있습니다. 성공하면 이 등록의 새
-                    요청을 다시 허용합니다.
-                  </p>
+                  <p className="text-muted-foreground text-xs">{tf("sendsOneRealRequestToTheSelected")}</p>
                   <Button
                     size="sm"
                     variant="outline"
@@ -296,7 +297,7 @@ export function ChatGPTAccountCard({
                       !candidates.some((profile) => profile.id === profileId)
                     }
                   >
-                    한도 재확인
+                    {tf("recheckUsageLimit")}
                   </Button>
                 </div>
               )}

@@ -1,6 +1,7 @@
 package mcphttp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,64 @@ import (
 	"testing"
 	"time"
 )
+
+func TestLegacySSEHandshakeCancellation(t *testing.T) {
+	for _, flushHeaders := range []bool{false, true} {
+		t.Run(fmt.Sprintf("headers_flushed_%t", flushHeaders), func(t *testing.T) {
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if flushHeaders {
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.(http.Flusher).Flush()
+				}
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				client, err := NewSSE(ctx, "test", srv.URL, nil, false)
+				if client != nil {
+					_ = client.Close()
+				}
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("stalled SSE handshake succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("SSE handshake ignored caller cancellation")
+			}
+		})
+	}
+}
+
+func TestLegacySSELineLimit(t *testing.T) {
+	line := strings.Repeat("x", 80) + "\n"
+	r := bufio.NewReaderSize(strings.NewReader(line+"next\n"), 16)
+	got, err := readBoundedSSELine(r, len(line))
+	if err != nil || got != line {
+		t.Fatalf("bounded multi-chunk line = %q, %v", got, err)
+	}
+	got, err = readBoundedSSELine(r, 5)
+	if err != nil || got != "next\n" {
+		t.Fatalf("following line = %q, %v", got, err)
+	}
+	r = bufio.NewReaderSize(strings.NewReader(line), 16)
+	if _, err := readBoundedSSELine(r, len(line)-1); err == nil {
+		t.Fatal("oversized SSE line accepted")
+	}
+	if _, err := readSSEEndpoint(bufio.NewReader(strings.NewReader("data: "+strings.Repeat("x", 8192)+"\n")), "https://example.test/sse"); err == nil {
+		t.Fatal("oversized SSE endpoint accepted")
+	}
+}
 
 func TestLegacySSEClientDiscoverAndCall(t *testing.T) {
 	var mu sync.Mutex

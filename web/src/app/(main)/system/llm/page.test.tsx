@@ -1,4 +1,5 @@
 import "@testing-library/jest-dom/vitest";
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api";
 import type { ChatGPTModel, LLMProfile, ModelCapabilities } from "@/lib/types";
 
+import englishMessages from "../../../../../messages/en.json";
 import messages from "../../../../../messages/ko.json";
 import LLMPage from "./page";
 
@@ -139,6 +141,30 @@ describe("OpenAI model profiles", () => {
   });
 
   afterEach(() => cleanup());
+
+  it("switches the fork account and model controls to English without losing the open editor", async () => {
+    const view = render(
+      <NextIntlClientProvider locale="ko" messages={messages}>
+        <LLMPage />
+      </NextIntlClientProvider>,
+    );
+    await screen.findByText("ChatGPT 계정 연결");
+    fireEvent.click(screen.getByRole("button", { name: "모델 설정 추가" }));
+    await screen.findByRole("dialog");
+    await act(async () =>
+      view.rerender(
+        <NextIntlClientProvider locale="en" messages={englishMessages}>
+          <LLMPage />
+        </NextIntlClientProvider>,
+      ),
+    );
+    expect(screen.getByText("ChatGPT accounts")).toBeInTheDocument();
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("button", { name: "Test connection" })).toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(dialog.getByText("Advanced settings", { selector: "summary" })).toBeInTheDocument();
+    expect(dialog.queryByText("연결 확인")).not.toBeInTheDocument();
+  });
 
   it("keeps account login separate and adds model profiles from inside the models tab", async () => {
     await showPage();

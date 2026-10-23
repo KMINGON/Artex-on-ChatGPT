@@ -30,6 +30,7 @@ import (
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/notify"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/llm"
@@ -76,7 +77,7 @@ const (
 	errNotifyDigestRange   = "요약 주기는 1~1440분 사이여야 합니다"
 
 	// 사용자 대면 출력 언어 설정 (putSettings)
-	errOutputLanguageInvalid = "지원하지 않는 언어입니다(en·ko·zh·es·ja 중 하나여야 합니다)"
+	errOutputLanguageInvalid = "지원하지 않는 언어입니다(ko·en 중 하나여야 합니다)"
 
 	// 메인 에이전트 대화·세션 (newMainSession / chat)
 	errTaskDeletingNewSession = "작업을 삭제하는 중이라 새 세션을 만들 수 없습니다"
@@ -116,6 +117,7 @@ type Server struct {
 	chatGPT     *chatgptauth.Manager
 	chatGPTErr  error
 	chatGPTDir  string
+	browsers    *browserSessionManager
 	m           *Manager
 	engine      *Engine
 	ctx         context.Context
@@ -239,6 +241,7 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
+	m.resourceSkillDir = skillDir
 	key, err := loadOrCreateJWTKey(keyDir, dataDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
@@ -252,6 +255,23 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// First-run protection: cache the password hash and, while none is set, issue
 	// the console setup token (or apply ARTEX_ADMIN_PASSWORD) before any request.
 	s.bootstrapAuth()
+	browserPrivate := os.Getenv("ARTEX_AUTH_DIR")
+	if browserPrivate == "" {
+		browserPrivate = filepath.Join(keyDir, ".secrets")
+		// Legacy local launches can use the same directory for keys and workspace.
+		// Keep browser credentials outside that browsable root in that case.
+		base, _ := filepath.Abs(dataDir)
+		candidate, _ := filepath.Abs(browserPrivate)
+		if rel, relErr := filepath.Rel(base, candidate); relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			browserPrivate = filepath.Join(filepath.Dir(base), "."+filepath.Base(base)+"-private")
+		}
+	}
+	browserPrivate, err = prepareJWTDir(filepath.Join(browserPrivate, "browser-sessions"), dataDir)
+	if err != nil {
+		log.Fatalf("[browser] 비공개 세션 경로: %v", err)
+	}
+	s.browsers = newBrowserSessionManager(s.ctx, browserPrivate)
+	s.browsers.SetLimit(m.browserLimit())
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
 	// 之后每次保存策略再推一次（saveLLMRetryPolicy）。
@@ -331,8 +351,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		resolveLang := s.outputLanguage
 		agent.OutputLanguage = resolveLang
 		config.CurrentLanguage = resolveLang
-		notify.Lang = resolveLang                       // 푸시·이메일의 심각도·상태 라벨도 같은 언어를 따른다
-		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
+		notify.Lang = resolveLang // 푸시·이메일의 심각도·상태 라벨도 같은 언어를 따른다
+		wireAgentAugment(m.pg, s.skillDir, s.hostTools, s.browsers)
 		domainReg := buildDomainReg(m.Assets())
 		wireTools(m.pg, domainReg) // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)          // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
@@ -612,7 +632,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	// chat agent serves MANY custom agents by key → it holds the GLOBAL opts
 	// (backend/key) and gates Enabled per-conversation-agent at Chat time. 对话始终用激活配置。
 	s.chatAgent = agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, win) // chat page runner
-	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert(), s.m.GlobalProxy())
 	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
 	s.chatAgent.SetGuard(s.chatGuard())
 	s.chatAgent.SetConnectionIdentity(cfg.ConnectionIdentity)
@@ -755,7 +775,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 		}
 		tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 		ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
-		ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
+		ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert(), s.m.GlobalProxy())
 		ca.SetWebSearch(s.m.WebSearchOpts())
 		ca.SetGuard(s.chatGuard())
 		ca.SetConnectionIdentity(cfg.ConnectionIdentity)
@@ -1018,6 +1038,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tools/{key}/reset", s.pgResetTool)
 	// MCP CRUD
 	mux.HandleFunc("GET /api/mcp", s.pgListMCP)
+	s.registerBrowserRoutes(mux)
+	mux.HandleFunc("GET /api/presets", s.getPresets)
+	mux.HandleFunc("PUT /api/presets/resource", s.applyResourcePreset)
 	mux.HandleFunc("POST /api/mcp", s.pgSaveMCP)
 	mux.HandleFunc("DELETE /api/mcp/{id}", s.pgDeleteMCP)
 	mux.HandleFunc("GET /api/mcp/{id}/tools", s.pgMCPTools)
@@ -1625,6 +1648,7 @@ func truncateReply(s string) string {
 }
 
 type createTaskReq struct {
+	TestPreset           string   `json:"test_preset,omitempty"`
 	Name                 string   `json:"name,omitempty"` // 可选任务名称;省略/空=未命名
 	CategoryID           *int64   `json:"category_id,omitempty"`
 	Description          string   `json:"description"`
@@ -1690,8 +1714,13 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errCreateTaskInterceptRules+err.Error())
 		return
 	}
+	if _, err := policy.Resolve(req.TestPreset); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
-		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
+		TestPreset: req.TestPreset,
+		Name:       strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,
@@ -3463,20 +3492,22 @@ func (s *Server) settingsPayload() map[string]any {
 	// 사용자 대면 출력 언어: 런타임 설정값 > config.Language() 기본값(ARTEX_LANG·설정 파일·한국어).
 	outputLang := s.outputLanguage()
 	return map[string]any{
-		"output_language":          outputLang, // 사용자 대면 출력 언어(en/ko/zh/es/ja)
-		"traffic_capture":          s.m.TrafficEnabled(),
-		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
-		"llm_record":               s.m.LLMRecordEnabled(),
-		"web_search_enabled":       on,
-		"web_search_backend":       backend,
-		"brave_key_set":            strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":           strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":         proxy,                       // 独立出口代理(http/https/socks5)，空=直连
-		"global_proxy":             s.m.GlobalProxy(),           // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
-		"python_interpreter":       strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":                  s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"task_concurrency_enabled": concOn,                      // 任务并发上限开关(默认关)
-		"task_concurrency_limit":   concLimit,                   // 同时运行任务上限(开启后默认5)
+		"output_language":           outputLang, // 사용자 대면 출력 언어(ko/en)
+		"traffic_capture":           s.m.TrafficEnabled(),
+		"agent_traffic_binding":     s.m.pg.GetBool(settingAgentTrafficBinding, false),
+		"llm_record":                s.m.LLMRecordEnabled(),
+		"web_search_enabled":        on,
+		"web_search_backend":        backend,
+		"brave_key_set":             strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":            strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":          proxy,                       // 独立出口代理(http/https/socks5)，空=直连
+		"global_proxy":              s.m.GlobalProxy(),           // 全局出口代理(http/https/socks5)，所有目标流量走它，空=直连
+		"python_interpreter":        strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"resource_preset":           s.m.resourcePresetID(),
+		"browser_concurrency_limit": s.m.browserLimit(),
+		"workers":                   s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"task_concurrency_enabled":  concOn,        // 任务并发上限开关(默认关)
+		"task_concurrency_limit":    concLimit,     // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
 		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
 		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
@@ -3530,7 +3561,10 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // agents (applyLLM) so the new proxy/traffic-tools/prompt state takes hold — when
 // off, agents get no proxy config, no traffic tools, and no proxy prompt content.
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
+	s.m.resourceSettingsMu.Lock()
+	defer s.m.resourceSettingsMu.Unlock()
 	var req struct {
+		BrowserLimit        *int  `json:"browser_concurrency_limit"`
 		TrafficCapture      *bool `json:"traffic_capture"`
 		AgentTrafficBinding *bool `json:"agent_traffic_binding"`
 		LLMRecord           *bool `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
@@ -3559,13 +3593,26 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		NotifyEnabled    *bool   `json:"notify_enabled"`
 		NotifyBaseURL    *string `json:"notify_public_base_url"`
 		NotifyDigestMins *int    `json:"notify_digest_interval_min"`
-		// 사용자 대면 출력 언어(en/ko/zh/es/ja). 에이전트 훅이 매 턴 읽으므로 즉시 적용되고
+		// 사용자 대면 출력 언어(ko/en). 에이전트 훅이 매 턴 읽으므로 즉시 적용되고
 		// 에이전트를 다시 생성할 필요가 없다. null=변경 안 함.
 		OutputLanguage *string `json:"output_language"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if req.BrowserLimit != nil {
+		if *req.BrowserLimit < 1 || *req.BrowserLimit > 64 {
+			writeErr(w, 400, "브라우저 동시 실행 수는 1~64 사이여야 합니다")
+			return
+		}
+		if err := s.m.pg.SetSetting(settingBrowserLimit, strconv.Itoa(*req.BrowserLimit)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if s.browsers != nil {
+			s.browsers.SetLimit(*req.BrowserLimit)
+		}
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {
@@ -3580,7 +3627,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.OutputLanguage != nil {
-		// 지원 언어("en"/"ko"/"zh"/"es")만 받는다. 에이전트 훅이 매 턴 읽으므로 즉시
+		// 지원 언어("ko"/"en")만 받는다. 에이전트 훅이 매 턴 읽으므로 즉시
 		// 적용되고 에이전트를 다시 생성할 필요가 없다.
 		lang := config.NormalizeLanguage(*req.OutputLanguage)
 		if lang == "" {
@@ -3922,6 +3969,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			taskDir := filepath.Join(s.m.dir, "tasks", t.ID)
 			agentMsg := composeAgentMessage(agentMessage, req.Attachments, taskDir)
 			s.engine.BeginLLMCall(t.ID)
+			ctx = intercept.WithTaskContext(ctx, t.ID, "mainagent", emit)
 			_, err := ma.Chat(ctx, maTaskID, mainSeg, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal, t.NotifyHint)
 			s.engine.EndLLMCall(t.ID)
 			if err != nil && ctx.Err() == nil && !errorRecorded.Load() {
@@ -4121,7 +4169,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
-	// 한국어 원문 응답 문구를 활성 출력 언어로 치환한다(en/zh/es/ja). 카탈로그에 없거나
+	// 한국어 원문 응답 문구를 활성 출력 언어로 치환한다(en). 카탈로그에 없거나
 	// 한국어이면 원문 그대로 나간다. 하위 계층에서 전파된 임의 err.Error() 는 보통 키에
 	// 없어 그대로 통과한다.
 	writeJSON(w, code, map[string]any{"error": trMsg(msg)})

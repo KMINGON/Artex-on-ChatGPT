@@ -8,14 +8,12 @@ import { getLocalStorageValue } from "@/lib/local-storage.client";
 const DATE_LOCALE: Record<Locale, string> = {
   en: "en-US",
   ko: "ko-KR",
-  zh: "zh-CN",
-  es: "es-ES",
-  ja: "ja-JP",
 };
 
 export function getDateLocale(): string {
   if (typeof window === "undefined") return DATE_LOCALE[DEFAULT_LOCALE];
   const raw = getLocalStorageValue(LOCALE_STORAGE_KEY);
-  const loc: Locale = isLocale(raw) ? raw : resolveLocale();
+  const fallback = raw === null ? resolveLocale() : DEFAULT_LOCALE;
+  const loc: Locale = isLocale(raw) ? raw : fallback;
   return DATE_LOCALE[loc];
 }

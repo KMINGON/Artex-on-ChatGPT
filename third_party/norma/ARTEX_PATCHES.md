@@ -49,10 +49,22 @@ Artex uses a local module replacement for these limited runtime extensions:
   context-view, and tool contracts remain tested; old user archives and
   transcripts are not deleted.
 - WebFetch (and WebSearch's shared HTTP client) uses an explicitly direct
-  transport when no proxy is configured, including the direct retry path.
+  transport when no proxy is configured and rejects malformed explicit proxies.
+  Only a designated recording proxy can be bypassed after a proxy-caused error;
+  the retry preserves the configured external egress proxy and reports that
+  traffic was not recorded. Ordinary proxies are never silently bypassed.
   WebFetch reports interrupted body reads as errors with any received partial
   content, marks its 2 MiB receive limit separately from the 50,000-byte display
   limit, and preserves UTF-8 boundaries when shortening either output.
+- 이미지 입력은 `llm.BlockImage`로 보존한다. MCP의 텍스트·이미지 혼합
+  결과와 `Read` 이미지 파일을 실제 시각 입력으로 전달하며 MIME·크기·해상도와
+  도구 결과당 이미지 개수를 검사한다. 세션 출력 폴더가 있으면 이미지는 0600
+  권한의 SHA-256 파일로 저장하고 대화에는 경로·해시만 남긴다. 파일을 다시
+  전송할 때 해시와 형식을 확인하며, 일반 도구 로그에는 픽셀 데이터가 없다.
+  압축 예산도 base64 길이가 아닌 별도의 이미지 예산을 반영한다. OpenAI 요청
+  형식·최근 이미지 유지 한도·누락된 파일의 복구 안내는 ARTEX `chatgptllm`에서
+  처리한다. MCP stdio·HTTP, 파일 읽기, 대화 저장/재개, 요청 변환 회귀 검사로
+  관련 경로를 검증한다.
 
 Checkpoints now use `checkpoint_begin`, `checkpoint_part`, and
 `checkpoint_commit` records with version 1, an ID, count, ordered indices, and a

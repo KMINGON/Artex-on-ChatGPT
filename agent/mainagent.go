@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -18,15 +19,17 @@ import (
 // (→planner) or direct high-priority intents (→frontier). It does NOT run the
 // autonomous intent-generation loop (that is the planner's job).
 type MainAgent struct {
+	guard              *guard.Guard
 	findingRecorder    FindingRecorder
 	connectionIdentity func() string
 	prov               llm.Provider
 	model              string
-	tx                 *transcript.Store                      // raw LLM conversation persistence (nil = off)
-	window             int                                    // context window in tokens (for compaction)
-	windowFn           func() int                             // optional dynamic task-chain minimum
-	maxTurns           int                                    // max agent turns per run (0 = unlimited)
-	proxyAddr          string                                 // recording proxy for WebFetch (empty = direct)
+	tx                 *transcript.Store // raw LLM conversation persistence (nil = off)
+	window             int               // context window in tokens (for compaction)
+	windowFn           func() int        // optional dynamic task-chain minimum
+	maxTurns           int               // max agent turns per run (0 = unlimited)
+	proxyAddr          string            // recording proxy for WebFetch (empty = direct)
+	proxyFallback      string
 	proxyCACert        string                                 // recording proxy's CA cert path (HTTPS verify)
 	webSearch          WebSearchOpts                          // web_search tool backend selection (off by default)
 	workDir            string                                 // shared work dir (surfaced in prompt as artifact-output target)
@@ -58,6 +61,9 @@ func NewMainAgent(prov llm.Provider, model, workDir string, tx *transcript.Store
 
 func (m *MainAgent) SetCompactionWindowResolver(fn func() int) { m.windowFn = fn }
 
+// SetGuard applies the task's configured rules to orchestration tool calls too.
+func (m *MainAgent) SetGuard(g *guard.Guard) { m.guard = g }
+
 func (m *MainAgent) compactionWindow() int {
 	if m.windowFn != nil {
 		return m.windowFn()
@@ -67,7 +73,12 @@ func (m *MainAgent) compactionWindow() int {
 
 // SetProxy points the main agent's WebFetch at the recording proxy plus the CA
 // cert it trusts to verify HTTPS through it (empty addr = direct).
-func (m *MainAgent) SetProxy(addr, caCert string) { m.proxyAddr, m.proxyCACert = addr, caCert }
+func (m *MainAgent) SetProxy(addr, caCert string, fallback ...string) {
+	m.proxyAddr, m.proxyCACert, m.proxyFallback = addr, caCert, ""
+	if len(fallback) > 0 {
+		m.proxyFallback = fallback[0]
+	}
+}
 
 // SetWebSearch selects the web_search backend for the main agent (off by default).
 func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
@@ -105,6 +116,10 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // text / result) so the main-agent session shows its work — exactly like the
 // worker/planner sessions — not just the final answer.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
+	presetBlock, policyErr := taskPresetBlock(ts)
+	if policyErr != nil {
+		return "", policyErr
+	}
 	tsx := NewToolSet(ts, "human")
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
@@ -126,18 +141,20 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
+	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir)+presetBlock+constraintBlock(ts), def)
 	opts := agentcore.Options{
-		Provider:        m.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
-		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   m.proxyAddr,
-		WebFetchCACert:  m.proxyCACert,
+		Provider:               m.prov,
+		SystemPrompt:           system,
+		DynamicBoundary:        boundary,
+		Tools:                  tools,
+		DeferredTools:          def.Deferred,
+		UnlockSet:              def.Unlock,
+		PermissionMode:         permission.ModeBypass,
+		EnableWebFetch:         true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxy:          m.proxyAddr,
+		WebFetchCACert:         m.proxyCACert,
+		WebFetchRecordingProxy: m.proxyCACert != "",
+		WebFetchFallbackProxy:  m.proxyFallback,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:    m.webSearch.Enabled,
@@ -155,6 +172,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		Settlement:   wrapupSettlement("mainagent", nil),
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    m.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
+	}
+	if m.guard != nil {
+		opts.Hooks = m.guard.Hooks()
 	}
 	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per segment
 		opts.Transcript = m.tx

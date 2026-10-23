@@ -131,6 +131,10 @@ func cloneContent(blocks []ContentBlock) []ContentBlock {
 	for i, b := range blocks {
 		b.Input = append(json.RawMessage(nil), b.Input...)
 		b.Content = cloneContent(b.Content)
+		if b.Image != nil {
+			image := *b.Image
+			b.Image = &image
+		}
 		out[i] = b
 	}
 	return out

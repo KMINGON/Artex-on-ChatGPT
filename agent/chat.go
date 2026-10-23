@@ -30,6 +30,7 @@ type ChatAgent struct {
 	tx                 *transcript.Store
 	window             int
 	proxyAddr          string
+	proxyFallback      string
 	proxyCACert        string
 	webSearch          WebSearchOpts
 	guard              *guard.Guard // optional; nil disables intercept hooks for chat
@@ -60,7 +61,12 @@ func (c *ChatAgent) maxTokens() int {
 
 // SetProxy points the chat agent's WebFetch/Bash at the recording proxy plus the
 // CA cert it trusts (empty addr = direct). Kept for parity with the other agents.
-func (c *ChatAgent) SetProxy(addr, caCert string) { c.proxyAddr, c.proxyCACert = addr, caCert }
+func (c *ChatAgent) SetProxy(addr, caCert string, fallback ...string) {
+	c.proxyAddr, c.proxyCACert, c.proxyFallback = addr, caCert, ""
+	if len(fallback) > 0 {
+		c.proxyFallback = fallback[0]
+	}
+}
 
 // SetWebSearch selects the web_search backend for the chat agent (off by default).
 func (c *ChatAgent) SetWebSearch(o WebSearchOpts) { c.webSearch = o }
@@ -128,16 +134,18 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 
 	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
 	opts := agentcore.Options{
-		Provider:        c.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
-		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   c.proxyAddr,
-		WebFetchCACert:  c.proxyCACert,
+		Provider:               c.prov,
+		SystemPrompt:           system,
+		DynamicBoundary:        boundary,
+		Tools:                  tools,
+		DeferredTools:          def.Deferred,
+		UnlockSet:              def.Unlock,
+		PermissionMode:         permission.ModeBypass,
+		EnableWebFetch:         true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxy:          c.proxyAddr,
+		WebFetchCACert:         c.proxyCACert,
+		WebFetchRecordingProxy: c.proxyCACert != "",
+		WebFetchFallbackProxy:  c.proxyFallback,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:    ws.Enabled,

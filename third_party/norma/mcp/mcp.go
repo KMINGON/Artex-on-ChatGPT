@@ -12,7 +12,6 @@ import (
 	"io"
 	"sync"
 
-	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	"github.com/Autumn-27/norma/tool"
 )
@@ -96,7 +95,7 @@ func newConn(r io.Reader, w io.Writer) *conn {
 
 func (c *conn) readLoop(r io.Reader) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), tool.MaxMCPResponseBytes)
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -229,21 +228,7 @@ func (c *Client) wrap(rt remoteTool) tool.CoreTool {
 			if err != nil {
 				return tool.Errorf("Error: " + err.Error()), nil
 			}
-			var res struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-				IsError bool `json:"isError"`
-			}
-			if err := json.Unmarshal(raw, &res); err != nil {
-				return tool.Errorf("Error: bad MCP response: " + err.Error()), nil
-			}
-			var text string
-			for _, blk := range res.Content {
-				text += blk.Text
-			}
-			return tool.Result{Content: []llm.ContentBlock{llm.TextBlock(tool.Capture(tc, text))}, IsError: res.IsError}, nil
+			return tool.DecodeMCPResult(raw, tc), nil
 		},
 	})
 }

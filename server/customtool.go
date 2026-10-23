@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -454,9 +454,12 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 		req.Header.Set(k, renderTemplate(v, params, identity))
 	}
 	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000)}
-	if tr := s.httpProxyTransport(spec); tr != nil {
-		client.Transport = tr
+	tr, err := s.httpProxyTransport(spec)
+	if err != nil {
+		return actool.Errorf("프록시 설정 오류: " + err.Error()), nil
 	}
+	client.Transport = tr
+	defer tr.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
 		return actool.Errorf("요청 실패: " + err.Error()), nil
@@ -468,34 +471,41 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	return actool.Text(actool.Capture(tc, string(b))), nil
 }
 
-// httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its CA.
-func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
+// httpProxyTransport preserves explicit routing and adds the recorder CA to the
+// system trust pool. An invalid proxy never silently becomes a direct request.
+func (s *Server) httpProxyTransport(spec httpExec) (*http.Transport, error) {
 	proxyStr := strings.TrimSpace(spec.Proxy)
 	var caFile string
-	if spec.UseRecordingProxy {
+	if spec.UseRecordingProxy && s.m != nil {
 		if addr := s.m.ProxyAddr(); addr != "" {
-			proxyStr = "http://" + addr
+			proxyStr = addr
 			caFile = s.m.ProxyCACert()
 		}
 	}
-	if proxyStr == "" {
-		return nil
-	}
-	pu, err := url.Parse(proxyStr)
-	if err != nil {
-		return nil
-	}
-	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
-	if caFile != "" {
-		if pem, err := os.ReadFile(caFile); err == nil {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(pem) {
-				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
-			}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil // direct must not inherit an unrelated host environment proxy
+	if proxyStr != "" {
+		pu, err := traffic.ValidateProxyURL(proxyStr)
+		if err != nil {
+			return nil, fmt.Errorf("http://, https:// 또는 socks5:// 형식의 프록시 주소가 필요합니다")
 		}
+		tr.Proxy = http.ProxyURL(pu)
 	}
-	return tr
+	if caFile != "" {
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("기록 프록시 인증서를 읽을 수 없습니다")
+		}
+		pool, _ := x509.SystemCertPool()
+		if pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("기록 프록시 인증서가 올바른 PEM 형식이 아닙니다")
+		}
+		tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+	}
+	return tr, nil
 }
 
 // ---------- helpers ----------

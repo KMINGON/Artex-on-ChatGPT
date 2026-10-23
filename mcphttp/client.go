@@ -23,7 +23,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -131,6 +130,8 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	streamCtx, cancel := context.WithCancel(context.Background())
+	stopHandshakeCancel := context.AfterFunc(ctx, cancel)
+	defer stopHandshakeCancel()
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {
 		cancel()
@@ -181,7 +182,7 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 
 func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readBoundedSSELine(r, 8192)
 		if err != nil {
 			return "", fmt.Errorf("mcp sse endpoint: %w", err)
 		}
@@ -208,10 +209,25 @@ func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 	}
 }
 
+func readBoundedSSELine(r *bufio.Reader, limit int) (string, error) {
+	var line []byte
+	for {
+		part, err := r.ReadSlice('\n')
+		if len(part) > limit-len(line) {
+			return "", fmt.Errorf("MCP 응답이 허용 크기를 초과했습니다")
+		}
+		line = append(line, part...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return string(line), err
+	}
+}
+
 func (c *Client) readLegacySSE(r *bufio.Reader) {
 	defer close(c.streamDone)
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readBoundedSSELine(r, actool.MaxMCPResponseBytes)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				select {
@@ -301,24 +317,7 @@ func (c *Client) wrap(rt remoteTool) actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("Error: " + err.Error()), nil
 			}
-			var res struct {
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-				IsError bool `json:"isError"`
-			}
-			if err := json.Unmarshal(raw, &res); err != nil {
-				return actool.Errorf("Error: bad MCP response: " + err.Error()), nil
-			}
-			var text string
-			for _, blk := range res.Content {
-				text += blk.Text
-			}
-			// 与内置/自定义工具一致：超长输出走 Capture——按会话 MaxOutputChars（默认
-			// 30000）截断，配了 ToolOutputDir 时全量溢写到磁盘只留 head + 指针，避免大
-			// MCP 结果整段灌爆上下文。
-			return actool.Result{Content: []llm.ContentBlock{llm.TextBlock(actool.Capture(tc, text))}, IsError: res.IsError}, nil
+			return actool.DecodeMCPResult(raw, tc), nil
 		},
 	})
 }
@@ -470,7 +469,7 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 		return parseSSE(resp.Body, body.ID)
 	}
 	var out rpcResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, actool.MaxMCPResponseBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("mcp: decode json response: %w", err)
 	}
 	return &out, nil
@@ -534,7 +533,7 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 // response matching wantID (server-to-client requests/notifications are skipped).
 func parseSSE(r io.Reader, wantID int) (*rpcResponse, error) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), actool.MaxMCPResponseBytes)
 	var dataBuf strings.Builder
 	flush := func() (*rpcResponse, bool) {
 		if dataBuf.Len() == 0 {
@@ -560,6 +559,9 @@ func parseSSE(r io.Reader, wantID int) (*rpcResponse, error) {
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
+			if dataBuf.Len()+len(line) > actool.MaxMCPResponseBytes {
+				return nil, fmt.Errorf("MCP 응답이 허용 크기를 초과했습니다")
+			}
 			dataBuf.WriteString(strings.TrimSpace(line[len("data:"):]))
 		}
 	}

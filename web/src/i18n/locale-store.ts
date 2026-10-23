@@ -5,14 +5,15 @@ import * as React from "react";
 import { setClientCookie } from "@/lib/cookie.client";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 
-import { isLocale, LOCALE_COOKIE, LOCALE_STORAGE_KEY, type Locale, resolveLocale } from "./config";
+import { DEFAULT_LOCALE, isLocale, LOCALE_COOKIE, LOCALE_STORAGE_KEY, type Locale, resolveLocale } from "./config";
 
 // 사용자가 고른 화면 표시 언어는 순수 프런트엔드 환경설정이라 서버에 저장하지 않고
 // localStorage(와 쿠키)에만 둔다. 계정과 동기화되지 않으므로 브라우저를 바꾸거나 사이트
 // 데이터를 지우면 기본 언어로 돌아간다. 에이전트 출력 언어는 별도로 서버 설정에 저장된다.
 
 function parseLocale(raw: string | null): Locale {
-  return isLocale(raw) ? raw : resolveLocale();
+  if (isLocale(raw)) return raw;
+  return raw === null ? resolveLocale() : DEFAULT_LOCALE;
 }
 
 // 같은 탭 안의 구독자 집합. storage 이벤트는 "다른" 탭에서만 발생하므로, 현재 탭에서

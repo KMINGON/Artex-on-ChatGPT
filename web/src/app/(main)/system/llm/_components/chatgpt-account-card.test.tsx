@@ -1,11 +1,14 @@
 import "@testing-library/jest-dom/vitest";
+
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { NextIntlClientProvider } from "next-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "@/lib/api";
 import { chatGPTAccountLabel } from "@/lib/chatgpt";
 import type { ChatGPTAccount } from "@/lib/types";
 
+import messages from "../../../../../../messages/ko.json";
 import { ChatGPTAccountCard } from "./chatgpt-account-card";
 
 vi.mock("@/lib/api", () => ({
@@ -43,7 +46,11 @@ describe("ChatGPT account connection", () => {
     const onChanged = vi.fn().mockResolvedValue(undefined);
     let view: ReturnType<typeof render>;
     await act(async () => {
-      view = render(<ChatGPTAccountCard onAccounts={onAccounts} onChanged={onChanged} />);
+      view = render(
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <ChatGPTAccountCard onAccounts={onAccounts} onChanged={onChanged} />
+        </NextIntlClientProvider>,
+      );
     });
     return { unmount: () => view.unmount(), onAccounts, onChanged };
   }
@@ -125,22 +132,24 @@ describe("ChatGPT account connection", () => {
     vi.mocked(api.chatgptRecheck).mockResolvedValue({ ok: true });
     await act(async () =>
       render(
-        <ChatGPTAccountCard
-          onAccounts={vi.fn()}
-          onChanged={vi.fn().mockResolvedValue(undefined)}
-          profiles={[
-            {
-              id: "31",
-              name: "재확인 프로필",
-              model: "chosen-account-model",
-              auth_mode: "chatgpt_plan",
-              chatgpt_account_id: account.id,
-              rate_per_second: 0,
-              rate_per_minute: 0,
-              is_default: false,
-            },
-          ]}
-        />,
+        <NextIntlClientProvider locale="ko" messages={messages}>
+          <ChatGPTAccountCard
+            onAccounts={vi.fn()}
+            onChanged={vi.fn().mockResolvedValue(undefined)}
+            profiles={[
+              {
+                id: "31",
+                name: "재확인 프로필",
+                model: "chosen-account-model",
+                auth_mode: "chatgpt_plan",
+                chatgpt_account_id: account.id,
+                rate_per_second: 0,
+                rate_per_minute: 0,
+                is_default: false,
+              },
+            ]}
+          />
+        </NextIntlClientProvider>,
       ),
     );
     expect(api.chatgptRecheck).not.toHaveBeenCalled();

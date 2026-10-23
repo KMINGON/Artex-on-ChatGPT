@@ -284,13 +284,21 @@ type conversationDeleteItem struct {
 // Keep cancellation and deletion atomic with conversationRunContext admission.
 func (s *Server) deleteConversations(pg *db.DB, ids []int64) ([]int64, error) {
 	s.chatMu.Lock()
-	defer s.chatMu.Unlock()
 	for _, id := range ids {
 		if cancel := s.chatCancel[s.convBusyKey(id)]; cancel != nil {
 			cancel(agent.AbortChatStoppedByUser)
 		}
 	}
-	return pg.DeleteConversations(ids)
+	deleted, err := pg.DeleteConversations(ids)
+	s.chatMu.Unlock()
+	if err == nil && s.browsers != nil {
+		for _, id := range deleted {
+			if cleanupErr := s.browsers.removeConversation(s.convBusyKey(id)); cleanupErr != nil {
+				log.Printf("[browser] 대화 %d 삭제 후 인증 세션 정리 실패: %v", id, cleanupErr)
+			}
+		}
+	}
+	return deleted, err
 }
 
 // pgDeleteConversationsBatch deletes up to 100 selected conversations in one

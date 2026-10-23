@@ -22,7 +22,7 @@ import (
 // hostTools, if set, returns runtime host tools (currently the traffic tools when
 // capture is on) to add to EVERY agent's base list — the DB tools table then
 // filters them per-agent binding. Empty/nil → no host tools this run (capture off).
-func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string)) {
+func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.CoreTool, map[string][]string), browsers ...*browserSessionManager) {
 	agent.ToolAugment = func(ctx context.Context, agentKey string) ([]actool.CoreTool, agent.DeferredInfo, func()) {
 		a, err := pg.GetAgentByKey(agentKey)
 		if err != nil || a == nil {
@@ -83,7 +83,13 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectMCP(ctx, m)
+				var cl mcpClient
+				var err error
+				if len(browsers) > 0 && browsers[0] != nil && managedBrowser(m) {
+					cl, err = browsers[0].acquire(ctx, agentKey, m)
+				} else {
+					cl, err = connectMCP(ctx, m)
+				}
 				if err != nil {
 					log.Printf("[mcp] %s 연결 실패: %v", m.Name, err)
 					continue

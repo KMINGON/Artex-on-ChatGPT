@@ -30,19 +30,18 @@ type Config struct {
 	Database Database `json:"database"`
 	SkillDir string   `json:"skill_dir"`
 	// Language is the bootstrap/default user-facing output language for the
-	// artex-global ("en"/"ko"/"zh"/"es"/"ja"). Empty → DefaultLanguage. At
+	// application ("en"/"ko"). Empty → DefaultLanguage. At
 	// runtime a value stored in the settings table (edited in the UI) overrides it.
 	Language string `json:"language"`
 }
 
 // SupportedLanguages lists the user-facing output languages artex-global can
 // switch between. Agent output, UI strings and backend messages all key off these.
-var SupportedLanguages = []string{"en", "ko", "zh", "es", "ja"}
+var SupportedLanguages = []string{"ko", "en"}
 
 // DefaultLanguage is the out-of-box user-facing language when nothing is
-// configured. artex-global defaults to English; Korean, Chinese, Spanish and
-// Japanese are selectable at runtime via the language setting (and ARTEX_LANG).
-const DefaultLanguage = "en"
+// configured. Korean is the default; English remains selectable at runtime.
+const DefaultLanguage = "ko"
 
 // NormalizeLanguage lower-cases and validates a language code, returning "" when
 // the code is empty or unsupported (so callers can fall through to the next source).
@@ -66,7 +65,7 @@ var CurrentLanguage func() string
 // ActiveLanguage resolves the language for backend display strings. Precedence:
 // the runtime hook (settings table, via the server) over an unwired fallback of
 // "ko". Production always wires CurrentLanguage, so a fresh deploy resolves to the
-// configured default (DefaultLanguage = "en") through that hook; the "ko" fallback
+// configured default (DefaultLanguage = "ko") through that hook; the "ko" fallback
 // only applies when the hook is absent (unit tests / standalone), so the Korean
 // localization golden tests hold without each having to pin the language.
 func ActiveLanguage() string {

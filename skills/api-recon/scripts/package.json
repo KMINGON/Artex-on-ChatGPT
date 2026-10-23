@@ -4,6 +4,9 @@
   "private": true,
   "description": "Headless runtime API harvester for the api-recon skill",
   "dependencies": {
-    "puppeteer-core": "^23.11.1"
+    "playwright": "1.64.0-alpha-1790635538000"
+  },
+  "scripts": {
+    "test": "node --test runtime_harvest.test.js"
   }
 }

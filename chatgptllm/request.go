@@ -39,6 +39,16 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 		functions = append(functions, map[string]any{"type": "function", "name": wire, "description": tool.Description, "parameters": parameters, "strict": false})
 	}
 	input := make([]any, 0, len(req.Messages))
+	images, err := prepareImageInputs(req.Messages)
+	if err != nil {
+		return nil, nil, err
+	}
+	imageIndex := 0
+	nextImage := func() map[string]any {
+		part := images[imageIndex]
+		imageIndex++
+		return part
+	}
 	for _, msg := range req.Messages {
 		if msg.Role != llm.RoleUser && msg.Role != llm.RoleAssistant {
 			return nil, nil, failure("unsupported_role", "지원하지 않는 대화 역할입니다", nil)
@@ -61,6 +71,16 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 					kind = "output_text"
 				}
 				input = append(input, map[string]any{"type": "message", "role": string(msg.Role), "content": []any{map[string]any{"type": kind, "text": block.Text}}})
+			case llm.BlockImage:
+				if msg.Role != llm.RoleUser {
+					return nil, nil, unsupportedBlock(block.Type)
+				}
+				parts := []any{}
+				if block.Image != nil && block.Image.Path != "" {
+					parts = append(parts, map[string]any{"type": "input_text", "text": block.Image.Description()})
+				}
+				parts = append(parts, nextImage())
+				input = append(input, map[string]any{"type": "message", "role": "user", "content": parts})
 			case llm.BlockToolUse:
 				if msg.Role != llm.RoleAssistant || block.ID == "" || block.Name == "" || !validArguments(block.Input) {
 					return nil, nil, failure("invalid_tool_call", "도구 호출 기록이 올바르지 않습니다", nil)
@@ -71,17 +91,35 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 					return nil, nil, failure("invalid_tool_result", "도구 결과 기록이 올바르지 않습니다", nil)
 				}
 				var parts []string
+				var visualParts []any
+				hasImage := false
+				if block.IsError {
+					visualParts = append(visualParts, map[string]any{"type": "input_text", "text": "도구 실행 오류:"})
+				}
 				for _, content := range block.Content {
-					if content.Type != llm.BlockText {
+					switch content.Type {
+					case llm.BlockText:
+						parts = append(parts, content.Text)
+						visualParts = append(visualParts, map[string]any{"type": "input_text", "text": content.Text})
+					case llm.BlockImage:
+						hasImage = true
+						if content.Image != nil && content.Image.Path != "" {
+							visualParts = append(visualParts, map[string]any{"type": "input_text", "text": content.Image.Description()})
+						}
+						visualParts = append(visualParts, nextImage())
+					default:
 						return nil, nil, unsupportedBlock(content.Type)
 					}
-					parts = append(parts, content.Text)
 				}
 				output := strings.Join(parts, "\n")
 				if block.IsError {
 					output = "도구 실행 오류:\n" + output
 				}
-				input = append(input, map[string]any{"type": "function_call_output", "call_id": block.ToolUseID, "output": output})
+				var wireOutput any = output
+				if hasImage {
+					wireOutput = visualParts
+				}
+				input = append(input, map[string]any{"type": "function_call_output", "call_id": block.ToolUseID, "output": wireOutput})
 			case llm.BlockThinking:
 				// Context projection may intentionally discard opaque replay state
 				// after pruning tools. A visible summary alone is not model state.
@@ -135,6 +173,57 @@ func encodeRequest(cfg Config, req llm.CompletionRequest) ([]byte, map[string]st
 		return nil, nil, failure("invalid_request", "요청을 JSON으로 변환할 수 없습니다", err)
 	}
 	return encoded, names, nil
+}
+
+// prepareImageInputs keeps recent visual evidence bounded without breaking
+// tool-call pairing or serializing pixels as text. Older screenshots remain
+// available through their artifact path and can be read again on demand.
+// Missing artifacts become an actionable tool observation, not a permanent
+// provider error that prevents the whole saved conversation from resuming.
+func prepareImageInputs(messages []llm.Message) ([]map[string]any, error) {
+	var sources []*llm.ImageSource
+	for _, message := range messages {
+		if len(message.ProviderData) > 0 {
+			continue
+		}
+		for _, block := range message.Content {
+			if block.Type == llm.BlockImage {
+				sources = append(sources, block.Image)
+			}
+			if block.Type == llm.BlockToolResult {
+				for _, child := range block.Content {
+					if child.Type == llm.BlockImage {
+						sources = append(sources, child.Image)
+					}
+				}
+			}
+		}
+	}
+	parts := make([]map[string]any, len(sources))
+	count, encodedBytes := 0, 0
+	for i := len(sources) - 1; i >= 0; i-- {
+		source := sources[i]
+		if source == nil {
+			return nil, failure("invalid_image", "이미지 데이터가 없습니다", nil)
+		}
+		note := "이전 이미지는 현재 요청에서 생략했습니다. 필요하면 해당 파일을 Read로 다시 읽으세요. " + source.Description()
+		if count < llm.MaxImagesPerRequest {
+			url, err := source.DataURL()
+			if err != nil {
+				if source.Path == "" {
+					return nil, failure("invalid_image", err.Error(), nil)
+				}
+				note = "이미지를 다시 읽거나 캡처해야 합니다: " + err.Error() + " " + source.Description()
+			} else if encodedBytes+len(url) <= 32<<20 {
+				parts[i] = map[string]any{"type": "input_image", "image_url": url, "detail": "auto"}
+				count++
+				encodedBytes += len(url)
+				continue
+			}
+		}
+		parts[i] = map[string]any{"type": "input_text", "text": note}
+	}
+	return parts, nil
 }
 
 func unsupportedBlock(kind llm.BlockType) error {

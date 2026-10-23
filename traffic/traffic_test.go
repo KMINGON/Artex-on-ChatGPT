@@ -2,6 +2,7 @@ package traffic
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -406,5 +407,44 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 	}
 	if _, err := os.Stat(blobC); !os.IsNotExist(err) {
 		t.Fatalf("blobC still exists after last reference removed: %v", err)
+	}
+}
+
+func TestStreamingCaptureRecordsMetadataWithoutReadingBody(t *testing.T) {
+	tr, err := Open(t.TempDir(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	flow := newFlow("api.example.com", "GET", "/events", nil, nil, withRespType("text/event-stream"))
+	flow.Stream = true
+	reader := strings.NewReader("data: still available\n\n")
+	s := &sink{t: tr}
+	out := s.StreamResponseModifier(flow, reader)
+	if out != reader || reader.Len() != len("data: still available\n\n") {
+		t.Fatal("stream was consumed or replaced")
+	}
+	var count int
+	if err := tr.DB().QueryRow("SELECT COUNT(*) FROM exchanges").Scan(&count); err != nil || count != 1 {
+		t.Fatalf("metadata count=%d err=%v", count, err)
+	}
+	var headers string
+	if err := tr.DB().QueryRow("SELECT resp_head FROM exchange_bodies").Scan(&headers); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(headers, "부분 기록") || !strings.Contains(headers, "전송 완료 여부") {
+		t.Fatalf("missing incomplete notice: %q", headers)
+	}
+	got, _ := io.ReadAll(out)
+	if string(got) != "data: still available\n\n" {
+		t.Fatal("stream was changed")
+	}
+	flow.Stream = false
+	s.StreamResponseModifier(flow, strings.NewReader("normal"))
+	if err := tr.DB().QueryRow("SELECT COUNT(*) FROM exchanges").Scan(&count); err != nil || count != 1 {
+		t.Fatal("non-stream response recorded twice")
+	}
+	if flow.Response.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatal("on-wire headers changed")
 	}
 }

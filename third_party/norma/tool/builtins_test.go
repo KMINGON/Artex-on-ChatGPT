@@ -245,7 +245,7 @@ func TestProxyLikelyErr(t *testing.T) {
 
 // TestWebFetchProxyFallback proves a proxied fetch that fails for a proxy-caused
 // reason (here: the proxy port is dead → connection refused) retries once directly
-// (no proxy) and reaches the target. A successful fetch is not annotated.
+// (no external proxy) and reaches the target, with an explicit capture notice.
 func TestWebFetchProxyFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "text/html")
@@ -253,12 +253,12 @@ func TestWebFetchProxyFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 	raw, _ := json.Marshal(map[string]any{"url": srv.URL})
-	res, err := NewWebFetch(WebFetchConfig{Proxy: "http://127.0.0.1:1"}).Call(context.Background(), raw, &ToolContext{})
+	res, err := NewWebFetch(WebFetchConfig{Proxy: "http://127.0.0.1:1", RecordingProxy: true}).Call(context.Background(), raw, &ToolContext{})
 	if err != nil {
 		t.Fatalf("webfetch: %v", err)
 	}
 	out := res.Flatten()
-	if !strings.Contains(out, "Direct OK") {
+	if !strings.Contains(out, "Direct OK") || !strings.Contains(out, "트래픽 기록 누락") {
 		t.Fatalf("direct fallback should have fetched the page: %q", out)
 	}
 }

@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -145,13 +147,17 @@ func TestSpawnTaskInheritsConversationPinWithExplicitPrecedence(t *testing.T) {
 	s.provByProfile = map[int64]*provEntry{}
 	ctx := context.WithValue(context.Background(), conversationProfileKey{}, ids["conversation"])
 	for _, tc := range []struct {
-		name, parent   string
-		explicit, want int64
+		name, parent    string
+		explicit, want  int64
+		executingParent bool
 	}{
-		{"conversation alone", "", 0, ids["conversation"]},
-		{"parent wins", parent.ID, 0, ids["parent"]},
-		{"unbound parent inherits conversation", unbound.ID, 0, ids["conversation"]},
-		{"explicit wins", parent.ID, ids["explicit"], ids["explicit"]},
+		{"conversation alone", "", 0, ids["conversation"], false},
+		{"parent wins", parent.ID, 0, ids["parent"], false},
+		{"unbound parent inherits conversation", unbound.ID, 0, ids["conversation"], false},
+		{"explicit wins", parent.ID, ids["explicit"], ids["explicit"], false},
+		{"executing parent wins when omitted", "", 0, ids["parent"], true},
+		{"executing parent wins over other parent", unbound.ID, 0, ids["parent"], true},
+		{"explicit still wins for executing parent", "", ids["explicit"], ids["explicit"], true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := map[string]any{"description": tc.name, "goal": "test inheritance", "parent_ref": tc.parent}
@@ -159,7 +165,12 @@ func TestSpawnTaskInheritsConversationPinWithExplicitPrecedence(t *testing.T) {
 				args["llm_profile_id"] = tc.explicit
 			}
 			raw, _ := json.Marshal(args)
-			result, err := s.toolSpawnTask().Call(ctx, raw, nil)
+			callCtx := ctx
+			if tc.executingParent {
+				id, _ := strconv.ParseInt(parent.ID, 10, 64)
+				callCtx = agent.WithRunInfo(callCtx, agent.RunInfo{TaskID: id})
+			}
+			result, err := s.toolSpawnTask().Call(callCtx, raw, nil)
 			if err != nil || result.IsError || len(result.Content) == 0 {
 				t.Fatalf("spawn failed: %+v %v", result, err)
 			}
@@ -176,6 +187,9 @@ func TestSpawnTaskInheritsConversationPinWithExplicitPrecedence(t *testing.T) {
 			stored, err := m.pg.GetTask(mustTaskID(t, id))
 			if err != nil || stored.LLMProfileID == nil || *stored.LLMProfileID != tc.want {
 				t.Fatalf("pin not persisted: %+v %v", stored, err)
+			}
+			if tc.executingParent && (task.ParentRef != parent.ID || stored.ParentRef != parent.ID) {
+				t.Fatalf("parent was not inherited with its model: runtime=%s stored=%s", task.ParentRef, stored.ParentRef)
 			}
 			workerID := ids["worker"]
 			if err := m.pg.SetAgentLLMProfile("worker", &workerID); err != nil {

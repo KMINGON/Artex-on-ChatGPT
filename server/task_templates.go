@@ -20,7 +20,7 @@ const (
 	errTaskTemplateRequestTooLarge = "요청 본문이 너무 큽니다"
 	errTaskTemplateNameConflict    = "이미 존재하는 템플릿 이름입니다"
 	errTaskTemplateRuleInvalid     = "가로채기/허용 규칙이 올바르지 않습니다: "
-	errTaskTemplateNoFields        = "name, description, goal, category_id, intercept_rules 중 하나 이상을 제공해야 합니다"
+	errTaskTemplateNoFields        = "name, description, goal, category_id, intercept_rules, test_preset 중 하나 이상을 제공해야 합니다"
 	errTaskTemplateFieldTooLongFmt = "%s 항목은 최대 %d자까지 입력할 수 있습니다"
 )
 
@@ -29,6 +29,7 @@ const (
 // category_id / intercept_rules presence is detected via the raw key set (see
 // decodeTaskTemplateRequest) so a PATCH can clear category to null.
 type taskTemplateRequest struct {
+	TestPreset     *string                `json:"test_preset"`
 	Name           *string                `json:"name"`
 	Description    *string                `json:"description"`
 	Goal           *string                `json:"goal"`
@@ -136,6 +137,7 @@ func (s *Server) pgCreateTaskTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	template, err := pg.CreateTaskTemplate(db.TaskTemplateInput{
+		TestPreset:     stringValue(req.TestPreset),
 		Name:           stringValue(req.Name),
 		Description:    stringValue(req.Description),
 		Goal:           stringValue(req.Goal),
@@ -170,11 +172,11 @@ func (s *Server) pgUpdateTaskTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, catPresent := present["category_id"]
 	_, rulesPresent := present["intercept_rules"]
-	if req.Name == nil && req.Description == nil && req.Goal == nil && !catPresent && !rulesPresent {
+	if req.Name == nil && req.Description == nil && req.Goal == nil && req.TestPreset == nil && !catPresent && !rulesPresent {
 		writeErr(w, http.StatusBadRequest, errTaskTemplateNoFields)
 		return
 	}
-	patch := db.TaskTemplatePatch{Name: req.Name, Description: req.Description, Goal: req.Goal}
+	patch := db.TaskTemplatePatch{Name: req.Name, Description: req.Description, Goal: req.Goal, TestPreset: req.TestPreset}
 	if catPresent {
 		patch.SetCategoryID = true
 		patch.CategoryID = req.CategoryID

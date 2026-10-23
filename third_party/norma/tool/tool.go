@@ -79,6 +79,8 @@ func (r Result) Flatten() string {
 	for _, b := range r.Content {
 		if b.Type == llm.BlockText {
 			s += b.Text
+		} else if b.Type == llm.BlockImage {
+			s += "\n" + b.Image.Description() + "\n"
 		}
 	}
 	return s

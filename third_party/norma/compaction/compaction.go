@@ -143,13 +143,14 @@ func EstimateTokens(msgs []llm.Message) int {
 	return chars / 4
 }
 
-// blockChars is the per-block character footprint. A Norma ContentBlock has no
-// image/document type; if one is added, its fixed 2000-token cost (claude-code
-// IMAGE_MAX_TOKEN_SIZE) would be added here.
+// blockChars budgets image inputs separately from text. Base64 bytes and local
+// artifact paths do not describe a vision model's token cost.
 func blockChars(b llm.ContentBlock) int {
 	switch b.Type {
 	case llm.BlockText:
 		return len(b.Text)
+	case llm.BlockImage:
+		return llm.ImageTokenBudget * 4
 	case llm.BlockThinking:
 		return len(b.Thinking)
 	case llm.BlockToolUse:
@@ -286,10 +287,25 @@ func (c *Compactor) microCompact(msgs []llm.Message) ([]llm.Message, bool) {
 		var nc []llm.ContentBlock
 		for j, b := range out[i].Content {
 			if b.Type == llm.BlockToolResult && clearSet[b.ToolUseID] && !isCleared(b.Content) {
+				cleared := microClearedMessage
+				canReplay := true
+				for _, child := range b.Content {
+					if child.Type != llm.BlockImage {
+						continue
+					}
+					if child.Image == nil || child.Image.Path == "" {
+						canReplay = false
+						break
+					}
+					cleared += "\n" + child.Image.Description()
+				}
+				if !canReplay {
+					continue
+				}
 				if nc == nil {
 					nc = append([]llm.ContentBlock(nil), out[i].Content...)
 				}
-				nc[j].Content = []llm.ContentBlock{llm.TextBlock(microClearedMessage)}
+				nc[j].Content = []llm.ContentBlock{llm.TextBlock(cleared)}
 				changed = true
 			}
 		}
@@ -305,7 +321,7 @@ func (c *Compactor) microCompact(msgs []llm.Message) ([]llm.Message, bool) {
 }
 
 func isCleared(blocks []llm.ContentBlock) bool {
-	return len(blocks) == 1 && blocks[0].Type == llm.BlockText && blocks[0].Text == microClearedMessage
+	return len(blocks) == 1 && blocks[0].Type == llm.BlockText && (blocks[0].Text == microClearedMessage || strings.HasPrefix(blocks[0].Text, microClearedMessage+"\n"))
 }
 
 // --- AutoCompact: non-destructive boundary + summary ---

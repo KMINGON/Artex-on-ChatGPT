@@ -96,6 +96,9 @@ type Options struct {
 	// WebFetchProxy, when set, routes WebFetch requests through this http(s) proxy
 	// URL (e.g. a recording/intercepting proxy). Empty = direct connection.
 	WebFetchProxy string
+	// Recording retries bypass only the recorder, preserving the external proxy.
+	WebFetchRecordingProxy bool
+	WebFetchFallbackProxy  string
 	// WebFetchCACert is a path to a PEM CA cert WebFetch adds to the system trust
 	// pool — verifies HTTPS through a MITM proxy without disabling TLS (preferred
 	// over WebFetchInsecureTLS).
@@ -273,7 +276,7 @@ func NewSession(opts Options) *Session {
 		tools = append(tools, opts.Skills.Tool())
 	}
 	if opts.EnableWebFetch {
-		tools = append(tools, tool.NewWebFetch(tool.WebFetchConfig{Proxy: opts.WebFetchProxy, CACert: opts.WebFetchCACert, InsecureTLS: opts.WebFetchInsecureTLS}))
+		tools = append(tools, tool.NewWebFetch(tool.WebFetchConfig{Proxy: opts.WebFetchProxy, RecordingProxy: opts.WebFetchRecordingProxy, FallbackProxy: opts.WebFetchFallbackProxy, CACert: opts.WebFetchCACert, InsecureTLS: opts.WebFetchInsecureTLS}))
 	}
 	if opts.EnableWebSearch {
 		// A misconfigured backend (unknown name, or brave-free without a key)

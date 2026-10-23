@@ -135,14 +135,37 @@ func (l *loop) execOneContext(ctx context.Context, use llm.ContentBlock, emitPro
 }
 
 // capOutput runs every text block of a tool result through the idempotent
-// output cap (tool.CaptureOnce). Non-text blocks pass through untouched. It is
+// output cap (tool.CaptureOnce). Images have a separate count/size cap. It is
 // the one place that guarantees no tool's output — however constructed — can
 // blow past the context budget.
 func capOutput(tc *tool.ToolContext, res tool.Result) tool.Result {
-	for i, b := range res.Content {
+	content := make([]llm.ContentBlock, 0, len(res.Content))
+	images := 0
+	for _, b := range res.Content {
 		if b.Type == llm.BlockText {
-			res.Content[i].Text = tool.CaptureOnce(tc, b.Text)
+			b.Text = tool.CaptureOnce(tc, b.Text)
+		} else if b.Type == llm.BlockImage {
+			images++
+			if images > llm.MaxImagesPerResult {
+				if images == llm.MaxImagesPerResult+1 {
+					content = append(content, llm.TextBlock("이미지 결과가 4개를 초과하여 나머지를 생략했습니다. 필요한 이미지를 나누어 요청하세요."))
+					res.IsError = true
+				}
+				continue
+			}
+			var err error
+			if b.Image != nil && b.Image.Path == "" && tc != nil && tc.OutputDir != "" {
+				b.Image, err = b.Image.Persist(tc.OutputDir)
+			} else {
+				_, err = b.Image.DataURL()
+			}
+			if err != nil {
+				b = llm.TextBlock("이미지 결과를 사용할 수 없습니다: " + err.Error())
+				res.IsError = true
+			}
 		}
+		content = append(content, b)
 	}
+	res.Content = content
 	return res
 }

@@ -11,12 +11,12 @@
  *   2. interceptor gate-> rewrite the "unauthorized" code field to success
  *   3. content gate   -> stub the menu/permission endpoint with a full-feature payload
  *
- * Requires puppeteer-core + a system Chromium.  ( cd scripts && npm install )
+ * ARTEX Docker의 Playwright/Chromium을 재사용합니다. 로컬은 npm ci 후 npx playwright install chromium.
  *
  * config.json schema (all fields optional except baseUrl):
  * {
  *   "baseUrl": "https://target/",
- *   "chromium": "/usr/bin/chromium",            // or env CHROMIUM
+ *   "chromium": "",                             // optional; env CHROMIUM or Playwright bundled Chromium
  *   "cookies":   [{"name":"auth","value":"b64json:{\"id\":1,\"username\":\"admin\"}"}],
  *   "localStorage": {"token":"x","isLogin":"1"},
  *   "neutralize": { "fields":["response_code","code","errno","ret"], "success":0,
@@ -29,29 +29,30 @@
  *   "proxy": "http://127.0.0.1:8080",           // optional; also HTTP_PROXY / HTTPS_PROXY
  *   "waitUntil": "domcontentloaded",            // prefer over networkidle2 for large SPAs
  *   "routeTimeout": 12000,
- *   "waitMs": 1200, "perRouteMs": 900, "headless": true
+ *   "waitMs": 1200, "perRouteMs": 900, "headless": true,
+ *   "ignoreHTTPSErrors": false                  // explicit self-signed lab targets only
  * }
  */
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-let puppeteer;
-try { puppeteer = require('puppeteer-core'); }
-catch (e) { console.error("[!] run `npm install` in the scripts/ dir first (needs puppeteer-core)"); process.exit(1); }
+let chromium;
+try { ({ chromium } = require('playwright')); }
+catch (e) { console.error('[!] Playwright가 없습니다. ARTEX Docker에서 실행하거나 scripts/에서 npm ci 후 npx playwright install chromium을 실행하세요.'); process.exit(1); }
 
 function loadCfg(p) {
   const c = JSON.parse(fs.readFileSync(p, 'utf8'));
   c.baseUrl || (() => { throw new Error("config.baseUrl required"); })();
-  c.chromium = c.chromium || process.env.CHROMIUM || '/usr/bin/chromium';
+  c.chromium = c.chromium || process.env.CHROMIUM || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
   c.neutralize = c.neutralize || { fields: ['response_code', 'code', 'errno', 'ret', 'status'], success: 0, flags: { success: true } };
   c.forward = c.forward !== false;
   c.apiPattern = new RegExp(c.apiPattern || '/api/|/rest/|/service/|/graphql|/gateway/');
   c.loginUrlPattern = c.loginUrlPattern || '/login';
   c.routes = c.routes || ['/'];
-  c.waitMs = c.waitMs || 1200; c.perRouteMs = c.perRouteMs || 900;
+  c.waitMs = c.waitMs ?? 1200; c.perRouteMs = c.perRouteMs ?? 900;
   c.headless = c.headless !== false;
-  c.waitUntil = c.waitUntil || 'domcontentloaded';
+  c.waitUntil = c.waitUntil === 'networkidle2' || c.waitUntil === 'networkidle0' ? 'networkidle' : (c.waitUntil || 'domcontentloaded');
   c.routeTimeout = c.routeTimeout || 12000;
   c.captureResponses = c.captureResponses !== false; // record response body samples (forward mode)
   c.recordWs = c.recordWs !== false;                 // record WebSocket frames + SSE endpoints
@@ -84,28 +85,40 @@ function neutralize(txt, n) {
 (async () => {
   const cfg = loadCfg(process.argv[2] || 'config.json');
   const origin = new URL(cfg.baseUrl).origin;
-  const host = new URL(cfg.baseUrl).hostname;
   const rec = [];           // {m,u,b,resp,ct}
   const chunks = new Set();
   const ws = [];            // {url,dir,data}  WebSocket frames
   const sse = new Set();    // SSE (text/event-stream) endpoints
 
-  if (cfg.proxy) {
-    process.env.HTTP_PROXY = cfg.proxy;
-    process.env.HTTPS_PROXY = cfg.proxy;
-  }
-  const launchArgs = ['--no-sandbox', '--disable-dev-shm-usage', '--ignore-certificate-errors'];
-  if (cfg.proxy) launchArgs.push(`--proxy-server=${cfg.proxy}`);
-  const browser = await puppeteer.launch({
-    executablePath: cfg.chromium, headless: cfg.headless ? 'new' : false,
-    args: launchArgs
+  const proxyURL = cfg.proxy ? new URL(cfg.proxy) : null;
+  // Isolate Chromium's CA store, including when several workers run this script.
+  const browserHome = fs.mkdtempSync(path.join(os.tmpdir(), 'artex-recon-browser-'));
+  const runtimePath = process.env.ARTEX_BROWSER_RUNTIME || '/opt/artex-browser/runtime.cjs';
+  const localRuntime = path.resolve(__dirname, '../../../scripts/browser-runtime.cjs');
+  const helper = fs.existsSync(runtimePath) ? runtimePath : localRuntime;
+  let browser;
+  try {
+  if (fs.existsSync(helper)) require(helper).prepareBrowserHome(browserHome);
+  else if (process.env.NODE_EXTRA_CA_CERTS) throw new Error('기록 프록시 CA 런타임을 찾을 수 없습니다. ARTEX_BROWSER_RUNTIME을 지정하세요.');
+  browser = await chromium.launch({
+    executablePath: cfg.chromium, headless: cfg.headless,
+    env: { ...process.env, HOME: browserHome },
+    proxy: proxyURL ? {
+      server: `${proxyURL.protocol}//${proxyURL.host}`,
+      username: decodeURIComponent(proxyURL.username), password: decodeURIComponent(proxyURL.password)
+    } : undefined,
+    args: cfg.proxy ? ['--proxy-bypass-list=<-loopback>'] : [],
   });
-  const page = await browser.newPage();
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: cfg.ignoreHTTPSErrors === true,
+    serviceWorkers: 'block', // service workers otherwise bypass request routing
+  });
+  const page = await context.newPage();
 
   // ---- WebSocket frame capture via CDP (fetch/XHR interception can't see WS) ----
   if (cfg.recordWs) {
     try {
-      const cdp = await page.target().createCDPSession();
+      const cdp = await context.newCDPSession(page);
       await cdp.send('Network.enable');
       const wsUrl = {}; // requestId -> url
       cdp.on('Network.webSocketCreated', e => { wsUrl[e.requestId] = e.url; });
@@ -120,12 +133,12 @@ function neutralize(txt, n) {
 
   // inject localStorage on every document
   if (cfg.localStorage) {
-    await page.evaluateOnNewDocument((kv) => {
+    await context.addInitScript((kv) => {
       try { for (const k in kv) localStorage.setItem(k, kv[k]); } catch (e) {}
     }, cfg.localStorage);
   }
   // fallback: block full-page navigations to the login url
-  await page.evaluateOnNewDocument((pat) => {
+  await context.addInitScript((pat) => {
     const bad = u => { try { return String(u).indexOf(pat) >= 0; } catch (e) { return false; } };
     try {
       const d = Object.getOwnPropertyDescriptor(Location.prototype, 'href');
@@ -138,50 +151,57 @@ function neutralize(txt, n) {
     } catch (e) {}
   }, cfg.loginUrlPattern);
 
-  await page.setRequestInterception(true);
-  page.on('request', async (req) => {
+  await page.route('**/*', async (route) => {
+    const req = route.request();
     const u = req.url(), m = req.method();
     if (/\.js(\?|$)/.test(u) && /\/assets\/|\/static\/|\/js\//.test(u)) chunks.add(u.split('/').pop());
 
     // suppress fallback login navigations (after the app has bootstrapped)
     if (req.isNavigationRequest() && req.frame() === page.mainFrame()
         && u.includes(cfg.loginUrlPattern) && rec.length > 3) {
-      return req.respond({ status: 204, body: '' });
+      return route.fulfill({ status: 204, body: '' });
     }
-    if (!cfg.apiPattern.test(u)) return req.continue();
+    if (!cfg.apiPattern.test(u)) return route.continue();
 
     const entry = { m, u: u.replace(origin, '').split('?')[0], full: u, b: req.postData() ? req.postData().slice(0, 400) : null };
     rec.push(entry);
 
     // explicit stubs (menu / permission forgery) win
     const stub = (cfg.stubs || []).find(s => s._re.test(u));
-    if (stub) return req.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(stub.body) });
+    if (stub) { entry.responseSource = 'configured_stub'; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(stub.body) }); }
 
     // SSE: forwarding a text/event-stream would hang the handler — record + short-circuit
     const accept = (req.headers().accept || '');
-    if (/text\/event-stream/.test(accept)) { sse.add(entry.u); return req.respond({ status: 200, contentType: 'application/json', body: '{}' }); }
+    if (/text\/event-stream/.test(accept)) { sse.add(entry.u); entry.responseSource = 'sse_stub'; return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); }
 
     if (!cfg.forward) {
-      return req.respond({ status: 200, contentType: 'application/json',
+      entry.responseSource = 'offline_stub';
+      return route.fulfill({ status: 200, contentType: 'application/json',
         body: neutralize('{"data":{},"list":[],"total":0}', cfg.neutralize) });
     }
     // forward real request, then rewrite the unauthorized code field
     try {
-      const headers = Object.assign({}, req.headers());
-      if (cfg.cookies) headers.cookie = cfg.cookies.map(c => `${c.name}=${cookieValue(c.value)}`).join('; ');
-      const r = await fetch(u, { method: m, headers, body: (m !== 'GET' && m !== 'HEAD') ? req.postData() : undefined });
+      // Playwright uses this browser context's cookies and configured proxy.
+      // Node fetch without a dispatcher would silently bypass the browser proxy.
+      const r = await route.fetch({ timeout: cfg.routeTimeout, maxRedirects: 0 });
       const t = await r.text();
-      if (cfg.captureResponses) { entry.resp = t.slice(0, cfg.respMax); entry.ct = r.headers.get('content-type') || ''; }
-      req.respond({ status: 200, contentType: 'application/json', body: neutralize(t, cfg.neutralize) });
+      entry.responseSource = 'forwarded_modified';
+      entry.actualStatus = r.status();
+      if (cfg.captureResponses) { entry.resp = t.slice(0, cfg.respMax); entry.ct = r.headers()['content-type'] || ''; }
+      if (/text\/event-stream/.test(r.headers()['content-type'] || '')) sse.add(entry.u);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: neutralize(t, cfg.neutralize) });
+      await r.dispose();
     } catch (e) {
-      req.respond({ status: 200, contentType: 'application/json', body: '{"response_code":0,"code":0,"data":{}}' });
+      entry.responseSource = 'error_stub';
+      entry.forwardError = e.message;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{"response_code":0,"code":0,"data":{}}' });
     }
   });
 
   // set auth cookies
   if (cfg.cookies) {
     for (const c of cfg.cookies)
-      await page.setCookie({ name: c.name, value: cookieValue(c.value), domain: host, path: c.path || '/' });
+      await context.addCookies([{ name: c.name, value: cookieValue(c.value), domain: new URL(cfg.baseUrl).hostname, path: c.path || '/' }]);
   }
 
   // boot
@@ -210,7 +230,7 @@ function neutralize(txt, n) {
   const wsUniq = [...new Set(ws.map(f => f.url))].filter(Boolean).sort();
   const outdir = path.dirname(process.argv[2] || '.');
   fs.writeFileSync(path.join(outdir, 'runtime_api.json'),
-    JSON.stringify({ shell, uniq, perRoute, rec, ws, wsEndpoints: wsUniq, sse: [...sse] }, null, 2));
+    JSON.stringify({ evidenceKind: 'frontend_discovery_mock', shell, uniq, perRoute, rec, ws, wsEndpoints: wsUniq, sse: [...sse] }, null, 2));
 
   // merge with static
   let merged = new Set(uniq.map(x => x.split(' ')[1]));
@@ -224,5 +244,8 @@ function neutralize(txt, n) {
   if (cfg.captureResponses) console.log(`[+] response bodies captured for ${rec.filter(r => r.resp != null).length}/${rec.length} calls`);
   console.log(`[+] merged unique paths: ${merged.size}  -> api_merged.txt`);
   console.log(`[+] full detail -> runtime_api.json (per-route + bodies + ws frames + sse)`);
-  await browser.close();
-})();
+  } finally {
+    try { if (browser) await browser.close(); }
+    finally { fs.rmSync(browserHome, { recursive: true, force: true }); }
+  }
+})().catch(error => { console.error('[!] 동적 조사 실패:', error.message); process.exitCode = 1; });

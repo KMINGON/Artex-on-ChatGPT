@@ -248,8 +248,9 @@ func requestShape(body []byte, req llm.CompletionRequest) RequestShape {
 	}
 	var request struct {
 		Input []struct {
-			Type, Phase, Output string
-			CallID              string `json:"call_id"`
+			Type, Phase string
+			Output      json.RawMessage
+			CallID      string `json:"call_id"`
 		} `json:"input"`
 	}
 	if json.Unmarshal(body, &request) != nil {
@@ -273,7 +274,12 @@ func requestShape(body []byte, req llm.CompletionRequest) RequestShape {
 			calls[item.CallID] = true
 		case "function_call_output":
 			shape.ToolResultCount++
-			shape.ToolResultBytes += len(item.Output)
+			var text string
+			if json.Unmarshal(item.Output, &text) == nil {
+				shape.ToolResultBytes += len(text)
+			} else {
+				shape.ToolResultBytes += len(item.Output)
+			}
 			if !calls[item.CallID] {
 				shape.ToolCallPairsValid = false
 			}

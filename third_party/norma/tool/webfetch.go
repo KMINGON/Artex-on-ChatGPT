@@ -23,6 +23,11 @@ import (
 type WebFetchConfig struct {
 	// Proxy, when set, routes requests through this http(s) proxy URL. Empty = direct.
 	Proxy string
+	// RecordingProxy permits a single retry that bypasses only the recording
+	// proxy. FallbackProxy retains the user's external egress proxy; empty means
+	// direct. Ordinary configured proxies are never silently bypassed.
+	RecordingProxy bool
+	FallbackProxy  string
 	// CACert, when set, is a path to a PEM CA certificate added to the system
 	// trust pool. This lets WebFetch *verify* HTTPS fetched through a MITM/recording
 	// proxy that re-signs certificates with its own CA — the proper alternative to
@@ -45,7 +50,7 @@ type WebFetchConfig struct {
 func NewWebFetch(cfg WebFetchConfig) CoreTool {
 	return Build(Spec{
 		Name:        "WebFetch",
-		Description: "Fetches an HTTP(S) HTML page, documentation page, or API response and returns it as Markdown. Do not use this tool for static assets, including JavaScript, CSS, source maps, images, fonts, audio, or video—even if their URLs are found in a fetched page or explicitly requested. Fetch the owning page instead. Set `extract=true` to list comments, scripts, stylesheets, endpoints, forms, links, and meta tags. Listed asset URLs are for inspection only and must not be fetched. Large responses may be truncated. This makes an external network request.",
+		Description: "Fetches an HTTP(S) HTML page, documentation page, or API response and returns it as Markdown. Do not use this tool for static assets, including JavaScript, CSS, source maps, images, fonts, audio, or video—even if their URLs are found in a fetched page or explicitly requested. Fetch the owning page instead. Set `extract=true` to list comments, scripts, stylesheets, endpoints, forms, links, and meta tags. Download JavaScript/source maps with Bash to a local file and inspect selected sections instead of inserting the entire bundle into context. Large responses may be truncated. This makes an external network request.",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -74,7 +79,12 @@ func newFetchClient(cfg WebFetchConfig) *http.Client {
 	// Empty means direct, including retries; never inherit HTTP(S)_PROXY.
 	tr.Proxy = nil
 	if cfg.Proxy != "" {
-		if pu, err := url.Parse(cfg.Proxy); err == nil {
+		pu, err := url.Parse(cfg.Proxy)
+		if err != nil || pu.Host == "" || (pu.Scheme != "http" && pu.Scheme != "https" && pu.Scheme != "socks5" && pu.Scheme != "socks5h") {
+			tr.Proxy = func(*http.Request) (*url.URL, error) {
+				return nil, fmt.Errorf("설정된 프록시 주소가 올바르지 않습니다")
+			}
+		} else {
 			tr.Proxy = http.ProxyURL(pu)
 		}
 	}
@@ -157,13 +167,9 @@ func staticAssetExt(rawURL string) string {
 
 func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *ToolContext) (Result, error) {
 	client := newFetchClient(cfg)
-	// direct is the no-proxy fallback used when a proxied fetch fails for a
-	// proxy-caused reason (closed tunnel / failed CONNECT / TLS or HTTP2 mismatch):
-	// it bypasses the configured proxy so a recording/MITM hiccup doesn't fail an
-	// otherwise-reachable URL. nil when no proxy is configured (nothing to bypass).
-	var direct *http.Client
-	if cfg.Proxy != "" {
-		direct = newFetchClient(WebFetchConfig{InsecureTLS: cfg.InsecureTLS})
+	var fallback *http.Client
+	if cfg.RecordingProxy && cfg.Proxy != "" && cfg.FallbackProxy != cfg.Proxy {
+		fallback = newFetchClient(WebFetchConfig{Proxy: cfg.FallbackProxy, InsecureTLS: cfg.InsecureTLS})
 	}
 	return func(ctx context.Context, input json.RawMessage, _ *ToolContext) (Result, error) {
 		var in struct {
@@ -177,7 +183,7 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 			return Errorf("Error: url must start with http:// or https://"), nil
 		}
 		if ext := staticAssetExt(in.URL); ext != "" {
-			return Errorf("Error: WebFetch does not fetch static assets (" + ext + " file). It reads HTML pages, documentation, and API responses — not linked resources like scripts, styles, images, or fonts. Fetch the page that references this asset instead."), nil
+			return Errorf("Error: WebFetch does not fetch static assets (" + ext + " file). JS/source maps should be downloaded with Bash to a local file, then searched or read in selected sections. Use browser tools for dynamic behavior; avoid inserting a full bundle into context."), nil
 		}
 		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -187,16 +193,17 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		}
 		req.Header.Set("user-agent", "norma/0.4")
 		resp, err := client.Do(req)
-		// One direct retry when the proxied attempt failed for a proxy-caused reason.
-		// A non-proxy error (bad host, caller timeout/cancel) is returned as-is — a
-		// direct retry wouldn't fix it. The direct response is NOT captured by the proxy.
-		if err != nil && direct != nil && proxyLikelyErr(err) {
+		// A recording failure must not bypass the configured external egress proxy.
+		// Target/caller failures do not benefit from a second attempt.
+		captureSkipped := false
+		if err != nil && fallback != nil && proxyLikelyErr(err) {
 			if r2, e2 := http.NewRequestWithContext(cctx, http.MethodGet, in.URL, nil); e2 == nil {
 				r2.Header.Set("user-agent", "norma/0.4")
-				if resp2, err2 := direct.Do(r2); err2 == nil {
+				if resp2, err2 := fallback.Do(r2); err2 == nil {
 					resp, err = resp2, nil
+					captureSkipped = true
 				} else {
-					err = err2 // surface the direct failure (more representative of the target)
+					err = fmt.Errorf("기록 프록시 우회 재시도 실패: %w", err2)
 				}
 			}
 		}
@@ -219,6 +226,9 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 		}
 
 		header := fmt.Sprintf("[%d %s] %s\n", resp.StatusCode, http.StatusText(resp.StatusCode), in.URL)
+		if captureSkipped {
+			header += "[트래픽 기록 누락: 기록 프록시 오류로 우회 재시도했습니다. 설정된 외부 프록시는 유지했습니다.]\n"
+		}
 		// Cheap fingerprint signal that HTML→Markdown would otherwise hide.
 		if sv := resp.Header.Get("Server"); sv != "" {
 			header += "Server: " + sv + "\n"

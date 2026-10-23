@@ -47,6 +47,7 @@ type Worker struct {
 	model              string
 	workDir            string
 	proxyAddr          string
+	proxyFallback      string
 	proxyCACert        string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
 	webSearch          WebSearchOpts     // web_search tool backend selection (off by default)
 	tx                 *transcript.Store // raw LLM conversation persistence (nil = off)
@@ -167,7 +168,12 @@ func (w *Worker) compactionWindow() int {
 // SetProxy configures the recording proxy address that workers route target
 // traffic through, plus the CA cert path WebFetch trusts to verify HTTPS through
 // that MITM proxy. Empty addr disables the hint.
-func (w *Worker) SetProxy(addr, caCert string) { w.proxyAddr, w.proxyCACert = addr, caCert }
+func (w *Worker) SetProxy(addr, caCert string, fallback ...string) {
+	w.proxyAddr, w.proxyCACert, w.proxyFallback = addr, caCert, ""
+	if len(fallback) > 0 {
+		w.proxyFallback = fallback[0]
+	}
+}
 
 // SetWebSearch selects the web_search backend for this worker (off by default).
 func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
@@ -342,6 +348,10 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 }
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
+	presetBlock, policyErr := taskPresetBlock(ts)
+	if policyErr != nil {
+		return harness.ReasonStorageError, WriteCounts{}, policyErr
+	}
 	tsx := NewToolSet(ts, name)
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
@@ -377,6 +387,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody += presetBlock
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
@@ -419,9 +430,11 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		PermissionMode:  permission.ModeBypass,
 		// WebFetch 走记录代理，其 HTTP 与 curl 一样被留痕；载入代理 CA 让经 MITM
 		// 重签的 HTTPS 证书能【正常校验通过】（而非关掉校验）。proxy 空则直连。
-		EnableWebFetch: true,
-		WebFetchProxy:  w.proxyAddr,
-		WebFetchCACert: w.proxyCACert,
+		EnableWebFetch:         true,
+		WebFetchProxy:          w.proxyAddr,
+		WebFetchCACert:         w.proxyCACert,
+		WebFetchRecordingProxy: w.proxyCACert != "",
+		WebFetchFallbackProxy:  w.proxyFallback,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立的出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:    w.webSearch.Enabled,

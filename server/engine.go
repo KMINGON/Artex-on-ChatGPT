@@ -770,6 +770,9 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
 	workers := e.m.Workers()
+	if t.ExecutionProfile != nil && t.ExecutionProfile.Workers > 0 {
+		workers = t.ExecutionProfile.Workers
+	}
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
@@ -900,6 +903,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
 		e.BeginLLMCall(t.ID)
+		ectx = intercept.WithTaskContext(ectx, t.ID, "planner", emit)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
 		switch {

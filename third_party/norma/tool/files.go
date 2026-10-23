@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Autumn-27/norma/llm"
 )
 
 // NewRead builds the Read tool: reads a file with cat -n style line numbers and
@@ -14,7 +18,7 @@ import (
 func NewRead() CoreTool {
 	return Build(Spec{
 		Name:        "Read",
-		Description: "Reads a file from the local filesystem and returns its contents with line numbers. Use offset/limit for large files. Always read a file before editing it.",
+		Description: "로컬 파일을 읽습니다. 텍스트는 줄 번호와 함께 반환하며 큰 파일은 offset/limit로 나누어 읽습니다. PNG/JPEG/GIF/WebP 이미지는 실제 이미지 입력으로 전달합니다. 편집 전에는 먼저 파일을 읽으세요.",
 		Prompt:      "file_path may be absolute or relative to the working directory. Output lines are prefixed with their 1-based line number.",
 		Schema: map[string]any{
 			"type": "object",
@@ -51,6 +55,36 @@ func runRead(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	if info.IsDir() {
 		return Errorf(fmt.Sprintf("Error: %s is a directory, not a file. Use LS or Glob to list its contents.", in.FilePath)), nil
 	}
+	// Detect images before the unbounded text-file read, so oversized screenshots
+	// cannot allocate arbitrary memory and binary pixels never become text.
+	f, err := os.Open(path)
+	if err != nil {
+		return Errorf("파일을 열 수 없습니다: " + err.Error()), nil
+	}
+	header := make([]byte, 512)
+	n, _ := f.Read(header)
+	mime := http.DetectContentType(header[:n])
+	if strings.HasPrefix(mime, "image/") {
+		if info.Size() > llm.MaxImageBytes {
+			f.Close()
+			return Errorf("이미지가 8 MiB를 초과했습니다. 크기를 줄이거나 필요한 부분만 캡처하세요."), nil
+		}
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			f.Close()
+			return Errorf("이미지 파일을 읽을 수 없습니다"), nil
+		}
+		data, readErr := io.ReadAll(io.LimitReader(f, llm.MaxImageBytes+1))
+		f.Close()
+		if readErr != nil {
+			return Errorf("이미지 파일을 읽을 수 없습니다"), nil
+		}
+		block, imageErr := Image(tc, data, mime)
+		if imageErr != nil {
+			return Errorf(imageErr.Error()), nil
+		}
+		return Result{Content: []llm.ContentBlock{llm.TextBlock("이미지를 읽었습니다: " + in.FilePath), block}}, nil
+	}
+	f.Close()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil

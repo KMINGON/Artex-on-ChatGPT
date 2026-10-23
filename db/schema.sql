@@ -1392,3 +1392,9 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
 -- Local ChatGPT registrations reference protected credentials outside PostgreSQL.
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT 'api_key';
 ALTER TABLE llm_profiles ADD COLUMN IF NOT EXISTS chatgpt_account_id TEXT NOT NULL DEFAULT '';
+
+-- Versioned testing instructions and resource settings for new tasks only.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_preset TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_policy JSONB NOT NULL DEFAULT 'null'::jsonb;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_profile JSONB NOT NULL DEFAULT 'null'::jsonb;
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS test_preset TEXT NOT NULL DEFAULT '';

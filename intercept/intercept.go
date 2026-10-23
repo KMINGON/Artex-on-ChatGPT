@@ -159,6 +159,7 @@ var defaultEnabledTools = []string{
 	"Bash", "WebFetch", "web_search",
 	"shell_open", "shell_send",
 	"Write", "Edit", "MultiEdit",
+	"mcp__*",
 }
 
 // New creates an Interceptor backed by d. The rule cache is lazy-loaded on
@@ -248,7 +249,7 @@ func (i *Interceptor) rules() ([]compiledRule, error) {
 func (i *Interceptor) IsToolEnabled(name string) bool {
 	i.mu.RLock()
 	if i.enabledTools != nil {
-		v := i.enabledTools[name]
+		v := enabledTool(i.enabledTools, name)
 		i.mu.RUnlock()
 		return v
 	}
@@ -259,7 +260,13 @@ func (i *Interceptor) IsToolEnabled(name string) bool {
 	if i.enabledTools == nil {
 		_ = i.loadLocked()
 	}
-	return i.enabledTools[name]
+	return enabledTool(i.enabledTools, name)
+}
+
+// The MCP group covers dynamically discovered tools. Explicit saved lists still
+// take precedence over defaults; an empty list continues to disable interception.
+func enabledTool(names map[string]bool, name string) bool {
+	return names[name] || (strings.HasPrefix(name, "mcp__") && names["mcp__*"])
 }
 
 // GetEnabledTools returns the ordered list of tool names that are currently

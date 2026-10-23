@@ -307,6 +307,7 @@ function LLMProfileRow({
   disabled?: boolean;
   rightSlot?: React.ReactNode;
 }) {
+  const tf = useTranslations("forkUI");
   const t = useTranslations("chat");
   const [open, setOpen] = React.useState(false);
   const activeDefault = profiles.find((p) => p.is_default);
@@ -350,7 +351,8 @@ function LLMProfileRow({
             <span className="text-sm">{defaultLabel}</span>
             {activeDefault && (
               <span className="text-muted-foreground text-[11px]">
-                {activeDefault.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : "OpenAI API"} · {activeDefault.model}
+                {activeDefault.auth_mode === "chatgpt_plan" ? tf("chatGPTSubscriptionLabel") : "OpenAI API"} ·{" "}
+                {activeDefault.model}
               </span>
             )}
           </button>
@@ -369,10 +371,10 @@ function LLMProfileRow({
             >
               <span className="text-sm">
                 {p.name}
-                {p.configuration_error ? " · 설정 재선택 필요" : ""}
+                {p.configuration_error ? tf("updateConfigurationLabel") : ""}
               </span>
               <span className="text-muted-foreground text-[11px]">
-                {p.auth_mode === "chatgpt_plan" ? "ChatGPT 구독" : "OpenAI API"} · {p.model}
+                {p.auth_mode === "chatgpt_plan" ? tf("chatGPTSubscriptionLabel") : "OpenAI API"} · {p.model}
               </span>
             </button>
           ))}
@@ -396,6 +398,7 @@ function DraftChat({
   profiles: LLMProfile[];
   onStarted: (c: Conversation, pending?: { input?: string; attachments?: ChatAttachment[] }) => void;
 }) {
+  const tf = useTranslations("forkUI");
   const t = useTranslations("chat");
   const draftLabels = useAgentLabels();
   const [agentKey, setAgentKey] = React.useState("");
@@ -476,7 +479,7 @@ function DraftChat({
           <Bot className="text-primary size-6" />
         </div>
         <div className="text-sm font-medium">
-          {t("emptyStart", { agent: agent ? draftLabels.name(agent) : "에이전트" })}
+          {t("emptyStart", { agent: agent ? draftLabels.name(agent) : tf("agent") })}
         </div>
         {agent && draftLabels.description(agent) && (
           <p className="text-muted-foreground max-w-md text-xs">{draftLabels.description(agent)}</p>

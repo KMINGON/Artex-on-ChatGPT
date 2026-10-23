@@ -20,15 +20,19 @@ const (
 	BlockThinking   BlockType = "thinking"
 	BlockToolUse    BlockType = "tool_use"
 	BlockToolResult BlockType = "tool_result"
+	BlockImage      BlockType = "image"
 )
 
 // ContentBlock is one piece of message content. Which fields are populated
-// depends on Type. This is the Anthropic content-block union.
+// depends on Type.
 type ContentBlock struct {
 	Type BlockType `json:"type"`
 
 	// Text block.
 	Text string `json:"text,omitempty"`
+	// Image is structured visual input, never ordinary text. Tool images are
+	// persisted as immutable artifact references when an output directory exists.
+	Image *ImageSource `json:"image,omitempty"`
 
 	// Thinking block (extended thinking). Anthropic requires the field to be
 	// named "thinking" (not "text") and requires "signature" when replaying

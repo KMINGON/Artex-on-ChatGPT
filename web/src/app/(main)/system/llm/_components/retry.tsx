@@ -95,6 +95,7 @@ export function RetryRuleFields({
   /** true = 配置抽屉里的紧凑版：省掉展开说明，只留「什么错误会走到这层」这一句 */
   compact?: boolean;
 }) {
+  const tf = useTranslations("forkUI");
   const t = useTranslations("llmPage");
   const meta = RETRY_LAYERS[layer];
   const human = humanMs(value.interval_ms);
@@ -103,28 +104,26 @@ export function RetryRuleFields({
       <div className="grid gap-0.5">
         <div className="flex flex-wrap items-baseline gap-2">
           <Label className="text-sm">
-            {layer === "empty" ? "빈 Worker 턴 이어쓰기" : t(`retryLayer.${layer}.title`)}
+            {layer === "empty" ? tf("continueEmptyWorkerTurns") : t(`retryLayer.${layer}.title`)}
           </Label>
           <span className="text-muted-foreground text-xs">
-            {layer === "empty" ? "실행 루프" : t(`retryLayer.${layer}.where`)}
+            {layer === "empty" ? tf("executionLoop") : t(`retryLayer.${layer}.where`)}
           </span>
         </div>
         {/* 哪些错误会走到这层，具体到状态码——填了旋钮却看不到效果，多半是错误压根不落在这层。 */}
         <p className="text-muted-foreground text-xs">
           <span className="font-medium text-foreground">{t("retry.triggerLabel")}</span>:{" "}
-          {layer === "empty" ? "생각만 반환하고 본문·도구 호출 없이 끝난 Worker 턴" : t(`retryLayer.${layer}.trigger`)}
+          {layer === "empty" ? tf("workerTurnsThatReturnReasoningWithoutText") : t(`retryLayer.${layer}.trigger`)}
         </p>
         {!compact && (
           <p className="text-muted-foreground text-xs">
             <span className="font-medium text-foreground">{t("retry.skipsLabel")}</span>:{" "}
-            {layer === "empty" ? "API 전송 재시도에는 적용하지 않음" : t(`retryLayer.${layer}.skips`)}
+            {layer === "empty" ? tf("doesNotApplyToAPITransportRetries") : t(`retryLayer.${layer}.skips`)}
           </p>
         )}
         {!compact && (
           <p className="text-muted-foreground text-xs">
-            {layer === "empty"
-              ? "기존 이력을 유지하며 다음 행동을 요청하는 횟수입니다."
-              : t(`retryLayer.${layer}.desc`)}
+            {layer === "empty" ? tf("numberOfRequestsForTheNextAction") : t(`retryLayer.${layer}.desc`)}
           </p>
         )}
       </div>
@@ -137,7 +136,7 @@ export function RetryRuleFields({
             id={`${idPrefix}-${layer}-n`}
             min={-1}
             value={value.attempts}
-            placeholder={layer === "connect" ? "API 3 / 구독 2" : t("retry.defaultN", { n: meta.defAttempts })}
+            placeholder={layer === "connect" ? tf("aPI3Subscription2") : t("retry.defaultN", { n: meta.defAttempts })}
             onChange={(n) => onChange({ ...value, attempts: n })}
           />
         </div>
@@ -162,7 +161,7 @@ export function RetryRuleFields({
       {!compact && (
         <p className="text-muted-foreground text-xs">
           {layer === "empty"
-            ? "0은 기존 기본값, -1은 이어쓰기 중지입니다."
+            ? tf("0UsesTheDefault1DisablesContinuation")
             : t("retry.emptyLine", { hint: t(`retryLayer.${layer}.offHint`) })}
         </p>
       )}
@@ -178,14 +177,13 @@ export function ProfileRetryFields({
   value: LLMRetryOverride;
   onChange: (o: LLMRetryOverride) => void;
 }) {
+  const tf = useTranslations("forkUI");
   const t = useTranslations("llmPage");
   return (
     <div className="grid gap-3 rounded-lg border p-3">
       <div className="grid gap-0.5">
         <Label className="text-sm">{t("retry.override.label")}</Label>
-        <p className="text-muted-foreground text-xs">
-          연결 재시도만 개별 설정으로 덮어씁니다. 0은 전역 설정을 따릅니다.
-        </p>
+        <p className="text-muted-foreground text-xs">{tf("overridesConnectionRetriesOnly0UsesThe")}</p>
       </div>
       {(["connect"] as const).map((k) => (
         <div key={k} className="border-t pt-3 first:border-t-0 first:pt-0">
@@ -204,6 +202,7 @@ export function ProfileRetryFields({
 
 /** 「重试与退避」tab：五层的全局默认值。 */
 export function RetryPolicyPanel() {
+  const tf = useTranslations("forkUI");
   const t = useTranslations("llmPage");
   const [policy, setPolicy] = React.useState<LLMRetryPolicy>(ZERO_POLICY);
   const [loading, setLoading] = React.useState(true);
@@ -253,9 +252,7 @@ export function RetryPolicyPanel() {
   return (
     <div className="grid gap-4">
       <div className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs leading-relaxed">
-        연결 재시도는 일시적인 HTTP 오류와 출력 전달 전의 재시도 가능한 SSE 오류에 같은 횟수를 적용합니다. 기본 재시도는
-        OpenAI API 3회, ChatGPT 구독 2회입니다. 출력 전달 뒤의 실패나 검증 오류는 재생하지 않습니다. 빈 Worker 턴
-        이어쓰기와 순환 서킷 차단은 별도 실행 제어입니다.
+        {tf("theConnectionRetryCountAppliesToTransient")}
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

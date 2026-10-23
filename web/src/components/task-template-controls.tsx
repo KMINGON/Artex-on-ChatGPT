@@ -7,6 +7,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-editor";
+import { TestPresetPicker } from "@/components/test-preset-picker";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +39,7 @@ import type { AssetInterceptRuleInput, TaskCategory, TaskTemplate } from "@/lib/
 import { cn } from "@/lib/utils";
 
 interface TemplateDraft {
+  testPreset: string;
   name: string;
   description: string;
   goal: string;
@@ -46,7 +48,7 @@ interface TemplateDraft {
 }
 
 // TemplateSeed 是「另存为模板」时从创建表单带入的初值。
-type TemplateSeed = Pick<TemplateDraft, "description" | "goal" | "categoryID" | "interceptRules">;
+type TemplateSeed = Pick<TemplateDraft, "description" | "goal" | "categoryID" | "interceptRules" | "testPreset">;
 
 interface TaskTemplateManagerProps {
   open: boolean;
@@ -59,6 +61,7 @@ interface TaskTemplateManagerProps {
 }
 
 const emptyDraft = (): TemplateDraft => ({
+  testPreset: "",
   name: "",
   description: "",
   goal: "",
@@ -69,6 +72,7 @@ const emptyDraft = (): TemplateDraft => ({
 function templateDraft(template: TaskTemplate): TemplateDraft {
   return {
     name: template.name,
+    testPreset: template.test_preset ?? "",
     description: template.description,
     goal: template.goal,
     categoryID: template.category_id ?? null,
@@ -108,6 +112,7 @@ function TaskTemplateManager({
         setSelectedID(null);
         setDraft({
           name: "",
+          testPreset: seed.testPreset,
           description: seed.description,
           goal: seed.goal,
           categoryID: seed.categoryID,
@@ -145,6 +150,7 @@ function TaskTemplateManager({
   async function save() {
     const input = {
       name: draft.name.trim(),
+      test_preset: draft.testPreset,
       description: draft.description.trim(),
       goal: draft.goal.trim(),
       category_id: draft.categoryID,
@@ -241,6 +247,11 @@ function TaskTemplateManager({
             </div>
             <ScrollArea className="min-h-0">
               <FieldGroup className="p-6">
+                <TestPresetPicker
+                  value={draft.testPreset}
+                  onChange={(testPreset) => patchDraft({ testPreset })}
+                  disabled={saving}
+                />
                 <Field>
                   <FieldLabel htmlFor="task-template-name">{t("manager.nameLabel")}</FieldLabel>
                   <Input
@@ -347,6 +358,7 @@ function TaskTemplateManager({
 }
 
 interface TaskTemplateControlsProps {
+  testPreset?: string;
   description: string;
   goal: string;
   categoryID?: number;
@@ -358,6 +370,7 @@ interface TaskTemplateControlsProps {
 }
 
 export function TaskTemplateControls({
+  testPreset = "",
   description,
   goal,
   categoryID,
@@ -414,7 +427,8 @@ export function TaskTemplateControls({
     }
     setTemplateInputValue(template.name);
     const hasContent = description.trim() !== "" || goal.trim() !== "";
-    const changesContent = description !== template.description || goal !== template.goal;
+    const changesContent =
+      description !== template.description || goal !== template.goal || testPreset !== (template.test_preset ?? "");
     if (hasContent && changesContent) {
       setPendingTemplate(template);
       return;
@@ -458,6 +472,7 @@ export function TaskTemplateControls({
                 openManager({
                   description,
                   goal,
+                  testPreset,
                   categoryID: categoryID ?? null,
                   interceptRules: interceptRules ?? [],
                 })

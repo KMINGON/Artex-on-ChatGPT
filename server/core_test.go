@@ -12,11 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 )
 
 // TestCoreTaskLifecyclePG exercises the migrated core (tasks/exploration on PG)
-// through the real HTTP mux: create → goal nodes seeded → list → delete cascade.
+// through the real HTTP mux: create → wait for a model → add goal → delete cascade.
 func TestCoreTaskLifecyclePG(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
@@ -24,7 +25,12 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	}
 	defer m.Close()
 	td := t.TempDir()
-	s := New(context.Background(), m, td, td, td)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := New(ctx, m, td, td, td)
+	// Other tests may leave a synthetic profile in this package's database.
+	// Keep this storage lifecycle fixture explicitly offline regardless of it.
+	s.engine.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return nil, nil })
 	h := s.Handler()
 	tok, err := signJWT(s.jwtKey)
 	if err != nil {
@@ -62,7 +68,7 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	}
 
 	// create a task → 201, returns PG task (string id + exploration_id)
-	code, out := doRetry("POST", "/api/tasks", map[string]string{"description": "smoke", "goal": "测试 SQLi/XSS"})
+	code, out := doRetry("POST", "/api/tasks", map[string]string{"description": "smoke", "goal": "SQLi/XSS 테스트"})
 	if code != 201 {
 		t.Fatalf("create task: %d (%v)", code, out)
 	}
@@ -72,20 +78,32 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatalf("bad task payload: %v", out)
 	}
 
-	// the exploration owns goal node(s) — goal seeding is async, poll briefly
-	var goals []*db.Node
-	for i := 0; i < 30; i++ {
-		goals, err = m.pg.Exploration(expID).ListByKind("goal", 10)
-		if err != nil || len(goals) > 0 {
+	// Unconfigured tasks wait for a model; automatic goal decomposition must not
+	// run before admission. Add a human goal through the API to exercise graph
+	// storage and cascading deletion without depending on an external LLM.
+	defer func() {
+		if _, present := m.Task(id); present {
+			doRetry("DELETE", "/api/tasks/"+id, nil)
+		}
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		code, out = doRetry("GET", "/api/tasks/"+id, nil)
+		if code == 200 && out["queued"] == true {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		if time.Now().After(deadline) {
+			t.Fatalf("task without a model should wait: %d (%v)", code, out)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil {
-		t.Fatal(err)
+	code, out = doRetry("POST", "/api/tasks/"+id+"/goals", map[string]string{"text": "SQLi/XSS 테스트"})
+	if code != 200 {
+		t.Fatalf("add goal: %d (%v)", code, out)
 	}
-	if len(goals) < 1 {
-		t.Fatalf("expected goal nodes seeded, got %d", len(goals))
+	goals, err := m.pg.Exploration(expID).ListByKind(db.KindGoal, 10)
+	if err != nil || len(goals) != 1 {
+		t.Fatalf("human goal not persisted: count=%d err=%v", len(goals), err)
 	}
 
 	// it shows in the task list

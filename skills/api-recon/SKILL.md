@@ -11,7 +11,7 @@ description: 웹사이트의 API 인터페이스를 수집할 때 사용하는 �
 
 ## 범위와 금지 사항(에이전트 필독)
 
-이 스킬은 **API / 인자 조사만 수행**합니다. 취약점 탐색이나 침투·악용 단계가 아닙니다.
+이 스킬은 **API / 인자 조사만 수행**합니다. 취약점 탐색이나 침투·악용 단계가 아닙니다. 아래 mock 제한은 이 조사 스킬에만 적용합니다. 일반 브라우저 도구로 사용자가 제공한 테스트 계정에 로그인하거나 같은 인증 세션에서 검증하는 흐름을 금지하지 않습니다. mock으로 나타난 화면·성공 응답을 실제 서버의 인증 우회나 취약점 성공 증거로 보고하지 마세요.
 
 ### 작업 범위
 
@@ -56,7 +56,7 @@ mock으로 프런트엔드 경로와 컴포넌트를 로드하고 **outbound 요
 
 | 실행 모드 | 엔진 | 용도 |
 |---|---|---|
-| **depth** | `runtime_harvest.js`(Puppeteer) | API 목록, METHOD/params/응답 본문, WS/SSE, 재현 가능한 일괄 실행 |
+| **depth** | `runtime_harvest.js`(Playwright) | API 목록, METHOD/params/응답 본문, WS/SSE, 재현 가능한 일괄 실행 |
 | **coverage** | browser + `preload.js` | 탭/팝업/테이블 클릭으로 기능 실행 범위 확대 |
 | **both** | depth 이후 coverage | 가장 넓은 범위, 가장 긴 소요 시간 |
 
@@ -296,9 +296,14 @@ coverage의 각 회차에서 `__API_RECON_LOG__`, `__API_RECON_DETAIL__`, `__API
 검증: `window.__API_RECON_PRELOAD__`가 존재하고 업무 path가 `/login`으로 돌아가지 않아야 합니다.
 
 ```bash
-cd recon && npm install
+cd recon
+# ARTEX Docker는 Playwright와 Chromium이 포함되어 있어 설치 없이 실행합니다.
 node runtime_harvest.js config.json
 ```
+
+로컬 실행 환경에 Playwright가 없다면 복사한 `package.json`/`package-lock.json`으로 `npm ci` 후 `npx playwright install chromium`을 한 번 실행합니다. Chromium 경로는 자동 탐색하며 필요할 때만 `config.chromium`/`CHROMIUM`으로 지정합니다. 기록 프록시 CA는 ARTEX 런타임의 브라우저별 신뢰 저장소를 재사용합니다. 대상 자체 서명 인증서를 허용해야 하는 실습에서만 `ignoreHTTPSErrors: true`를 명시하세요.
+
+`runtime_api.json`의 `evidenceKind`와 각 요청의 `responseSource`는 실제 수신 응답을 보정했는지, stub인지 구분합니다. `forwardError`가 있으면 해당 응답은 서버 검증 결과가 아닙니다. WebSocket 프레임은 CDP로 수집하고 SSE는 끝없는 본문을 기다리지 않고 경로를 기록합니다.
 
 ### 3b — coverage 동적 열거(필수)
 

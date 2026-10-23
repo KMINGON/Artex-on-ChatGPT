@@ -19,6 +19,7 @@ import (
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/traffic"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -27,18 +28,21 @@ import (
 // sharing the process-wide asset store. ID is the PG task id as a string; ExpID
 // is the exploration the task owns.
 type Task struct {
-	ID           string `json:"id"`
-	ExpID        int64  `json:"exploration_id"`
-	Name         string `json:"name"` // 可选任务名称;空=未命名
-	CategoryID   *int64 `json:"category_id,omitempty"`
-	CategoryName string `json:"category_name,omitempty"`
-	PinnedAt     int64  `json:"pinned_at,omitempty"`
-	Description  string `json:"description"`
-	Goal         string `json:"goal"`
-	CreatedAt    int64  `json:"created_at"`
-	CompletedAt  int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
-	Paused       bool   `json:"paused"`
-	Queued       bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
+	TestPreset       string                 `json:"test_preset,omitempty"`
+	TestPolicy       *policy.TaskPreset     `json:"test_policy,omitempty"`
+	ExecutionProfile *pgdb.ExecutionProfile `json:"execution_profile,omitempty"`
+	ID               string                 `json:"id"`
+	ExpID            int64                  `json:"exploration_id"`
+	Name             string                 `json:"name"` // 可选任务名称;空=未命名
+	CategoryID       *int64                 `json:"category_id,omitempty"`
+	CategoryName     string                 `json:"category_name,omitempty"`
+	PinnedAt         int64                  `json:"pinned_at,omitempty"`
+	Description      string                 `json:"description"`
+	Goal             string                 `json:"goal"`
+	CreatedAt        int64                  `json:"created_at"`
+	CompletedAt      int64                  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
+	Paused           bool                   `json:"paused"`
+	Queued           bool                   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	// QueuedAt is an internal Unix-nanosecond ordering key. It is deliberately
 	// finer than CreatedAt so several tasks enqueued in the same second retain
 	// their real FIFO order.
@@ -223,7 +227,9 @@ type Manager struct {
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 
-	companyMu sync.Mutex // serializes task/company-scope commits with live handle registration
+	resourceSkillDir   string     // initialized by Server before accepting requests
+	resourceSettingsMu sync.Mutex // serializes resource changes with task execution snapshots
+	companyMu          sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and
 	// their in-memory mirrors. lifecycleMu makes snapshots race-free, but without
 	// this outer write lock an older request could commit first and publish last.
@@ -271,7 +277,7 @@ const (
 	// 任务并发上限:开关 + 上限数。默认关闭;开启后默认上限 5(见 defaultConcurrencyLimit)。
 	settingConcurrencyOn    = "task_concurrency_enabled"
 	settingConcurrencyLimit = "task_concurrency_limit"
-	// settingOutputLanguage 는 사용자 대면 출력 언어("en"/"ko"/"zh"/"es")의 런타임 값이다.
+	// settingOutputLanguage 는 사용자 대면 출력 언어("ko"/"en")의 런타임 값이다.
 	// 비어 있으면 config.Language()(ARTEX_LANG·설정 파일·기본값 한국어)로 떨어진다. 에이전트
 	// 출력 언어(langDirective)와 백엔드 메시지 카탈로그가 모두 이 값을 따른다.
 	settingOutputLanguage = "output_language"
@@ -812,6 +818,7 @@ func unixNanoOrZero(t *time.Time) int64 {
 
 func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Interceptor) *Task {
 	return &Task{
+		TestPreset: pt.TestPreset, TestPolicy: pt.TestPolicy, ExecutionProfile: pt.ExecutionProfile,
 		ID: strconv.FormatInt(pt.ID, 10), ExpID: pt.ExplorationID,
 		Name:       pt.Name,
 		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
@@ -871,6 +878,9 @@ func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, time
 }
 
 func (m *Manager) CreateTaskWithOptions(description, goal string, opts pgdb.TaskCreateOptions) (*Task, error) {
+	if opts.ExecutionProfile == nil {
+		opts.ExecutionProfile = m.currentResourceProfile()
+	}
 	if len(opts.CompanyIDs) > 0 {
 		m.companyMu.Lock()
 		defer m.companyMu.Unlock()

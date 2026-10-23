@@ -113,6 +113,7 @@ func run() int {
 	}
 	log.Printf(config.T("[config] skill 디렉터리: %s"), skillDir)
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	defer srv.CloseBrowsers()
 	srv.WarnIfExposed(*addr)
 	httpSrv := &http.Server{
 		Addr:              *addr,

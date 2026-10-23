@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -21,6 +22,7 @@ import (
 // assets, judges whether the task goal is met, and emits 0..N exploration intents
 // into the frontier. It is the sole intent generator.
 type Planner struct {
+	guard              *guard.Guard
 	findingRecorder    FindingRecorder
 	connectionIdentity func() string
 	prov               llm.Provider
@@ -32,13 +34,14 @@ type Planner struct {
 	killWork           func(intentID int64) error             // engine callback to terminate a running work (nil = off)
 	steerWork          func(intentID int64, msg string) error // engine callback to steer a running work mid-run (nil = off)
 	proxyAddr          string                                 // recording proxy for WebFetch (empty = direct)
-	proxyCACert        string                                 // recording proxy's CA cert path (HTTPS verify)
-	webSearch          WebSearchOpts                          // web_search tool backend selection (off by default)
-	workDir            string                                 // shared work dir (surfaced in prompt as artifact-output target)
-	injectConstraints  func() bool                            // resolver: inject task operation constraints into system prompt? (nil = yes)
-	nonStreamingFn     func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
-	maxTokensFn        func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
-	compactor          *Compactor                             // cold-node compaction (§7); nil = disabled
+	proxyFallback      string
+	proxyCACert        string        // recording proxy's CA cert path (HTTPS verify)
+	webSearch          WebSearchOpts // web_search tool backend selection (off by default)
+	workDir            string        // shared work dir (surfaced in prompt as artifact-output target)
+	injectConstraints  func() bool   // resolver: inject task operation constraints into system prompt? (nil = yes)
+	nonStreamingFn     func() bool   // resolver: use non-streaming (Complete) path? (nil = streaming)
+	maxTokensFn        func() int    // resolver: per-reply output cap (nil/0 = send no cap)
+	compactor          *Compactor    // cold-node compaction (§7); nil = disabled
 
 	// todos keeps ONE plan-scratchpad per task (keyed by exploration id) so the
 	// planner's multi-step plan survives across wake-ups — each Plan() is a fresh
@@ -53,6 +56,9 @@ func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, 
 }
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
+
+// SetGuard applies the same configured tool rules as the task's workers.
+func (p *Planner) SetGuard(g *guard.Guard) { p.guard = g }
 
 // SetCompactor wires the cold-node compactor (cold-digest §7). Called each
 // planner wake-up to advance the round counter, maintain cold stamps, and
@@ -85,7 +91,12 @@ func (p *Planner) compactionWindow() int {
 
 // SetProxy points the planner's WebFetch at the recording proxy plus the CA cert
 // it trusts to verify HTTPS through it (empty addr = direct).
-func (p *Planner) SetProxy(addr, caCert string) { p.proxyAddr, p.proxyCACert = addr, caCert }
+func (p *Planner) SetProxy(addr, caCert string, fallback ...string) {
+	p.proxyAddr, p.proxyCACert, p.proxyFallback = addr, caCert, ""
+	if len(fallback) > 0 {
+		p.proxyFallback = fallback[0]
+	}
+}
 
 // SetWebSearch selects the web_search backend for the planner (off by default).
 func (p *Planner) SetWebSearch(o WebSearchOpts) { p.webSearch = o }
@@ -348,6 +359,10 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
+	presetBlock, policyErr := taskPresetBlock(ts)
+	if policyErr != nil {
+		return false, "", policyErr
+	}
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -385,7 +400,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
 	ctx = intercept.WithReviewContext(ctx, taskDir, intercept.ReviewBackground{})
-	sysBody := plannerSystem(goal, p.workDir, taskDir)
+	sysBody := plannerSystem(goal, p.workDir, taskDir) + presetBlock
 	if p.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,框定探索边界
 	}
@@ -398,16 +413,18 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		settle = wrapupSettlementForTask("planner", nil, clamped)
 	}
 	opts := agentcore.Options{
-		Provider:        p.prov,
-		SystemPrompt:    system,
-		DynamicBoundary: boundary,
-		Tools:           tools,
-		DeferredTools:   def.Deferred,
-		UnlockSet:       def.Unlock,
-		PermissionMode:  permission.ModeBypass,
-		EnableWebFetch:  true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
-		WebFetchProxy:   p.proxyAddr,
-		WebFetchCACert:  p.proxyCACert,
+		Provider:               p.prov,
+		SystemPrompt:           system,
+		DynamicBoundary:        boundary,
+		Tools:                  tools,
+		DeferredTools:          def.Deferred,
+		UnlockSet:              def.Unlock,
+		PermissionMode:         permission.ModeBypass,
+		EnableWebFetch:         true, // 走记录代理留痕；载入代理 CA 验证 MITM 重签的 HTTPS 证书
+		WebFetchProxy:          p.proxyAddr,
+		WebFetchCACert:         p.proxyCACert,
+		WebFetchRecordingProxy: p.proxyCACert != "",
+		WebFetchFallbackProxy:  p.proxyFallback,
 		// 联网搜索(可选)。ddgs 无需 key；brave-free 需 BraveKey；tavily 需 TavilyKey。
 		// WebSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关；空则直连。
 		EnableWebSearch:    p.webSearch.Enabled,
@@ -429,6 +446,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		Settlement:   settle,
 		NonStreaming: p.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    p.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
+	}
+	if p.guard != nil {
+		opts.Hooks = p.guard.Hooks()
 	}
 	if p.tx != nil { // persist raw LLM conversation; one accumulating file per task's planner
 		opts.Transcript = p.tx

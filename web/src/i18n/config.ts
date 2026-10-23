@@ -1,19 +1,16 @@
-// 지원 locale 과 기본값. 한국어·영어·중국어·스페인어·일본어를 사용자 설정으로 전환할 수 있다.
-export const LOCALES = ["en", "ko", "zh", "es", "ja"] as const;
+// 지원 locale 과 기본값. 한국어·영어를 사용자 설정으로 전환할 수 있다.
+export const LOCALES = ["en", "ko"] as const;
 export type Locale = (typeof LOCALES)[number];
 
-// 기본 표시 언어는 영어다. 한국어·중국어·스페인어·일본어는 설정으로 전환하는 언어다. 빌드 시
+// 새 설치의 기본 표시 언어는 한국어다. 빌드 시
 // NEXT_PUBLIC_LOCALE 로 덮어쓸 수 있고, 실행 중에는 사용자가 설정 화면에서 고른 값(쿠키·localStorage)이 최종 결정권을 가진다.
-export const DEFAULT_LOCALE: Locale = "en";
+export const DEFAULT_LOCALE: Locale = "ko";
 
 // 언어 선택기에 보여 주는 각 locale 의 자국어 표기. 어떤 언어로 보고 있든 자기 언어
 // 이름은 그 언어로 읽혀야 하므로 번역 대상이 아니라 고정 표기로 둔다.
 export const LOCALE_LABELS: Record<Locale, string> = {
   en: "English",
   ko: "한국어",
-  zh: "中文",
-  es: "Español",
-  ja: "日本語",
 };
 
 // 사용자가 고른 표시 언어를 저장하는 키. 화면은 localStorage 값을 읽는다. 쿠키에도 같은

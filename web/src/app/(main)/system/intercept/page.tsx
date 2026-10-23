@@ -410,6 +410,7 @@ function JudgeCard() {
 // ---- page ----
 
 export default function InterceptPage() {
+  const tf = useTranslations("forkUI");
   const t = useTranslations("interceptPage");
   const [rules, setRules] = React.useState<InterceptRule[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -616,10 +617,24 @@ export default function InterceptPage() {
     return [
       { label: t("toolGroup.exec"), tools: sdkExec },
       { label: t("toolGroup.write"), tools: sdkWrite },
+      {
+        label: "MCP",
+        tools: [
+          {
+            key: "mcp__*",
+            description: tf("applySavedInterceptRulesToAllMCP"),
+            system: true,
+            schema: {},
+            agents: [],
+            enabled: true,
+            kind: "builtin",
+          },
+        ],
+      },
       { label: t("toolGroup.system"), tools: sys },
       { label: t("toolGroup.custom"), tools: custom },
     ].filter((g) => g.tools.length > 0);
-  }, [allTools, t]);
+  }, [allTools, t, tf]);
 
   // ---- render ----
 
