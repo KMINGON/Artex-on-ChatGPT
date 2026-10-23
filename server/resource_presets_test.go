@@ -1,6 +1,8 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -151,5 +153,25 @@ func TestResourcePresetCatalogToolDetectsManualChanges(t *testing.T) {
 	}
 	if got := s.m.resourcePresetID(); got != "custom" {
 		t.Fatalf("removed tool binding ignored: %s", got)
+	}
+}
+
+func TestPresetCatalogContainsResourceSettingsOnly(t *testing.T) {
+	request := httptest.NewRequest("GET", "/api/presets", nil)
+	request.Header.Set("Accept-Language", "en")
+	response := httptest.NewRecorder()
+	(&Server{}).getPresets(response, request)
+	var result map[string]json.RawMessage
+	if response.Code != 200 {
+		t.Fatalf("catalog status=%d", response.Code)
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result["policies"]; ok {
+		t.Fatal("task policies must not be exposed as resource settings")
+	}
+	if result["resources"] == nil || result["tools"] == nil {
+		t.Fatal("resource catalog is incomplete")
 	}
 }

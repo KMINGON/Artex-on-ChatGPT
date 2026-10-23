@@ -1398,3 +1398,13 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_preset TEXT NOT NULL DEFAULT '';
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_policy JSONB NOT NULL DEFAULT 'null'::jsonb;
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS execution_profile JSONB NOT NULL DEFAULT 'null'::jsonb;
 ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS test_preset TEXT NOT NULL DEFAULT '';
+
+-- Template fields are nullable so older templates preserve the task form values.
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS task_name TEXT;
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS timeout_seconds INTEGER;
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER;
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS seed_first_intent BOOLEAN;
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN;
+-- Retain legacy source JSON/IDs for traceability; runtime no longer reads them.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_policy_migrated_at TIMESTAMPTZ;
+ALTER TABLE task_templates ADD COLUMN IF NOT EXISTS test_preset_migrated_at TIMESTAMPTZ;

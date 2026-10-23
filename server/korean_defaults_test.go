@@ -49,21 +49,6 @@ func TestKoreanToolContractsUnchanged(t *testing.T) {
 			t.Fatal(err)
 		}
 		contract := strip(normalized).(map[string]any)
-		if key == "spawn_task" {
-			// The preset is an intentional optional feature added after the translation
-			// baseline. Validate it explicitly, then keep checking every older field.
-			props, ok := contract["properties"].(map[string]any)
-			if !ok {
-				t.Fatal("spawn_task: properties missing")
-			}
-			wantPreset := map[string]any{
-				"type": "string", "enum": []any{"lab", "observe", "standard", "extended"},
-			}
-			if !reflect.DeepEqual(props["test_preset"], wantPreset) {
-				t.Errorf("spawn_task: unexpected test_preset contract: %#v", props["test_preset"])
-			}
-			delete(props, "test_preset")
-		}
 		structural, err := json.Marshal(contract)
 		if err != nil {
 			t.Fatal(err)

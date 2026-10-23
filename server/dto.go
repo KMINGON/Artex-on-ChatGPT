@@ -8,7 +8,6 @@ import (
 
 	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/traffic"
 )
 
@@ -32,8 +31,6 @@ func rawString(raw json.RawMessage) string {
 
 // ---- Task (frontend "Task") ---- created_at as RFC3339, plus a derived status.
 type TaskDTO struct {
-	TestPreset         string               `json:"test_preset,omitempty"`
-	TestPolicy         *policy.TaskPreset   `json:"test_policy,omitempty"`
 	ExecutionProfile   *db.ExecutionProfile `json:"execution_profile,omitempty"`
 	ID                 string               `json:"id"`
 	ExplorationID      int64                `json:"exploration_id"`
@@ -115,7 +112,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 	}
 	profileIDs := append(make([]int64, 0, len(llmState.ProfileIDs)), llmState.ProfileIDs...)
 	return TaskDTO{
-		TestPreset: t.TestPreset, TestPolicy: t.TestPolicy, ExecutionProfile: t.ExecutionProfile,
+		ExecutionProfile:   t.ExecutionProfile,
 		ID:                 t.ID,
 		ExplorationID:      t.ExpID,
 		Name:               lifecycle.Name,

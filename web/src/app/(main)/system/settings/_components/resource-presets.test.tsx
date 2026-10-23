@@ -15,7 +15,6 @@ afterEach(() => {
   vi.resetAllMocks();
 });
 const catalog: PresetCatalog = {
-  policies: [],
   resources: [
     { id: "low", tier: 1, version: 1, workers: 2, tasks: 2, browsers: 2 },
     { id: "medium", tier: 2, version: 1, workers: 5, tasks: 3, browsers: 4 },
@@ -38,42 +37,68 @@ it("applies the chosen server preset once and waits for the saved result", async
   const onApplied = vi.fn();
   render(
     <NextIntlClientProvider locale="ko" messages={messages}>
-      <ResourcePresets settings={settings} onApplied={onApplied} onAdvanced={vi.fn()} />
+      <ResourcePresets settings={settings} onApplied={onApplied} />
     </NextIntlClientProvider>,
   );
-  const buttons = await screen.findAllByRole("button", { name: messages.presets.apply });
-  expect(screen.getAllByText(messages.presets.tools.browser)).toHaveLength(3);
-  expect(screen.getAllByText(messages.presets.tools.traffic_capture)).toHaveLength(2);
+  await screen.findByRole("button", { name: "medium" });
+  const buttons = screen.getAllByRole("button");
+  expect(buttons).toHaveLength(3);
   fireEvent.click(buttons[1]);
   fireEvent.click(buttons[1]);
   expect(api.applyResourcePreset).toHaveBeenCalledTimes(1);
   expect(api.applyResourcePreset).toHaveBeenCalledWith("medium");
   expect(onApplied).not.toHaveBeenCalled();
+  for (const button of buttons) expect(button).toBeDisabled();
   const applied = { ...settings, resource_preset: "medium", workers: 5 };
   finish(applied);
   await waitFor(() => expect(onApplied).toHaveBeenCalledWith(applied));
 });
-it("refreshes persisted values after failure and opens advanced only after custom selection succeeds", async () => {
+it("refreshes actual saved values after a runtime apply failure", async () => {
   vi.mocked(api.presets).mockResolvedValue(catalog);
   const committed = { ...settings, resource_preset: "high", workers: 10 };
   vi.mocked(api.settings).mockResolvedValue(committed);
-  vi.mocked(api.applyResourcePreset)
-    .mockRejectedValueOnce(new Error("fixture failure"))
-    .mockResolvedValueOnce(settings);
+  vi.mocked(api.applyResourcePreset).mockRejectedValueOnce(new Error("fixture failure"));
   const onApplied = vi.fn(),
-    onAdvanced = vi.fn();
+    onPendingChange = vi.fn();
   render(
     <NextIntlClientProvider locale="ko" messages={messages}>
-      <ResourcePresets settings={settings} onApplied={onApplied} onAdvanced={onAdvanced} />
+      <ResourcePresets settings={settings} onApplied={onApplied} onPendingChange={onPendingChange} />
     </NextIntlClientProvider>,
   );
-  const button = screen.getByRole("button", { name: messages.presets.customAction });
-  fireEvent.click(button);
+  fireEvent.click(await screen.findByRole("button", { name: "high" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("fixture failure");
-  expect(onAdvanced).not.toHaveBeenCalled();
   await waitFor(() => expect(onApplied).toHaveBeenCalledWith(committed));
+  expect(onPendingChange).toHaveBeenCalledWith(true);
+  await waitFor(() => expect(onPendingChange).toHaveBeenLastCalledWith(false));
+  expect(screen.getByRole("button", { name: "high" })).toBeEnabled();
+});
+it("blocks presets during another settings save and ignores a late unmounted result", async () => {
+  vi.mocked(api.presets).mockResolvedValue(catalog);
+  let finish!: (value: Settings) => void;
+  vi.mocked(api.applyResourcePreset).mockReturnValue(
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  const onApplied = vi.fn();
+  const { rerender, unmount } = render(
+    <NextIntlClientProvider locale="ko" messages={messages}>
+      <ResourcePresets settings={settings} onApplied={onApplied} disabled />
+    </NextIntlClientProvider>,
+  );
+  const button = await screen.findByRole("button", { name: "low" });
+  expect(button).toBeDisabled();
   fireEvent.click(button);
-  await waitFor(() => expect(onAdvanced).toHaveBeenCalledOnce());
-  expect(onApplied).toHaveBeenCalledWith(settings);
-  expect(api.applyResourcePreset).toHaveBeenLastCalledWith("custom");
+  expect(api.applyResourcePreset).not.toHaveBeenCalled();
+  rerender(
+    <NextIntlClientProvider locale="ko" messages={messages}>
+      <ResourcePresets settings={settings} onApplied={onApplied} />
+    </NextIntlClientProvider>,
+  );
+  fireEvent.click(button);
+  expect(api.applyResourcePreset).toHaveBeenCalledOnce();
+  unmount();
+  finish(settings);
+  await Promise.resolve();
+  expect(onApplied).not.toHaveBeenCalled();
 });

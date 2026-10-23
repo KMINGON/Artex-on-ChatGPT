@@ -19,7 +19,6 @@ import (
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
-	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/traffic"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -28,8 +27,6 @@ import (
 // sharing the process-wide asset store. ID is the PG task id as a string; ExpID
 // is the exploration the task owns.
 type Task struct {
-	TestPreset       string                 `json:"test_preset,omitempty"`
-	TestPolicy       *policy.TaskPreset     `json:"test_policy,omitempty"`
 	ExecutionProfile *pgdb.ExecutionProfile `json:"execution_profile,omitempty"`
 	ID               string                 `json:"id"`
 	ExpID            int64                  `json:"exploration_id"`
@@ -818,8 +815,8 @@ func unixNanoOrZero(t *time.Time) int64 {
 
 func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Interceptor) *Task {
 	return &Task{
-		TestPreset: pt.TestPreset, TestPolicy: pt.TestPolicy, ExecutionProfile: pt.ExecutionProfile,
-		ID: strconv.FormatInt(pt.ID, 10), ExpID: pt.ExplorationID,
+		ExecutionProfile: pt.ExecutionProfile,
+		ID:               strconv.FormatInt(pt.ID, 10), ExpID: pt.ExplorationID,
 		Name:       pt.Name,
 		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
 		PinnedAt:    unixOrZero(pt.PinnedAt),

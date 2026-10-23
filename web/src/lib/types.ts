@@ -50,9 +50,13 @@ export interface TaskCategory {
 }
 
 export interface TaskTemplate {
-  test_preset?: string;
   id: number;
   name: string;
+  task_name?: string | null;
+  timeout_seconds?: number | null;
+  plan_heartbeat_seconds?: number | null;
+  seed_first_intent?: boolean | null;
+  coverage_enabled?: boolean | null;
   description: string;
   goal: string;
   category_id?: number | null; // 预设分类；null/缺省=无
@@ -918,18 +922,7 @@ export interface ResourcePreset {
   browsers: number;
 }
 
-export interface TestPreset {
-  id: string;
-  version: number;
-  name: string;
-  name_en: string;
-  description: string;
-  description_en: string;
-  constraints: { kind: "allow" | "deny"; text: string }[];
-}
-
 export interface PresetCatalog {
-  policies: TestPreset[];
   resources: ResourcePreset[];
   tools: { kind: string; key: string; min_tier: number; agents?: string[] }[];
 }

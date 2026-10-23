@@ -49,8 +49,7 @@ import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-ed
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
-import { TaskTemplateControls } from "@/components/task-template-controls";
-import { TestPresetPicker } from "@/components/test-preset-picker";
+import { TaskTemplateControls, taskSecondsFromMinutes } from "@/components/task-template-controls";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -3152,7 +3151,6 @@ function CreateTaskSheet({
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
   const [description, setDescription] = React.useState("");
   const [goal, setGoal] = React.useState("");
-  const [testPreset, setTestPreset] = React.useState("");
   const [selectedTemplateID, setSelectedTemplateID] = React.useState<number | null>(null);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [companies, setCompanies] = React.useState<Company[]>([]);
@@ -3217,11 +3215,10 @@ function CreateTaskSheet({
     }
     setCreating(true);
     try {
-      const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
-      const heartbeatSec = Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
+      const timeoutSec = taskSecondsFromMinutes(timeoutMin, 0);
+      const heartbeatSec = taskSecondsFromMinutes(heartbeatMin, 600);
       await api.createTask({
         name: name.trim(),
-        testPreset,
         categoryId: categoryID,
         description: description.trim(),
         goal: goal.trim(),
@@ -3242,7 +3239,6 @@ function CreateTaskSheet({
       setDescription("");
       setGoal("");
       setSelectedTemplateID(null);
-      setTestPreset("");
       setSourceTaskIDs([]);
       setCompanyIDs([]);
       setLLMProfileIDs([]);
@@ -3283,9 +3279,12 @@ function CreateTaskSheet({
 
         <div className="flex-1 overflow-y-auto p-6">
           <div className="grid gap-5">
-            <TestPresetPicker value={testPreset} onChange={setTestPreset} disabled={creating} />
             <TaskTemplateControls
-              testPreset={testPreset}
+              taskName={name}
+              timeoutSeconds={taskSecondsFromMinutes(timeoutMin, 0)}
+              planHeartbeatSeconds={taskSecondsFromMinutes(heartbeatMin, 600)}
+              seedFirstIntent={seedFirstIntent}
+              coverageEnabled={coverageEnabled}
               description={description}
               goal={goal}
               categoryID={categoryID}
@@ -3294,7 +3293,12 @@ function CreateTaskSheet({
               onSelectedTemplateIDChange={setSelectedTemplateID}
               onApply={(template) => {
                 setDescription(template.description);
-                setTestPreset(template.test_preset ?? "");
+                if (template.task_name != null) setName(template.task_name);
+                if (template.timeout_seconds != null) setTimeoutMin(String(template.timeout_seconds / 60));
+                if (template.plan_heartbeat_seconds != null)
+                  setHeartbeatMin(String(template.plan_heartbeat_seconds / 60));
+                if (template.seed_first_intent != null) setSeedFirstIntent(template.seed_first_intent);
+                if (template.coverage_enabled != null) setCoverageEnabled(template.coverage_enabled);
                 setGoal(template.goal);
                 setCategoryID(template.category_id ?? undefined);
                 setInterceptRules(template.intercept_rules ?? []);
@@ -3416,6 +3420,7 @@ function CreateTaskSheet({
                     id="timeout-min"
                     type="number"
                     min={0}
+                    step="any"
                     className="w-40"
                     placeholder={t("create.timeoutPlaceholder")}
                     value={timeoutMin}
@@ -3429,6 +3434,7 @@ function CreateTaskSheet({
                     id="heartbeat-min"
                     type="number"
                     min={10}
+                    step="any"
                     className="w-40"
                     placeholder={t("create.heartbeatPlaceholder")}
                     value={heartbeatMin}

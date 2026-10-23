@@ -250,7 +250,6 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 		objSchema(map[string]any{
 			"description":            strParam("작업 설명(짧은 제목)"),
 			"goal":                   strParam("작업 목표(달성할 결과)"),
-			"test_preset":            map[string]any{"type": "string", "enum": []string{"lab", "observe", "standard", "extended"}, "description": "작업 프리셋. 상위 작업이 있으면 해당 작업의 프리셋과 자원 설정을 그대로 상속합니다."},
 			"parent_ref":             strParam("선택: 상위 작업 id(상하위 관계 설정)"),
 			"source_task_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": fmt.Sprintf("선택: 읽기 전용으로 상속할 원본 작업 id 목록(최대 %d개). 하위 작업이 이미 확인된 자산/결론을 시작점으로 참조합니다. 단순 상하위 연결인 parent_ref와 달리 내용을 상속합니다.", db.MaxTaskSourceCount)},
 			"llm_profile_id":         map[string]any{"type": "integer", "description": spawnTaskProfileDescription},
@@ -263,7 +262,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				Description          string          `json:"description"`
 				Goal                 string          `json:"goal"`
 				ParentRef            string          `json:"parent_ref"`
-				TestPreset           string          `json:"test_preset"`
+				LegacyTestPreset     string          `json:"test_preset"`
 				SourceTaskIDs        []string        `json:"source_task_ids"`
 				LLMProfileID         json.RawMessage `json:"llm_profile_id"`
 				TimeoutSeconds       int             `json:"timeout_seconds"`
@@ -271,6 +270,9 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				SeedFirstIntent      bool            `json:"seed_first_intent"`
 			}
 			_ = json.Unmarshal(in, &a)
+			if a.LegacyTestPreset != "" {
+				return actool.Errorf("test_preset은 더 이상 사용하지 않습니다. 수행 범위와 지침은 description과 goal에 작성해 주세요"), nil
+			}
 			if strings.TrimSpace(a.Description) == "" {
 				a.Description = "이름 없는 작업"
 			}
@@ -297,7 +299,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				seenSources[id] = true
 				sourceIDs = append(sourceIDs, id)
 			}
-			options, parent, inheritErr := s.childTaskOptions(ctx, a.ParentRef, a.TestPreset)
+			options, parent, inheritErr := s.childTaskOptions(ctx, a.ParentRef)
 			if inheritErr != nil {
 				return actool.Errorf(inheritErr.Error()), nil
 			}

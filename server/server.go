@@ -30,7 +30,6 @@ import (
 	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/notify"
-	"github.com/Autumn-27/artex/policy"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/llm"
@@ -1648,7 +1647,7 @@ func truncateReply(s string) string {
 }
 
 type createTaskReq struct {
-	TestPreset           string   `json:"test_preset,omitempty"`
+	LegacyTestPreset     string   `json:"test_preset,omitempty"`
 	Name                 string   `json:"name,omitempty"` // 可选任务名称;省略/空=未命名
 	CategoryID           *int64   `json:"category_id,omitempty"`
 	Description          string   `json:"description"`
@@ -1669,6 +1668,10 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	if req.LegacyTestPreset != "" {
+		writeErr(w, 400, errLegacyTaskPreset)
 		return
 	}
 	if strings.TrimSpace(req.Description) == "" {
@@ -1714,13 +1717,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errCreateTaskInterceptRules+err.Error())
 		return
 	}
-	if _, err := policy.Resolve(req.TestPreset); err != nil {
-		writeErr(w, 400, err.Error())
-		return
-	}
 	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
-		TestPreset: req.TestPreset,
-		Name:       strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
+		Name: strings.TrimSpace(req.Name), CategoryID: req.CategoryID,
 		SourceTaskIDs: sourceIDs, CompanyIDs: req.CompanyIDs, LLMProfileIDs: req.LLMProfileIDs,
 		TimeoutSeconds: req.TimeoutSeconds, PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
 		CoverageEnabled: req.CoverageEnabled,

@@ -116,10 +116,6 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // text / result) so the main-agent session shows its work — exactly like the
 // worker/planner sessions — not just the final answer.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
-	presetBlock, policyErr := taskPresetBlock(ts)
-	if policyErr != nil {
-		return "", policyErr
-	}
 	tsx := NewToolSet(ts, "human")
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
@@ -141,7 +137,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir)+presetBlock+constraintBlock(ts), def)
+	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir)+constraintBlock(ts), def)
 	opts := agentcore.Options{
 		Provider:               m.prov,
 		SystemPrompt:           system,

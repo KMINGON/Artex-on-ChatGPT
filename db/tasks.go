@@ -7,30 +7,26 @@ import (
 	"fmt"
 	"strconv"
 	"time"
-
-	"github.com/Autumn-27/artex/policy"
 )
 
 // Task is a row in the task registry (1:1 with an exploration).
 type Task struct {
-	TestPreset       string             `json:"test_preset,omitempty"`
-	TestPolicy       *policy.TaskPreset `json:"test_policy,omitempty"`
-	ExecutionProfile *ExecutionProfile  `json:"execution_profile,omitempty"`
-	ID               int64              `json:"id"`
-	Name             string             `json:"name"` // 可选任务名称;空=未命名
-	CategoryID       *int64             `json:"category_id,omitempty"`
-	CategoryName     string             `json:"category_name,omitempty"`
-	Pinned           bool               `json:"pinned"`
-	PinnedAt         *time.Time         `json:"pinned_at,omitempty"`
-	Description      string             `json:"description"`
-	Goal             string             `json:"goal"`
-	ExplorationID    int64              `json:"exploration_id"`
-	Status           string             `json:"status"`
-	Paused           bool               `json:"paused"`
-	Queued           bool               `json:"queued"`
-	QueuedAt         *time.Time         `json:"queued_at,omitempty"`
-	QueueMode        string             `json:"queue_mode,omitempty"`
-	LLMProfileID     *int64             `json:"llm_profile_id,omitempty"`
+	ExecutionProfile *ExecutionProfile `json:"execution_profile,omitempty"`
+	ID               int64             `json:"id"`
+	Name             string            `json:"name"` // 可选任务名称;空=未命名
+	CategoryID       *int64            `json:"category_id,omitempty"`
+	CategoryName     string            `json:"category_name,omitempty"`
+	Pinned           bool              `json:"pinned"`
+	PinnedAt         *time.Time        `json:"pinned_at,omitempty"`
+	Description      string            `json:"description"`
+	Goal             string            `json:"goal"`
+	ExplorationID    int64             `json:"exploration_id"`
+	Status           string            `json:"status"`
+	Paused           bool              `json:"paused"`
+	Queued           bool              `json:"queued"`
+	QueuedAt         *time.Time        `json:"queued_at,omitempty"`
+	QueueMode        string            `json:"queue_mode,omitempty"`
+	LLMProfileID     *int64            `json:"llm_profile_id,omitempty"`
 	// Task-level ordered LLM chain. LLMProfileID remains the compatibility alias
 	// for ActiveLLMProfileID while older API clients still send one profile id.
 	LLMProfileIDs      []int64    `json:"llm_profile_ids,omitempty"`
@@ -149,8 +145,6 @@ func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSe
 // TaskCreateOptions contains the task data that must be committed atomically
 // with the task/exploration row.
 type TaskCreateOptions struct {
-	TestPreset           string
-	TestPolicy           *policy.TaskPreset // only a server-owned inherited snapshot; never decoded from create JSON
 	ExecutionProfile     *ExecutionProfile
 	Name                 string // 可选任务名称;空=未命名
 	CategoryID           *int64
@@ -169,7 +163,7 @@ type TaskCreateOptions struct {
 // CreateTaskWithOptions creates an exploration, task, direct source relations,
 // and the ordered task LLM chain in one transaction.
 func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOptions) (*Task, error) {
-	preset, policyJSON, executionJSON, err := taskPresetSnapshot(opts)
+	executionJSON, err := executionProfileSnapshot(opts.ExecutionProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -228,8 +222,8 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		active = &id
 	}
 	t := &Task{
-		TestPreset: opts.TestPreset, TestPolicy: preset, ExecutionProfile: opts.ExecutionProfile,
-		Name: opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
+		ExecutionProfile: opts.ExecutionProfile,
+		Name:             opts.Name, CategoryID: opts.CategoryID, CategoryName: categoryName,
 		Description: description, Goal: goal, ExplorationID: expID,
 		LLMProfileID: active, ActiveLLMProfileID: active,
 		LLMProfileIDs:  append([]int64(nil), opts.LLMProfileIDs...),
@@ -239,9 +233,9 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 		CoverageEnabled: coverageEnabled,
 	}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, test_preset, test_policy, execution_profile)
-VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12)
-RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, opts.TestPreset, policyJSON, executionJSON).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(name, category_id, description, goal, exploration_id, llm_profile_id, active_llm_profile_id, timeout_seconds, plan_heartbeat_seconds, coverage_enabled, execution_profile)
+VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10)
+RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, description, goal, expID, active, opts.TimeoutSeconds, opts.PlanHeartbeatSeconds, coverageEnabled, executionJSON).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	if err := insertTaskRelations(tx, t.ID, opts.SourceTaskIDs); err != nil {
@@ -357,15 +351,12 @@ func insertTaskLLMProfiles(tx *sql.Tx, taskID int64, profileIDs []int64) error {
 
 const taskCols = `id, COALESCE(name,''), category_id,
 COALESCE((SELECT category.name FROM task_categories category WHERE category.id=tasks.category_id),''),
-description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, test_preset, test_policy, execution_profile`
+description, goal, exploration_id, status, paused, queued, queued_at, COALESCE(queue_mode,''), llm_profile_id, active_llm_profile_id, COALESCE(parent_ref,''), pinned_at, created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), COALESCE(coverage_enabled,true), first_run_at, deadline_at, execution_profile`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	var presetJSON, executionJSON []byte
-	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &t.TestPreset, &presetJSON, &executionJSON); err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(presetJSON, &t.TestPolicy); err != nil {
+	var executionJSON []byte
+	if err := sc.Scan(&t.ID, &t.Name, &t.CategoryID, &t.CategoryName, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.QueuedAt, &t.QueueMode, &t.LLMProfileID, &t.ActiveLLMProfileID, &t.ParentRef, &t.PinnedAt, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.CoverageEnabled, &t.FirstRunAt, &t.DeadlineAt, &executionJSON); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(executionJSON, &t.ExecutionProfile); err != nil {

@@ -44,12 +44,19 @@ func TestTaskTemplateHTTPCRUD(t *testing.T) {
 	name := fmt.Sprintf("http-template-%d", time.Now().UnixNano())
 	code, created := do(http.MethodPost, "/api/task-templates", map[string]any{
 		"name": name, "description": "description", "goal": "goal",
+		"task_name": "fixture task", "timeout_seconds": 3600, "plan_heartbeat_seconds": 900,
+		"seed_first_intent": true, "coverage_enabled": false,
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%v", code, created)
 	}
 	id := int64(created["id"].(float64))
 	t.Cleanup(func() { _, _ = m.pg.DeleteTaskTemplate(id) })
+	for key, want := range map[string]any{"task_name": "fixture task", "timeout_seconds": float64(3600), "plan_heartbeat_seconds": float64(900), "seed_first_intent": true, "coverage_enabled": false} {
+		if created[key] != want {
+			t.Fatalf("template setting %s: got=%v want=%v", key, created[key], want)
+		}
+	}
 
 	code, duplicate := do(http.MethodPost, "/api/task-templates", map[string]any{
 		"name": "  " + name + "  ", "description": "other", "goal": "other",
@@ -61,6 +68,36 @@ func TestTaskTemplateHTTPCRUD(t *testing.T) {
 	code, updated := do(http.MethodPatch, fmt.Sprintf("/api/task-templates/%d", id), map[string]any{"goal": "patched goal"})
 	if code != http.StatusOK || updated["goal"] != "patched goal" || updated["description"] != "description" {
 		t.Fatalf("patch status=%d body=%v", code, updated)
+	}
+	if updated["task_name"] != "fixture task" || updated["coverage_enabled"] != false {
+		t.Fatal("partial template edit reset task settings")
+	}
+	code, updated = do(http.MethodPatch, fmt.Sprintf("/api/task-templates/%d", id), map[string]any{
+		"task_name": "", "timeout_seconds": nil, "plan_heartbeat_seconds": nil, "seed_first_intent": nil, "coverage_enabled": nil,
+	})
+	if code != http.StatusOK || updated["task_name"] != "" || updated["timeout_seconds"] != nil || updated["plan_heartbeat_seconds"] != nil || updated["seed_first_intent"] != nil || updated["coverage_enabled"] != nil {
+		t.Fatalf("explicit empty/null settings were lost: status=%d body=%v", code, updated)
+	}
+	for _, invalid := range []map[string]any{
+		{"timeout_seconds": -1}, {"plan_heartbeat_seconds": -1},
+		{"timeout_seconds": int64(2147483648)}, {"plan_heartbeat_seconds": int64(2147483648)},
+		{"task_name": strings.Repeat("가", db.MaxTaskTemplateNameRunes+1)}, {"test_preset": "lab"},
+	} {
+		if status, _ := do(http.MethodPatch, fmt.Sprintf("/api/task-templates/%d", id), invalid); status != http.StatusBadRequest {
+			t.Fatalf("invalid template edit accepted: %v status=%d", invalid, status)
+		}
+	}
+	code, updated = do(http.MethodPatch, fmt.Sprintf("/api/task-templates/%d", id), map[string]any{
+		"description": strings.Repeat("가", db.MaxTaskTemplateTextRunes+1),
+	})
+	if code != http.StatusOK || len([]rune(updated["description"].(string))) != db.MaxTaskTemplateTextRunes+1 {
+		t.Fatalf("expanded description limit rejected: status=%d", code)
+	}
+	code, _ = do(http.MethodPatch, fmt.Sprintf("/api/task-templates/%d", id), map[string]any{
+		"description": strings.Repeat("가", db.MaxTaskTemplateDescriptionRunes+1),
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("overlong description status=%d", code)
 	}
 	code, _ = do(http.MethodPatch, fmt.Sprintf("/api/task-templates/%d", id), map[string]any{
 		"goal": strings.Repeat("界", db.MaxTaskTemplateTextRunes+1),
@@ -81,6 +118,15 @@ func TestTaskTemplateHTTPCRUD(t *testing.T) {
 	code, deleted := do(http.MethodDelete, fmt.Sprintf("/api/task-templates/%d", id), nil)
 	if code != http.StatusOK || int64(deleted["deleted"].(float64)) != id {
 		t.Fatalf("delete status=%d body=%v", code, deleted)
+	}
+}
+
+func TestCreateTaskRejectsCachedPolicyChoice(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"description":"fixture","goal":"inspect","test_preset":"lab"}`))
+	response := httptest.NewRecorder()
+	(&Server{}).createTask(response, req)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "error") {
+		t.Fatalf("old policy choice was silently ignored: status=%d", response.Code)
 	}
 }
 

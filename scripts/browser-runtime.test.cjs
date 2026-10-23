@@ -86,7 +86,25 @@ async function main() {
   const fixture = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://fixture');
     if (url.pathname === '/data') { res.setHeader('Content-Type', 'application/json'); res.end('{"value":"js-fetch-ok"}'); return; }
+    if (url.pathname === '/pending-font.woff') return;
+    if (url.pathname === '/login-submit') {
+      req.resume();
+      res.writeHead(303, { 'Set-Cookie': 'navigation_auth=manual; HttpOnly; Path=/', Location: '/login-private' });
+      res.end(); return;
+    }
     res.setHeader('Content-Type', 'text/html');
+    if (url.pathname === '/login-form') {
+      res.end('<!doctype html><title>login fixture</title><form method="post" action="/login-submit"><input id="username" name="username"><input name="password" type="password"><button>Login</button></form>');
+      return;
+    }
+    if (url.pathname === '/login-private') {
+      res.end('<!doctype html><title>private fixture</title>authenticated navigation fixture');
+      return;
+    }
+    if (url.pathname === '/pending-font') {
+      res.end('<!doctype html><title>pending font fixture</title><style>@font-face{font-family:pending;src:url(/pending-font.woff)}body{font:30px pending,sans-serif}</style>visible fallback text');
+      return;
+    }
     const name = url.searchParams.get('name');
     res.end(`<!doctype html><title>ARTEX fixture</title><form><input id="human" aria-label="인증 입력"><button>완료</button></form><div id="result"></div><script>${name ? `document.cookie='sid=${name}; path=/';sessionStorage.setItem('sid','${name}');localStorage.setItem('sid','${name}');` : ''}fetch('/data').then(r=>r.json()).then(x=>document.querySelector('#result').textContent=x.value);document.querySelector('form').onsubmit=e=>{e.preventDefault();document.cookie='auth=manual; path=/';document.querySelector('#result').textContent='human:'+document.querySelector('#human').value}</script>`);
   });
@@ -122,6 +140,26 @@ async function main() {
   assert.ok(text(await restored.call('browser_evaluate', { function: '() => document.cookie' })).includes('sid=alpha'));
   await restored.close();
   console.log('PASS: 3 concurrent isolated profiles, JS/fetch, same-page human input, MCP screenshot image, session-cookie/localStorage/sessionStorage restart and token rotation');
+
+  const navigating = await browser('navigation');
+  for (let i = 0; i < 6; i++) {
+    await navigating.bridge.request({ action: 'navigate', url: `${base}/login-form` });
+    await navigating.call('browser_evaluate', { function: '() => document.querySelector("#username").focus()' });
+    await navigating.bridge.request({ action: 'type', text: 'tester' });
+    await navigating.bridge.request({ action: 'key', key: 'Tab' });
+    await navigating.bridge.request({ action: 'type', text: 'fixture-password' });
+    await navigating.bridge.request({ action: 'key', key: 'Enter' });
+    const screenshot = await navigating.bridge.request({ action: 'screenshot' });
+    assert.equal(Buffer.from(screenshot.image, 'base64').subarray(1, 4).toString(), 'PNG');
+    await navigating.call('browser_wait_for', { text: 'authenticated navigation fixture' });
+  }
+  await navigating.bridge.request({ action: 'navigate', url: `${base}/pending-font` });
+  const started = Date.now();
+  const pendingFontScreenshot = await navigating.bridge.request({ action: 'screenshot' });
+  assert.equal(Buffer.from(pendingFontScreenshot.image, 'base64').subarray(1, 4).toString(), 'PNG');
+  assert.ok(Date.now() - started < 5000, 'human screenshot waited for an unfinished web font');
+  await navigating.close();
+  console.log('PASS: immediate screenshots after form navigation and with an unfinished web font');
 
   const ca = path.join(root, 'ca.crt'); const caKey = path.join(root, 'ca.key');
   const key = path.join(root, 'site.key'); const csr = path.join(root, 'site.csr'); const cert = path.join(root, 'site.crt');

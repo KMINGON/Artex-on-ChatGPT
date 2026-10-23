@@ -3,11 +3,53 @@ package db
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestTaskTemplateExecutionSecondsBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		seconds int64
+		invalid bool
+	}{
+		{"negative", -1, true},
+		{"zero", 0, false},
+		{"maximum", MaxTaskTemplateSeconds, false},
+		{"overflow", int64(MaxTaskTemplateSeconds) + 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if strconv.IntSize == 32 && tc.seconds > MaxTaskTemplateSeconds {
+				t.Skip("overflow cannot be represented by an int on this platform")
+			}
+			for _, heartbeat := range []bool{false, true} {
+				seconds := int(tc.seconds)
+				in := TaskTemplateInput{Name: "범위 검사", Description: "설명", Goal: "목표"}
+				patch := TaskTemplatePatch{}
+				if heartbeat {
+					in.PlanHeartbeatSeconds = &seconds
+					patch.PlanHeartbeatSeconds, patch.SetPlanHeartbeatSeconds = &seconds, true
+				} else {
+					in.TimeoutSeconds = &seconds
+					patch.TimeoutSeconds, patch.SetTimeoutSeconds = &seconds, true
+				}
+				_, _, createErr := normalizeTaskTemplateInput(in)
+				_, _, patchErr := normalizeTaskTemplatePatch(patch)
+				for path, err := range map[string]error{"create": createErr, "patch": patchErr} {
+					if tc.invalid && !errors.Is(err, ErrTaskTemplateInvalid) {
+						t.Errorf("%s heartbeat=%t seconds=%d: got %v, want ErrTaskTemplateInvalid", path, heartbeat, seconds, err)
+					} else if !tc.invalid && err != nil {
+						t.Errorf("%s heartbeat=%t seconds=%d: %v", path, heartbeat, seconds, err)
+					}
+				}
+			}
+		})
+	}
+}
 
 func TestTaskTemplateCRUDAndNormalizedUniqueness(t *testing.T) {
 	d, err := Open(testDSN(t))

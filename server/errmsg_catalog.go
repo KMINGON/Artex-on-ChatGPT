@@ -5,6 +5,11 @@ package server
 // from the Korean source + translations; do not edit by hand. "ko" is the key
 // itself and is not stored. See errmsg_i18n.go (trMsg) for lookup.
 var errCatalog = map[string]map[string]string{
+	errTaskTemplateNoFields:   {"en": "Provide at least one task template setting to update"},
+	errLegacyTaskPreset:       {"en": "The previous task preset format is no longer supported. Refresh the page and select a task template"},
+	errTemplateTimeoutRange:   {"en": "Task timeout must be between 0 and 2147483647 seconds"},
+	errTemplateHeartbeatRange: {"en": "Planning interval must be between 0 and 2147483647 seconds"},
+
 	"브라우저 인증 세션 정리 실패: %w":                                   {"en": "Browser authentication session cleanup failed: %w"},
 	"브라우저 세션을 사용할 수 없습니다":                                    {"en": "Browser sessions are unavailable"},
 	"브라우저 세션을 찾을 수 없습니다":                                     {"en": "Browser session not found"},

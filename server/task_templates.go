@@ -20,8 +20,11 @@ const (
 	errTaskTemplateRequestTooLarge = "요청 본문이 너무 큽니다"
 	errTaskTemplateNameConflict    = "이미 존재하는 템플릿 이름입니다"
 	errTaskTemplateRuleInvalid     = "가로채기/허용 규칙이 올바르지 않습니다: "
-	errTaskTemplateNoFields        = "name, description, goal, category_id, intercept_rules, test_preset 중 하나 이상을 제공해야 합니다"
+	errTaskTemplateNoFields        = "변경할 작업 템플릿 설정을 하나 이상 제공해야 합니다"
 	errTaskTemplateFieldTooLongFmt = "%s 항목은 최대 %d자까지 입력할 수 있습니다"
+	errLegacyTaskPreset            = "이전 작업 프리셋 방식은 더 이상 사용하지 않습니다. 화면을 새로고침한 뒤 작업 템플릿을 선택해 주세요"
+	errTemplateTimeoutRange        = "작업 시간 제한은 0~2147483647초 사이여야 합니다"
+	errTemplateHeartbeatRange      = "계획 주기는 0~2147483647초 사이여야 합니다"
 )
 
 // taskTemplateRequest uses pointers so PATCH can distinguish omitted fields from
@@ -29,12 +32,18 @@ const (
 // category_id / intercept_rules presence is detected via the raw key set (see
 // decodeTaskTemplateRequest) so a PATCH can clear category to null.
 type taskTemplateRequest struct {
-	TestPreset     *string                `json:"test_preset"`
-	Name           *string                `json:"name"`
-	Description    *string                `json:"description"`
-	Goal           *string                `json:"goal"`
-	CategoryID     *int64                 `json:"category_id"`
-	InterceptRules []taskInterceptRuleReq `json:"intercept_rules"`
+	// Reject cached clients instead of silently dropping their old policy choice.
+	LegacyTestPreset     string                 `json:"test_preset,omitempty"`
+	TaskName             *string                `json:"task_name"`
+	TimeoutSeconds       *int                   `json:"timeout_seconds"`
+	PlanHeartbeatSeconds *int                   `json:"plan_heartbeat_seconds"`
+	SeedFirstIntent      *bool                  `json:"seed_first_intent"`
+	CoverageEnabled      *bool                  `json:"coverage_enabled"`
+	Name                 *string                `json:"name"`
+	Description          *string                `json:"description"`
+	Goal                 *string                `json:"goal"`
+	CategoryID           *int64                 `json:"category_id"`
+	InterceptRules       []taskInterceptRuleReq `json:"intercept_rules"`
 }
 
 // decodeTaskTemplateRequest decodes the body into req and returns the set of
@@ -68,13 +77,23 @@ func decodeTaskTemplateRequest(w http.ResponseWriter, r *http.Request, req *task
 }
 
 func validateTaskTemplateRequest(req taskTemplateRequest) error {
+	if req.LegacyTestPreset != "" {
+		return errors.New(errLegacyTaskPreset)
+	}
+	if req.TimeoutSeconds != nil && (*req.TimeoutSeconds < 0 || *req.TimeoutSeconds > db.MaxTaskTemplateSeconds) {
+		return errors.New(errTemplateTimeoutRange)
+	}
+	if req.PlanHeartbeatSeconds != nil && (*req.PlanHeartbeatSeconds < 0 || *req.PlanHeartbeatSeconds > db.MaxTaskTemplateSeconds) {
+		return errors.New(errTemplateHeartbeatRange)
+	}
 	checks := []struct {
 		name  string
 		value *string
 		limit int
 	}{
 		{name: "name", value: req.Name, limit: db.MaxTaskTemplateNameRunes},
-		{name: "description", value: req.Description, limit: db.MaxTaskTemplateTextRunes},
+		{name: "task_name", value: req.TaskName, limit: db.MaxTaskTemplateNameRunes},
+		{name: "description", value: req.Description, limit: db.MaxTaskTemplateDescriptionRunes},
 		{name: "goal", value: req.Goal, limit: db.MaxTaskTemplateTextRunes},
 	}
 	for _, check := range checks {
@@ -137,12 +156,16 @@ func (s *Server) pgCreateTaskTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	template, err := pg.CreateTaskTemplate(db.TaskTemplateInput{
-		TestPreset:     stringValue(req.TestPreset),
-		Name:           stringValue(req.Name),
-		Description:    stringValue(req.Description),
-		Goal:           stringValue(req.Goal),
-		CategoryID:     req.CategoryID,
-		InterceptRules: rules,
+		TaskName:             req.TaskName,
+		TimeoutSeconds:       req.TimeoutSeconds,
+		PlanHeartbeatSeconds: req.PlanHeartbeatSeconds,
+		SeedFirstIntent:      req.SeedFirstIntent,
+		CoverageEnabled:      req.CoverageEnabled,
+		Name:                 stringValue(req.Name),
+		Description:          stringValue(req.Description),
+		Goal:                 stringValue(req.Goal),
+		CategoryID:           req.CategoryID,
+		InterceptRules:       rules,
 	})
 	if err != nil {
 		writeTaskTemplateErr(w, err)
@@ -172,11 +195,23 @@ func (s *Server) pgUpdateTaskTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, catPresent := present["category_id"]
 	_, rulesPresent := present["intercept_rules"]
-	if req.Name == nil && req.Description == nil && req.Goal == nil && req.TestPreset == nil && !catPresent && !rulesPresent {
+	_, taskNamePresent := present["task_name"]
+	_, timeoutPresent := present["timeout_seconds"]
+	_, heartbeatPresent := present["plan_heartbeat_seconds"]
+	_, seedPresent := present["seed_first_intent"]
+	_, coveragePresent := present["coverage_enabled"]
+	if req.Name == nil && req.Description == nil && req.Goal == nil && !catPresent && !rulesPresent && !taskNamePresent && !timeoutPresent && !heartbeatPresent && !seedPresent && !coveragePresent {
 		writeErr(w, http.StatusBadRequest, errTaskTemplateNoFields)
 		return
 	}
-	patch := db.TaskTemplatePatch{Name: req.Name, Description: req.Description, Goal: req.Goal, TestPreset: req.TestPreset}
+	patch := db.TaskTemplatePatch{
+		Name: req.Name, Description: req.Description, Goal: req.Goal,
+		TaskName: req.TaskName, SetTaskName: taskNamePresent,
+		TimeoutSeconds: req.TimeoutSeconds, SetTimeoutSeconds: timeoutPresent,
+		PlanHeartbeatSeconds: req.PlanHeartbeatSeconds, SetPlanHeartbeatSeconds: heartbeatPresent,
+		SeedFirstIntent: req.SeedFirstIntent, SetSeedFirstIntent: seedPresent,
+		CoverageEnabled: req.CoverageEnabled, SetCoverageEnabled: coveragePresent,
+	}
 	if catPresent {
 		patch.SetCategoryID = true
 		patch.CategoryID = req.CategoryID

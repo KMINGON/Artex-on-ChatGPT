@@ -2,12 +2,12 @@
 
 import * as React from "react";
 
+import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox";
 import { LibraryIcon, PlusIcon, SaveIcon, Settings2Icon, Trash2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-editor";
-import { TestPresetPicker } from "@/components/test-preset-picker";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -19,6 +19,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Combobox,
   ComboboxContent,
@@ -38,17 +39,26 @@ import { api } from "@/lib/api";
 import type { AssetInterceptRuleInput, TaskCategory, TaskTemplate } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+export function taskSecondsFromMinutes(value: string | number, minimumSeconds: number): number {
+  const seconds = Number(value) * 60;
+  return Number.isFinite(seconds) ? Math.max(minimumSeconds, Math.round(seconds)) : minimumSeconds;
+}
+
 interface TemplateDraft {
-  testPreset: string;
   name: string;
+  taskName: string | null;
+  timeoutSeconds: number | null;
+  planHeartbeatSeconds: number | null;
+  seedFirstIntent: boolean | null;
+  coverageEnabled: boolean | null;
   description: string;
   goal: string;
   categoryID: number | null;
   interceptRules: AssetInterceptRuleInput[];
 }
 
-// TemplateSeed 是「另存为模板」时从创建表单带入的初值。
-type TemplateSeed = Pick<TemplateDraft, "description" | "goal" | "categoryID" | "interceptRules" | "testPreset">;
+// 템플릿 이름과 실제 작업 이름은 별도로 저장한다.
+type TemplateSeed = Omit<TemplateDraft, "name">;
 
 interface TaskTemplateManagerProps {
   open: boolean;
@@ -61,8 +71,12 @@ interface TaskTemplateManagerProps {
 }
 
 const emptyDraft = (): TemplateDraft => ({
-  testPreset: "",
   name: "",
+  taskName: null,
+  timeoutSeconds: null,
+  planHeartbeatSeconds: null,
+  seedFirstIntent: null,
+  coverageEnabled: null,
   description: "",
   goal: "",
   categoryID: null,
@@ -72,7 +86,11 @@ const emptyDraft = (): TemplateDraft => ({
 function templateDraft(template: TaskTemplate): TemplateDraft {
   return {
     name: template.name,
-    testPreset: template.test_preset ?? "",
+    taskName: template.task_name ?? null,
+    timeoutSeconds: template.timeout_seconds ?? null,
+    planHeartbeatSeconds: template.plan_heartbeat_seconds ?? null,
+    seedFirstIntent: template.seed_first_intent ?? null,
+    coverageEnabled: template.coverage_enabled ?? null,
     description: template.description,
     goal: template.goal,
     categoryID: template.category_id ?? null,
@@ -112,11 +130,7 @@ function TaskTemplateManager({
         setSelectedID(null);
         setDraft({
           name: "",
-          testPreset: seed.testPreset,
-          description: seed.description,
-          goal: seed.goal,
-          categoryID: seed.categoryID,
-          interceptRules: seed.interceptRules,
+          ...seed,
         });
       } else if (templates[0]) {
         setSelectedID(templates[0].id);
@@ -150,7 +164,12 @@ function TaskTemplateManager({
   async function save() {
     const input = {
       name: draft.name.trim(),
-      test_preset: draft.testPreset,
+      task_name: draft.taskName == null ? null : draft.taskName.trim(),
+      timeout_seconds: draft.timeoutSeconds == null ? null : taskSecondsFromMinutes(draft.timeoutSeconds / 60, 0),
+      plan_heartbeat_seconds:
+        draft.planHeartbeatSeconds == null ? null : taskSecondsFromMinutes(draft.planHeartbeatSeconds / 60, 600),
+      seed_first_intent: draft.seedFirstIntent,
+      coverage_enabled: draft.coverageEnabled,
       description: draft.description.trim(),
       goal: draft.goal.trim(),
       category_id: draft.categoryID,
@@ -247,11 +266,6 @@ function TaskTemplateManager({
             </div>
             <ScrollArea className="min-h-0">
               <FieldGroup className="p-6">
-                <TestPresetPicker
-                  value={draft.testPreset}
-                  onChange={(testPreset) => patchDraft({ testPreset })}
-                  disabled={saving}
-                />
                 <Field>
                   <FieldLabel htmlFor="task-template-name">{t("manager.nameLabel")}</FieldLabel>
                   <Input
@@ -261,6 +275,24 @@ function TaskTemplateManager({
                     placeholder={t("manager.namePlaceholder")}
                     onChange={(event) => updateDraft("name", event.target.value)}
                   />
+                </Field>
+                <Field>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="task-template-set-task-name"
+                      checked={draft.taskName != null}
+                      onCheckedChange={(checked) => patchDraft({ taskName: checked ? "" : null })}
+                    />
+                    <FieldLabel htmlFor="task-template-set-task-name">{t("manager.setTaskName")}</FieldLabel>
+                  </div>
+                  <Input
+                    aria-label={t("manager.taskNameLabel")}
+                    value={draft.taskName ?? ""}
+                    disabled={draft.taskName == null}
+                    placeholder={t("manager.taskNameLabel")}
+                    onChange={(event) => patchDraft({ taskName: event.target.value })}
+                  />
+                  <FieldDescription>{t("manager.taskNameHint")}</FieldDescription>
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="task-template-description">{t("manager.descriptionLabel")}</FieldLabel>
@@ -308,6 +340,66 @@ function TaskTemplateManager({
                     onChange={(rules) => patchDraft({ interceptRules: rules })}
                   />
                   <FieldDescription>{t("manager.rulesHint")}</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="task-template-timeout">{t("manager.timeoutLabel")}</FieldLabel>
+                  <Input
+                    id="task-template-timeout"
+                    type="number"
+                    min={0}
+                    step="any"
+                    value={draft.timeoutSeconds == null ? "" : draft.timeoutSeconds / 60}
+                    placeholder={t("manager.keepCurrent")}
+                    onChange={(event) =>
+                      patchDraft({ timeoutSeconds: event.target.value === "" ? null : Number(event.target.value) * 60 })
+                    }
+                  />
+                  <FieldDescription>{t("manager.timeoutHint")}</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="task-template-heartbeat">{t("manager.heartbeatLabel")}</FieldLabel>
+                  <Input
+                    id="task-template-heartbeat"
+                    type="number"
+                    min={10}
+                    step="any"
+                    value={draft.planHeartbeatSeconds == null ? "" : draft.planHeartbeatSeconds / 60}
+                    placeholder={t("manager.keepCurrent")}
+                    onChange={(event) =>
+                      patchDraft({
+                        planHeartbeatSeconds: event.target.value === "" ? null : Number(event.target.value) * 60,
+                      })
+                    }
+                  />
+                  <FieldDescription>{t("manager.heartbeatHint")}</FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="task-template-seed">{t("manager.seedLabel")}</FieldLabel>
+                  <NativeSelect
+                    id="task-template-seed"
+                    value={draft.seedFirstIntent == null ? "" : String(draft.seedFirstIntent)}
+                    onChange={(event) =>
+                      patchDraft({ seedFirstIntent: event.target.value === "" ? null : event.target.value === "true" })
+                    }
+                  >
+                    <NativeSelectOption value="">{t("manager.keepCurrent")}</NativeSelectOption>
+                    <NativeSelectOption value="true">{t("manager.enabled")}</NativeSelectOption>
+                    <NativeSelectOption value="false">{t("manager.disabled")}</NativeSelectOption>
+                  </NativeSelect>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="task-template-coverage">{t("manager.coverageLabel")}</FieldLabel>
+                  <NativeSelect
+                    id="task-template-coverage"
+                    value={draft.coverageEnabled == null ? "" : String(draft.coverageEnabled)}
+                    onChange={(event) =>
+                      patchDraft({ coverageEnabled: event.target.value === "" ? null : event.target.value === "true" })
+                    }
+                  >
+                    <NativeSelectOption value="">{t("manager.keepCurrent")}</NativeSelectOption>
+                    <NativeSelectOption value="true">{t("manager.enabled")}</NativeSelectOption>
+                    <NativeSelectOption value="false">{t("manager.disabled")}</NativeSelectOption>
+                  </NativeSelect>
                 </Field>
               </FieldGroup>
             </ScrollArea>
@@ -358,7 +450,11 @@ function TaskTemplateManager({
 }
 
 interface TaskTemplateControlsProps {
-  testPreset?: string;
+  taskName: string;
+  timeoutSeconds: number;
+  planHeartbeatSeconds: number;
+  seedFirstIntent: boolean;
+  coverageEnabled: boolean;
   description: string;
   goal: string;
   categoryID?: number;
@@ -370,17 +466,22 @@ interface TaskTemplateControlsProps {
 }
 
 export function TaskTemplateControls({
-  testPreset = "",
+  taskName,
+  timeoutSeconds,
+  planHeartbeatSeconds,
+  seedFirstIntent,
+  coverageEnabled,
   description,
   goal,
   categoryID,
-  interceptRules,
+  interceptRules = [],
   selectedTemplateID,
   onSelectedTemplateIDChange,
   onApply,
   portalContainer,
 }: TaskTemplateControlsProps) {
   const t = useTranslations("taskTemplate");
+  const { contains } = ComboboxPrimitive.useFilter();
   const [templates, setTemplates] = React.useState<TaskTemplate[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [templateInputValue, setTemplateInputValue] = React.useState("");
@@ -426,9 +527,26 @@ export function TaskTemplateControls({
       return;
     }
     setTemplateInputValue(template.name);
-    const hasContent = description.trim() !== "" || goal.trim() !== "";
+    const hasContent =
+      taskName.trim() !== "" ||
+      description.trim() !== "" ||
+      goal.trim() !== "" ||
+      categoryID != null ||
+      interceptRules.length > 0 ||
+      timeoutSeconds !== 0 ||
+      planHeartbeatSeconds !== 600 ||
+      seedFirstIntent ||
+      !coverageEnabled;
     const changesContent =
-      description !== template.description || goal !== template.goal || testPreset !== (template.test_preset ?? "");
+      description !== template.description ||
+      goal !== template.goal ||
+      (categoryID ?? null) !== (template.category_id ?? null) ||
+      JSON.stringify(interceptRules) !== JSON.stringify(template.intercept_rules ?? []) ||
+      (template.task_name != null && taskName !== template.task_name) ||
+      (template.timeout_seconds != null && timeoutSeconds !== template.timeout_seconds) ||
+      (template.plan_heartbeat_seconds != null && planHeartbeatSeconds !== template.plan_heartbeat_seconds) ||
+      (template.seed_first_intent != null && seedFirstIntent !== template.seed_first_intent) ||
+      (template.coverage_enabled != null && coverageEnabled !== template.coverage_enabled);
     if (hasContent && changesContent) {
       setPendingTemplate(template);
       return;
@@ -472,9 +590,13 @@ export function TaskTemplateControls({
                 openManager({
                   description,
                   goal,
-                  testPreset,
+                  taskName,
+                  timeoutSeconds,
+                  planHeartbeatSeconds,
+                  seedFirstIntent,
+                  coverageEnabled,
                   categoryID: categoryID ?? null,
-                  interceptRules: interceptRules ?? [],
+                  interceptRules,
                 })
               }
             >
@@ -485,6 +607,8 @@ export function TaskTemplateControls({
         </div>
         <Combobox
           items={templates}
+          // Closing animation can freeze the library query during a rapid reopen.
+          filteredItems={templates.filter((template) => contains(template.name, templateInputValue.trim()))}
           itemToStringLabel={(template) => template.name}
           itemToStringValue={(template) => String(template.id)}
           inputValue={templateInputValue}

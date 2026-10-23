@@ -164,6 +164,12 @@ func Open(dsn string) (*DB, error) {
 		if err := applySchemaWithRetry(context.Background(), conn, time.Sleep); err != nil {
 			return fmt.Errorf("apply schema: %w", err)
 		}
+		if err := d.migrateLegacyTaskPolicies(); err != nil {
+			return fmt.Errorf("migrate legacy task policies: %w", err)
+		}
+		if err := d.seedDefaultTaskTemplates(); err != nil {
+			return fmt.Errorf("seed task templates: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}

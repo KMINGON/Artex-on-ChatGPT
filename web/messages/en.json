@@ -1178,18 +1178,18 @@
       "empty": "No task templates",
       "search": "Search and select a task template",
       "noMatch": "No matching templates",
-      "hint": "Selecting one copies the template's description, goal, category, test preset, and task-level rules; it does not keep a link to the template.",
+      "hint": "Copies the task name, description, goal, category, execution settings and rules. Unspecified settings and selected models, companies and reference tasks stay unchanged.",
       "loadError": "Failed to load template: {error}"
     },
     "apply": {
       "title": "Use the \"{name}\" template?",
-      "description": "The description and goal you entered will be overwritten with the template's content.",
+      "description": "Values specified in the template will overwrite the task name, description, goal, category, rules and execution settings you entered.",
       "cancel": "Cancel",
       "confirm": "Overwrite and use"
     },
     "manager": {
       "title": "Manage task templates",
-      "description": "Templates store the description, goal, category, test preset, and task-level block/allow rules. Editing a template does not affect tasks already created.",
+      "description": "Store the task name, description, goal, category, execution settings and task-level rules. Editing a template does not change existing tasks.",
       "new": "New template",
       "noTemplates": "No templates",
       "nameLabel": "Template name",
@@ -1213,7 +1213,19 @@
       "updated": "Template updated",
       "deleted": "Template deleted",
       "saveError": "Failed to save: {error}",
-      "deleteError": "Failed to delete: {error}"
+      "deleteError": "Failed to delete: {error}",
+      "setTaskName": "Also set the task name",
+      "taskNameLabel": "Actual task name",
+      "taskNameHint": "Leave unchecked to keep the current task name. Check and leave empty to clear it.",
+      "keepCurrent": "Keep current value",
+      "timeoutLabel": "Task time limit (minutes)",
+      "timeoutHint": "Leave blank to keep the current value. 0 means no limit.",
+      "heartbeatLabel": "Planning interval (minutes)",
+      "heartbeatHint": "Leave blank to keep the current value. A specified value has a minimum of 10 minutes.",
+      "seedLabel": "Start the first intent immediately",
+      "coverageLabel": "Asset coverage",
+      "enabled": "On",
+      "disabled": "Off"
     },
     "deleteDialog": {
       "title": "Delete the \"{name}\" template?",
@@ -3916,15 +3928,12 @@
     "browserLimit": "Total concurrent browsers",
     "browserLimitHint": "Additional browsers wait for a free slot. Lowering the limit does not close running browsers.",
     "browserLimitInvalid": "Enter a whole number from 1 to 64.",
-    "taskTitle": "Test task preset",
-    "taskCustom": "Custom · use your own goal and constraints",
-    "taskDescription": "Choose the permitted impact for a lab or production target. The policy is saved with the task and inherited by child tasks.",
-    "taskScope": "Specify targets and test accounts in the task description. Presets guide agents and existing interception; they do not guarantee zero state changes.",
     "tools": {
       "browser": "Browser, images and authentication sessions",
       "api-recon": "JS/API discovery skill",
       "traffic_capture": "HTTP(S) traffic capture",
       "agent_traffic_binding": "Traffic evidence linked to findings"
-    }
+    },
+    "compactSummary": "Apply tools and concurrency together, then adjust individual settings below."
   }
 }

@@ -11,7 +11,6 @@ import (
 	"strconv"
 
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/policy"
 )
 
 const settingResourcePreset = "resource_preset"
@@ -150,7 +149,7 @@ func (m *Manager) currentResourceProfile() *db.ExecutionProfile {
 	return &db.ExecutionProfile{ID: m.resourcePresetID(), Version: 1, Workers: workers, BrowserLimit: m.browserLimit()}
 }
 func (s *Server) getPresets(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"policies": policy.TaskPresets(), "resources": resourcePresets, "tools": presetTools})
+	writeJSON(w, 200, map[string]any{"resources": resourcePresets, "tools": presetTools})
 }
 
 func (s *Server) applyResourcePreset(w http.ResponseWriter, r *http.Request) {

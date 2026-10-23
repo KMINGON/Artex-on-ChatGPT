@@ -65,6 +65,39 @@ async function main() {
     })));
     return { url: p.url(), title: await p.title().catch(() => ''), viewport: p.viewportSize() || { width: 1280, height: 800 }, tabs };
   }
+  async function screenshot(p) {
+    const deadline = Date.now() + 10000;
+    // A navigation can strand Chromium's capture against the previous document.
+    // Retry only that observation, never the user's click or submitted form.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const navigated = Symbol('navigated');
+      let onNavigation;
+      const navigation = new Promise((resolve) => {
+        onNavigation = (frame) => { if (frame === p.mainFrame()) resolve(navigated); };
+        p.on('framenavigated', onNavigation);
+      });
+      let cdp, timer;
+      try {
+        cdp = await context.newCDPSession(p);
+        const capture = cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }).catch((error) => {
+          // Chromium may detach the old document before Playwright reports its navigation.
+          if (!p.isClosed() && error.message.includes('Not attached to an active page')) return navigation;
+          throw error;
+        });
+        const timeout = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('브라우저 화면 응답 시간이 초과되었습니다')), Math.max(1, deadline - Date.now()));
+        });
+        const result = await Promise.race([capture, navigation, timeout]);
+        if (result !== navigated) return result.data;
+      } finally {
+        p.off('framenavigated', onNavigation);
+        clearTimeout(timer);
+        if (cdp) await cdp.detach().catch(() => {});
+      }
+      await p.waitForLoadState('domcontentloaded', { timeout: Math.max(1, deadline - Date.now()) });
+    }
+    throw new Error('페이지가 이동 중입니다');
+  }
   async function save() {
     const pages = await Promise.all(context.pages().map(async (p) => {
       const state = await p.evaluate(() => ({ origin: location.origin, storage: { ...sessionStorage } })).catch(() => ({}));
@@ -96,7 +129,7 @@ async function main() {
         let result;
         switch (request.action) {
           case 'status': result = await status(); break;
-          case 'screenshot': result = { image: (await p.screenshot({ type: 'png', timeout: 10000 })).toString('base64') }; break;
+          case 'screenshot': result = { image: await screenshot(p) }; break;
           case 'click': await p.mouse.click(request.x, request.y); break;
           case 'drag':
             await p.mouse.move(request.x, request.y);
