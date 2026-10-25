@@ -73,13 +73,10 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 	if vc := strings.TrimSpace(body.VulnClass); vc != "" {
 		payload["vulnclass"] = vc
 	}
-	id, err := t.Store.AddGoal(payload, "human")
+	id, err := t.Store.AddGoalWithOrigin(r.Context(), payload, "human")
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
-	}
-	if of, _ := t.Store.OriginFactID(); of > 0 && id > 0 {
-		_ = t.Store.Link(of, db.RelSpawns, id) // goal descends from the task root (origin fact)
 	}
 	t.NotifyGoal([]string{text}) // 记「人新增了目标:…」触发并唤醒 planner
 	s.reviveTask(t)              // 把已完成/暂停的任务拉回运行态继续跑

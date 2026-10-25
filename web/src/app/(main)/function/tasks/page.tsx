@@ -122,6 +122,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ApiError, api } from "@/lib/api";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
+import { taskDuration } from "@/lib/task-time";
 import type {
   AssetInterceptRuleInput,
   ChatAttachment,
@@ -182,21 +183,6 @@ function fmtDuration(sec: number): string {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
-}
-
-// taskDuration is the task's run duration in seconds: created → now while running,
-// created → completion for a finished task, else created → last activity. 0 when it
-// never ran (no activity yet).
-function taskDuration(task: Task, nowSec: number): number {
-  const start = task.created_unix ?? 0;
-  if (!start) return 0;
-  const end =
-    task.status === "running"
-      ? nowSec
-      : task.completed_unix && task.completed_unix > 0
-        ? task.completed_unix
-        : (task.last_activity_unix ?? 0);
-  return end > start ? end - start : 0;
 }
 
 // deleteDetails takes only the countable part of the result so callers can pass an

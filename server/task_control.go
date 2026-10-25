@@ -207,17 +207,39 @@ func (s *Server) applyIntentControl(ctx context.Context, t *Task, iid int64, act
 		}
 		out.State = "paused"
 	case "resume":
+		s.concMu.Lock()
+		defer s.concMu.Unlock()
+		current, exists := s.m.Task(t.ID)
+		if !exists || current != t || s.engine.IsDeleting(t.ID) {
+			return out, fmt.Errorf(errTaskCtrlDeleting)
+		}
 		if node.State != "paused" {
 			return out, fmt.Errorf(errIntentCtrlOnlyPausedResume)
 		}
+		// Completion holds taskStateMu until its DB status and live handle agree.
+		// Do not read a stale running handle after the DB already became terminal.
+		s.m.taskStateMu.Lock()
 		changed, err := t.Store.CompareAndSetIntentState(iid, "paused", "open")
+		lifecycle := t.lifecycleSnapshot()
+		s.m.taskStateMu.Unlock()
 		if err != nil {
 			return out, err
 		}
 		if !changed {
 			return out, fmt.Errorf(errIntentCtrlStateConflictFmt, db.ErrIntentStateConflict)
 		}
-		t.Notify()
+		// Resuming one intent does not unpause its task or move it ahead of
+		// queued work. A terminal task does need admission to restart its loops.
+		if isTerminalStatus(lifecycle.Status) && !lifecycle.Paused && !lifecycle.Queued {
+			if _, err := s.admitTaskLocked(t, "resume", false); err != nil {
+				if restored, restoreErr := t.Store.CompareAndSetIntentState(iid, "open", "paused"); restoreErr != nil || !restored {
+					return out, fmt.Errorf("%w; restore intent %d after admission failure: restored=%v: %v", err, iid, restored, restoreErr)
+				}
+				return out, err
+			}
+		} else {
+			t.Notify()
+		}
 		out.State = "open"
 	case "cancel":
 		// 삭제는 두 가지 모드를 지원한다:

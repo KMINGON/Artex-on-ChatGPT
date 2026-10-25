@@ -50,7 +50,7 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	PromptOverride = func(k string) (string, bool) {
 		return "{{if .ProxyAddr}}走代理 {{.ProxyAddr}}{{else}}手动{{end}}", true
 	}
-	recording := workerSystem("127.0.0.1:8080", "/ca.pem", "/data", "/data")
+	recording := workerSystem("127.0.0.1:8080", "/ca.pem", "/data", "/data", "/data")
 	if !strings.HasPrefix(recording, "走代理 127.0.0.1:8080") {
 		t.Fatalf("worker proxy branch body: %q", recording)
 	}
@@ -65,19 +65,60 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 	// Egress proxy set but capture OFF (no CA): the ProxyAddr template branch still
 	// renders, but the trafficTool block must NOT — those tools are not registered.
-	egressOnly := workerSystem("127.0.0.1:8080", "", "/data", "/data")
+	egressOnly := workerSystem("127.0.0.1:8080", "", "/data", "/data", "/data")
 	if !strings.HasPrefix(egressOnly, "走代理 127.0.0.1:8080") {
 		t.Fatalf("worker egress-only branch body: %q", egressOnly)
 	}
 	if strings.Contains(egressOnly, "traffic_search") {
 		t.Fatalf("worker without recording must NOT inject trafficTool: %q", egressOnly)
 	}
-	noProxy := workerSystem("", "", "/data", "/data")
+	noProxy := workerSystem("", "", "/data", "/data", "/data")
 	if !strings.HasPrefix(noProxy, "手动") {
 		t.Fatalf("worker no-proxy branch body: %q", noProxy)
 	}
 	if strings.Contains(noProxy, "traffic_search") {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
+	}
+}
+
+func TestPlannerGraphContractCorrectsLegacyPromptWithoutReplacingUserBody(t *testing.T) {
+	prior := PromptOverride
+	t.Cleanup(func() { PromptOverride = prior })
+	PromptOverride = nil
+	defaults := plannerSystem("사용자 지정 목표", "/data", "/data/tasks/7")
+	if !strings.Contains(defaults, "유망한 경로의 깊이를 우선하세요") || !strings.Contains(defaults, "더 큰 체인의 성공을 기다리지 말고") {
+		t.Fatal("default prompt lost depth or individual finding guidance")
+	}
+	for _, stale := range []string{"탐색 노드(goals/의도/facts/findings)는 이 작업만 포함합니다", "어떤 사실/의도에서 파생", "커버리지 100% 요구에 실제 coverage.pct=40%", "coverage는 하한/완료 조건"} {
+		if strings.Contains(defaults, stale) {
+			t.Fatalf("default retains incompatible graph guidance: %s", stale)
+		}
+	}
+	const edited = "사용자가 편집한 범위는 유지한다. 과거 지침: coverage 100%면 완료, 부모에 intent ID 사용."
+	PromptOverride = func(string) (string, bool) { return edited, true }
+	got := plannerSystem("사용자 지정 목표", "/data", "/data/tasks/7")
+	if !strings.HasPrefix(got, edited) {
+		t.Fatal("contract update replaced a user-edited prompt")
+	}
+	for _, contract := range []string{"parent_ids와 parents는 근거 fact/finding ID", "source_task_id/inherited=true", "연결된 scope는 읽기 전용", "자산 관찰 비율", "100%여도 목표 달성 증거", "값이 없으면 미측정", "실제 활성 도구 목록", "현재 활성 도구 계약이 아니므로", "node_detail/list_facts", "더 큰 체인의 성공을 기다리지 말고"} {
+		if strings.Index(got, contract) < len(edited) {
+			t.Fatalf("code-owned contract missing after user body: %s", contract)
+		}
+	}
+}
+
+func TestWorkerHandoffRespectsDisabledToolsAndObservationLimits(t *testing.T) {
+	prior := PromptOverride
+	t.Cleanup(func() { PromptOverride = prior })
+	PromptOverride = func(string) (string, bool) { return "USER WORKER BODY", true }
+	got := workerSystem("", "", "/data", "/data/tasks/7", "/data/tasks/7/i8")
+	if !strings.HasPrefix(got, "USER WORKER BODY") {
+		t.Fatal("worker override lost")
+	}
+	for _, contract := range []string{"실제 활성 도구 목록", "비활성·미연결이면 호출하지", "최종 결과에 미등록 자료·미처리 이유", "이미 받은 document/xhr/fetch 응답만 읽어", "브라우저 조작 자체에는 기존 작업 제약", "failed/read_failed/dropped/limited", "미저장·생략 부분", "새 정찰 루프를 시작하거나", "요약이 없으면 자동 등록을 가정하지"} {
+		if !strings.Contains(got, contract) {
+			t.Fatalf("worker handoff omitted capability/observation contract: %s", contract)
+		}
 	}
 }
 
@@ -130,7 +171,7 @@ func TestLangDirectiveAppendedToUserFacingRoles(t *testing.T) {
 		OutputLanguage = func() string { return code }
 		marker := langMarker[code]
 		cases := map[string]string{
-			"worker":    workerSystem("", "", "/data", "/data"),
+			"worker":    workerSystem("", "", "/data", "/data", "/data"),
 			"planner":   plannerSystem("g", "/data", "/data"),
 			"mainagent": mainAgentSystem("g", "/data", "/data"),
 			"chat":      chatSystem("chat", "/data", "/data"),

@@ -605,7 +605,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 		s.cfgMu.Lock()
 		profName := s.llmProf
 		s.cfgMu.Unlock()
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, "", cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, "", cfg.ReasoningEffort, s.m.LLMRecordEnabled).WithRuntimeConfig(cfg.AuthMode, cfg.AccessProgramCyber, BuildVersion)
 		prov = bindSideProvider(prov, cfg, 0, profName)
 	}
 	s.cfgMu.Lock()
@@ -739,7 +739,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	}
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, "", cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, "", cfg.ReasoningEffort, s.m.LLMRecordEnabled).WithRuntimeConfig(cfg.AuthMode, cfg.AccessProgramCyber, BuildVersion)
 		prov = bindSideProvider(prov, cfg, id, p.Name)
 	}
 	s.provCacheMu.Lock()
@@ -1912,13 +1912,10 @@ func (s *Server) seed(t *Task, text string) {
 // a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
 	summary := fmt.Sprintf("작업 목표 달성: %s (작업: %s)", t.Goal, t.Description)
-	id, err := t.Store.AddIntent(map[string]any{"summary": summary}, 8, nil, "seed")
+	id, err := t.Store.AddIntentWithParents(context.Background(), map[string]any{"summary": summary}, 8, nil, nil, "seed")
 	if err != nil {
 		log.Printf("[seed] task %s: 초기 의도 생성 실패: %v", t.ID, err)
 		return
-	}
-	if origin, _ := t.Store.OriginFactID(); origin > 0 {
-		_ = t.Store.Link(origin, db.RelDerivedFrom, id)
 	}
 	log.Printf("[seed] task %s: 초기 의도 #%d 생성됨", t.ID, id)
 }
@@ -1930,6 +1927,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dto := taskDTO(t, s.resolvedTaskStatus(t))
+	dto.Runtime = s.taskRuntime(t)
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	applyTaskArchiveBlocker(&dto, archiveBlockers)
 	writeJSON(w, 200, dto)
@@ -2687,44 +2685,25 @@ func taskIntentHistoryPage(store *db.ExplorationStore, before int64, limit int, 
 	}
 }
 
-// explorationGraph returns the whole exploration chain (task graph) as nodes+edges.
+// explorationGraph returns a node page plus connected neighbours, with explicit
+// totals and a cursor instead of silently dropping old nodes or edges.
 func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
-		writeJSON(w, 200, map[string]any{"nodes": []any{}, "edges": []any{}})
+		writeJSON(w, 200, map[string]any{"nodes": []any{}, "edges": []any{}, "total_nodes": 0, "total_edges": 0, "has_more": false})
 		return
 	}
-	nodes, err := t.Store.Nodes(2000)
+	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+	page, err := t.Store.GraphPageWithSources(r.Context(), max(before, 0), atoiDefault(r.URL.Query().Get("limit"), 2000))
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	edges, err := t.Store.Edges(5000)
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	sources, err := t.Store.DirectSourceStores()
-	if err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
-	for _, source := range sources {
-		sourceNodes, nodeErr := source.Store.Nodes(2000)
-		if nodeErr != nil {
-			writeErr(w, 500, nodeErr.Error())
-			return
-		}
-		sourceEdges, edgeErr := source.Store.Edges(5000)
-		if edgeErr != nil {
-			writeErr(w, 500, edgeErr.Error())
-			return
-		}
-		sourceNodes, sourceEdges = inheritedGraphSnapshot(sourceNodes, sourceEdges, source.Task.TaskID)
-		nodes = append(nodes, sourceNodes...)
-		edges = append(edges, sourceEdges...)
-	}
-	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
+	writeJSON(w, 200, map[string]any{
+		"nodes": taskNodeDTOs(page.Nodes), "edges": edgeDTOs(page.Edges),
+		"total_nodes": page.TotalNodes, "total_edges": page.TotalEdges,
+		"page_nodes": page.PageNodes, "next_before": i64s(page.NextBefore), "has_more": page.HasMore,
+	})
 }
 
 // explorationNodes serves the 播报板: this task's own exploration nodes as a
@@ -4055,10 +4034,14 @@ func fallbackCommand(msg string) (cmd, text string) {
 func (s *Server) fallbackChat(t *Task, msg string) string {
 	switch cmd, text := fallbackCommand(msg); cmd {
 	case "intent":
-		_, _ = t.Store.AddIntent(map[string]any{"summary": text}, 9, nil, "human")
+		if _, err := t.Store.AddIntentWithParents(context.Background(), map[string]any{"summary": text}, 9, nil, nil, "human"); err != nil {
+			return fmt.Sprintf(trMsg("작업 기록 저장 실패: %s"), err)
+		}
 		return trMsg(fallbackIntentInjected) + text
 	case "hint":
-		_, _ = t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil)
+		if _, err := t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil); err != nil {
+			return fmt.Sprintf(trMsg("작업 기록 저장 실패: %s"), err)
+		}
 		return trMsg(fallbackHintRecorded) + text
 	default:
 		assetCounts, _ := s.m.Assets().CountsByType()

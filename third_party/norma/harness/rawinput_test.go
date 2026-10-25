@@ -56,7 +56,7 @@ func TestSchemaGateStillRejectsForOrdinaryTools(t *testing.T) {
 	if !res.IsError {
 		t.Fatal("malformed input produced a success result for a tool that did not opt out")
 	}
-	if !strings.Contains(res.Content[0].Text, "invalid tool input") {
+	if !strings.Contains(res.Content[0].Text, "입력이 올바르지 않습니다") {
 		t.Fatalf("result = %q, want the schema validation error", res.Content[0].Text)
 	}
 	if got != nil {

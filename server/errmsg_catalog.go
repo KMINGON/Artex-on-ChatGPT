@@ -5,6 +5,7 @@ package server
 // from the Korean source + translations; do not edit by hand. "ko" is the key
 // itself and is not stored. See errmsg_i18n.go (trMsg) for lookup.
 var errCatalog = map[string]map[string]string{
+	"작업 기록 저장 실패: %s":         {"en": "Failed to save task record: %s"},
 	errTaskTemplateNoFields:   {"en": "Provide at least one task template setting to update"},
 	errLegacyTaskPreset:       {"en": "The previous task preset format is no longer supported. Refresh the page and select a task template"},
 	errTemplateTimeoutRange:   {"en": "Task timeout must be between 0 and 2147483647 seconds"},

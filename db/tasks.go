@@ -180,6 +180,14 @@ func (d *DB) CreateTaskWithOptions(description, goal string, opts TaskCreateOpti
 		return nil, err
 	}
 	defer tx.Rollback()
+	// Asset observations take company scope -> task locks. Acquire this before
+	// source-relation foreign keys take KEY SHARE locks on existing tasks, so a
+	// source+company child cannot deadlock with an observation of its source.
+	if len(opts.CompanyIDs) > 0 {
+		if err := lockCompanyScopeMutation(tx); err != nil {
+			return nil, err
+		}
+	}
 	var expID int64
 	if err := tx.QueryRow(`INSERT INTO explorations(description, goal) VALUES ($1,$2) RETURNING id`, description, goal).Scan(&expID); err != nil {
 		return nil, err

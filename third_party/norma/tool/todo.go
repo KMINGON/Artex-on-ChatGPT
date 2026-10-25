@@ -30,10 +30,17 @@ type Todo struct {
 type TodoStore struct {
 	mu    sync.Mutex
 	items []Todo
+	save  func(context.Context, []Todo) error
 }
 
 // NewTodoStore returns an empty store.
 func NewTodoStore() *TodoStore { return &TodoStore{} }
+
+// NewPersistentTodoStore restores a host-owned plan. A failed save leaves the
+// in-memory list unchanged, so TodoWrite cannot acknowledge an unpersisted plan.
+func NewPersistentTodoStore(items []Todo, save func(context.Context, []Todo) error) *TodoStore {
+	return &TodoStore{items: append([]Todo(nil), items...), save: save}
+}
 
 // List returns a snapshot of the current todos.
 func (s *TodoStore) List() []Todo {
@@ -42,10 +49,16 @@ func (s *TodoStore) List() []Todo {
 	return append([]Todo(nil), s.items...)
 }
 
-func (s *TodoStore) set(items []Todo) {
+func (s *TodoStore) set(ctx context.Context, items []Todo) error {
 	s.mu.Lock()
-	s.items = items
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.save != nil {
+		if err := s.save(ctx, append([]Todo(nil), items...)); err != nil {
+			return err
+		}
+	}
+	s.items = append([]Todo(nil), items...)
+	return nil
 }
 
 // Tool returns the TodoWrite tool bound to this store. The agent uses it to
@@ -77,14 +90,16 @@ func (s *TodoStore) Tool() CoreTool {
 		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
 			return permission.Allowed()
 		},
-		Run: func(_ context.Context, input json.RawMessage, _ *ToolContext) (Result, error) {
+		Run: func(ctx context.Context, input json.RawMessage, _ *ToolContext) (Result, error) {
 			var in struct {
 				Todos []Todo `json:"todos"`
 			}
 			if err := json.Unmarshal(input, &in); err != nil {
 				return Result{}, err
 			}
-			s.set(in.Todos)
+			if err := s.set(ctx, in.Todos); err != nil {
+				return Errorf("TodoWrite: " + err.Error()), nil
+			}
 			// Ack only — the list itself is visible in the model's own tool_use
 			// input and is re-surfaced on demand via the todo system-reminder
 			// (harness). Mirrors claude-code's TodoWrite result.

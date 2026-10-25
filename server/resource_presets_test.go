@@ -1,22 +1,42 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"github.com/Autumn-27/artex/db"
 )
 
 func resourcePresetRig(t *testing.T) *Server {
-	pg := profileSelectionDB(t)
-	schema := `ALTER TABLE settings ADD COLUMN updated_at TEXT;
- CREATE TABLE agents(id INTEGER PRIMARY KEY,key TEXT);
- INSERT INTO agents VALUES(1,'worker'),(2,'pentest'),(3,'auto');
- CREATE TABLE mcp_servers(id INTEGER PRIMARY KEY,name TEXT,enabled BOOLEAN,args TEXT,env TEXT);
+	t.Helper()
+	// Preset tool bindings use PostgreSQL JSONB operators. Temporary tables on
+	// one connection isolate the fixture without modifying persisted settings.
+	dsn := os.Getenv("ARTEX_PG_DSN")
+	if dsn == "" {
+		t.Skip("requires an explicitly configured isolated ARTEX_PG_DSN")
+	}
+	conn, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = conn.Close() })
+	pg := &db.DB{DB: conn}
+	schema := `SET search_path TO pg_temp;
+ CREATE TEMP TABLE settings(key TEXT PRIMARY KEY,value TEXT,updated_at TIMESTAMPTZ);
+ CREATE TEMP TABLE tools(key TEXT PRIMARY KEY,enabled BOOLEAN,agents JSONB);
+ INSERT INTO tools VALUES('list_follow_ups',false,'[]'),('update_follow_ups',false,'[]'),('unrelated',false,'["custom"]');
+ CREATE TEMP TABLE agents(id INTEGER PRIMARY KEY,key TEXT);
+ INSERT INTO agents VALUES(1,'worker'),(2,'pentest'),(3,'auto'),(4,'mainagent'),(5,'planner');
+ CREATE TEMP TABLE mcp_servers(id INTEGER PRIMARY KEY,name TEXT,enabled BOOLEAN,args TEXT,env TEXT);
  INSERT INTO mcp_servers VALUES(1,'browser',false,'["custom-argument"]','{"fixture":"retained"}'),(2,'unrelated',false,'[]','{}');
- CREATE TABLE agent_visibility(agent_id INTEGER,resource_kind TEXT,resource_id INTEGER,mcp_tool_name TEXT DEFAULT '',enabled BOOLEAN,UNIQUE(agent_id,resource_kind,resource_id,mcp_tool_name));
- CREATE TABLE agent_skill_visibility(agent_id INTEGER,skill_name TEXT,enabled BOOLEAN,UNIQUE(agent_id,skill_name));`
+ CREATE TEMP TABLE agent_visibility(agent_id INTEGER,resource_kind TEXT,resource_id INTEGER,mcp_tool_name TEXT DEFAULT '',enabled BOOLEAN,UNIQUE(agent_id,resource_kind,resource_id,mcp_tool_name));
+ CREATE TEMP TABLE agent_skill_visibility(agent_id INTEGER,skill_name TEXT,enabled BOOLEAN,UNIQUE(agent_id,skill_name));`
 	if _, err := pg.Exec(schema); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +81,7 @@ func TestResourcePresetAppliesAtomicallyAndPreservesUnrelatedSettings(t *testing
 	if value, _, _ := s.m.pg.GetSetting("output_language"); value != "en" {
 		t.Fatal("language changed")
 	}
+	assertLegacyToolsUnchanged(t, s)
 	snapshot := s.m.currentResourceProfile()
 	high, _ := findResourcePreset("high")
 	if err := s.saveResourcePreset(high); err != nil {
@@ -85,6 +106,7 @@ func TestResourcePresetAppliesAtomicallyAndPreservesUnrelatedSettings(t *testing
 	if s.m.pg.GetBool(settingTrafficCapture, true) || s.m.browserLimit() != 2 {
 		t.Fatal("low did not apply its independent capture/resource settings")
 	}
+	assertLegacyToolsUnchanged(t, s)
 	if s.m.resourcePresetID() != "low" {
 		t.Fatal("low must keep browser available")
 	}
@@ -115,6 +137,9 @@ func TestResourcePresetRollsBackOnBindingFailure(t *testing.T) {
 	if enabled {
 		t.Fatal("MCP update leaked from rolled back preset")
 	}
+	if err := s.m.pg.QueryRow(`SELECT enabled FROM tools WHERE key='list_follow_ups'`).Scan(&enabled); err != nil || enabled {
+		t.Fatalf("tool update leaked from rolled back preset: enabled=%t err=%v", enabled, err)
+	}
 	if _, present, err := s.m.pg.GetSetting(settingResourcePreset); err != nil || present {
 		t.Fatalf("partial settings persisted: %v", err)
 	}
@@ -139,7 +164,7 @@ func TestResourcePresetCatalogToolDetectsManualChanges(t *testing.T) {
 	if err := s.saveResourcePreset(medium); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.m.pg.Exec(`CREATE TABLE tools(key TEXT,enabled BOOLEAN,agents TEXT); INSERT INTO tools VALUES('fixture',true,'["worker"]')`); err != nil {
+	if _, err := s.m.pg.Exec(`INSERT INTO tools VALUES('fixture',true,'["worker"]')`); err != nil {
 		t.Fatal(err)
 	}
 	previous := presetTools
@@ -173,5 +198,38 @@ func TestPresetCatalogContainsResourceSettingsOnly(t *testing.T) {
 	}
 	if result["resources"] == nil || result["tools"] == nil {
 		t.Fatal("resource catalog is incomplete")
+	}
+	var tools []presetTool
+	if err := json.Unmarshal(result["tools"], &tools); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool.Key == "list_follow_ups" || tool.Key == "update_follow_ups" {
+			t.Fatalf("retired follow-up state tool remains in preset catalog: %s", tool.Key)
+		}
+	}
+}
+
+func assertLegacyToolsUnchanged(t *testing.T, s *Server) {
+	t.Helper()
+	for key, want := range map[string][]string{
+		"list_follow_ups":   {},
+		"update_follow_ups": {},
+		"unrelated":         {"custom"},
+	} {
+		var enabled bool
+		var raw []byte
+		if err := s.m.pg.QueryRow(`SELECT enabled,agents FROM tools WHERE key=$1`, key).Scan(&enabled, &raw); err != nil {
+			t.Fatal(err)
+		}
+		var roles []string
+		if err := json.Unmarshal(raw, &roles); err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(roles)
+		slices.Sort(want)
+		if enabled || !slices.Equal(roles, want) {
+			t.Fatalf("%s enabled=%t roles=%v want=%v", key, enabled, roles, want)
+		}
 	}
 }

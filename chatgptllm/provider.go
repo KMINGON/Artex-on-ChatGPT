@@ -37,6 +37,9 @@ type Config struct {
 	// admission and known transient SSE failures before any output is exposed.
 	MaxRetries    int
 	RetryInterval time.Duration
+	// Network silence only; not a total generation or tool execution deadline.
+	// Zero uses DefaultStreamIdleTimeout. Negative disables this local limit.
+	StreamIdleTimeout time.Duration
 }
 
 type provider struct {
@@ -80,6 +83,9 @@ func New(cfg Config) (llm.Provider, error) {
 		cfg.RetryInterval = min(cfg.RetryInterval, 30*time.Second)
 	}
 	cfg.HTTPClient = fixedClient(cfg.HTTPClient)
+	if cfg.StreamIdleTimeout == 0 {
+		cfg.StreamIdleTimeout = DefaultStreamIdleTimeout
+	}
 	return &provider{cfg: cfg, fixedRetry: fixedRetry}, nil
 }
 
@@ -111,7 +117,7 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 		}
 		var observed ResponseMetadata
 		for attempt := 0; ; attempt++ {
-			resp, release, err := p.open(ctx, body)
+			resp, release, idle, err := p.openMonitored(ctx, body)
 			attempts := attempt
 			var admissionErr *Error
 			if resp != nil || (errors.As(err, &admissionErr) && admissionErr.Attempts > 0) {
@@ -152,6 +158,9 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 				})
 				resp.Body.Close()
 				release()
+				if idle.end() {
+					err = streamIdleError()
+				}
 				if stopped {
 					return
 				}

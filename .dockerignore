@@ -16,6 +16,9 @@ transcripts
 # Other checkouts, credentials, and runtime artifacts must never enter images.
 **/.git
 **/reference
+**/AGENTS.md
+**/AGENT.md
+**/Agent.md
 **/.env
 **/.env.*
 **/config.json

@@ -200,7 +200,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}, "type"),
 			},
 		}, "assets"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.as == nil {
 				return actool.Errorf("insert_assets 비활성: AssetStore가 초기화되지 않았습니다"), nil
 			}
@@ -227,15 +227,19 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			var results []result
 			var errs []errEntry
 
-			// 资产闸门规则一次性载入；读取失败则跳过判定（不阻断插入）。
-			// 拦截规则 = 全局 ∪ 任务级 block；允许规则 = 任务级 allow。
-			blockRules, _ := t.as.ListAssetInterceptRules()
+			// Read the existing rules once; a storage error must not bypass them.
+			blockRules, err := t.as.ListAssetInterceptRules()
+			if err != nil {
+				return actool.Errorf("자산 규칙 조회 실패: " + err.Error()), nil
+			}
 			var allowRules []db.AssetInterceptRule
 			if t.taskID > 0 {
-				if tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID); err == nil {
-					blockRules = append(blockRules, tb...)
-					allowRules = ta
+				tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID)
+				if err != nil {
+					return actool.Errorf("작업 자산 규칙 조회 실패: " + err.Error()), nil
 				}
+				blockRules = append(blockRules, tb...)
+				allowRules = ta
 			}
 
 			for i, item := range a.Assets {
@@ -250,88 +254,94 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}
 
 				typ := strings.TrimSpace(item.Type)
-				var id int64
-				var err error
+				svcIP := item.ServiceIP
+				if svcIP == "" {
+					svcIP = item.IP
+				}
+				var explorationID int64
+				if t.ts != nil {
+					explorationID = t.ts.ID()
+				}
+				id, err := t.as.RegisterObservedAsset(ctx, db.AssetObservationContext{
+					TaskID: taskID, ExplorationID: explorationID, OwnerNodeID: t.ownerNode,
+					Type: typ, Domain: item.Domain, URL: item.URL, IP: svcIP,
+				}, func(as *db.AssetStore) (int64, error) {
 
-				switch typ {
-				case "root_domain":
-					id, err = t.as.UpsertRootDomain(db.UpsertRootDomainReq{
-						Domain: item.Domain,
-						ICP:    item.ICP,
-						TaskID: taskID,
-					})
-
-				case "ip":
-					id, err = t.as.UpsertIP(db.UpsertIPReq{
-						IP:           item.IP,
-						BoundDomains: item.BoundDomains,
-						OpenPorts:    item.OpenPorts,
-						TaskID:       taskID,
-					})
-
-				case "subdomain":
-					id, err = t.as.UpsertSubdomain(db.UpsertSubdomainReq{
-						Domain:      item.Domain,
-						RecordType:  item.RecordType,
-						RecordValue: item.RecordValue,
-						ICP:         item.ICP,
-						TaskID:      taskID,
-					})
-
-				case "app":
-					id, err = t.as.UpsertApp(db.UpsertAppReq{
-						Name:        item.AppName,
-						BundleID:    item.BundleID,
-						Category:    item.Category,
-						Description: item.Description,
-						ICP:         item.AppICP,
-						CompanyID:   item.CompanyID,
-						TaskID:      taskID,
-					})
-
-				case "service":
-					// distinguish HTTP vs other by presence of url
-					if item.URL != "" {
-						// agent may send "ip" or "service_ip" for the enrichment IP; accept both
-						svcIP := item.ServiceIP
-						if svcIP == "" {
-							svcIP = item.IP
-						}
-						id, err = t.as.UpsertHTTPService(db.UpsertHTTPServiceReq{
-							URL:           item.URL,
-							Technologies:  item.Technologies,
-							StatusCode:    item.StatusCode,
-							ContentLength: item.ContentLength,
-							PageTitle:     item.PageTitle,
-							FaviconMMH3:   item.FaviconMMH3,
-							Auth:          item.Auth,
-							IP:            svcIP,
-							TaskID:        taskID,
+					switch typ {
+					case "root_domain":
+						return as.UpsertRootDomain(db.UpsertRootDomainReq{
+							Domain: item.Domain,
+							ICP:    item.ICP,
+							TaskID: taskID,
 						})
-					} else {
-						id, err = t.as.UpsertOtherService(db.UpsertOtherServiceReq{
+
+					case "ip":
+						return as.UpsertIP(db.UpsertIPReq{
+							IP:           item.IP,
+							BoundDomains: item.BoundDomains,
+							OpenPorts:    item.OpenPorts,
+							TaskID:       taskID,
+						})
+
+					case "subdomain":
+						return as.UpsertSubdomain(db.UpsertSubdomainReq{
 							Domain:      item.Domain,
-							IP:          item.IP,
-							Port:        item.Port,
-							ServiceName: item.ServiceName,
-							Auth:        item.Auth,
+							RecordType:  item.RecordType,
+							RecordValue: item.RecordValue,
+							ICP:         item.ICP,
 							TaskID:      taskID,
 						})
+
+					case "app":
+						return as.UpsertApp(db.UpsertAppReq{
+							Name:        item.AppName,
+							BundleID:    item.BundleID,
+							Category:    item.Category,
+							Description: item.Description,
+							ICP:         item.AppICP,
+							CompanyID:   item.CompanyID,
+							TaskID:      taskID,
+						})
+
+					case "service":
+						// distinguish HTTP vs other by presence of url
+						if item.URL != "" {
+							return as.UpsertHTTPService(db.UpsertHTTPServiceReq{
+								URL:           item.URL,
+								Technologies:  item.Technologies,
+								StatusCode:    item.StatusCode,
+								ContentLength: item.ContentLength,
+								PageTitle:     item.PageTitle,
+								FaviconMMH3:   item.FaviconMMH3,
+								Auth:          item.Auth,
+								IP:            svcIP,
+								TaskID:        taskID,
+							})
+						} else {
+							return as.UpsertOtherService(db.UpsertOtherServiceReq{
+								Domain:      item.Domain,
+								IP:          item.IP,
+								Port:        item.Port,
+								ServiceName: item.ServiceName,
+								Auth:        item.Auth,
+								TaskID:      taskID,
+							})
+						}
+
+					case "endpoint":
+						return as.UpsertEndpoint(db.UpsertEndpointReq{
+							URL:    item.URL,
+							Method: item.Method,
+							Params: item.Params,
+							IP:     svcIP,
+							TaskID: taskID,
+						})
+
+					default:
+						return 0, fmt.Errorf("알 수 없는 자산 유형: %s", typ)
 					}
 
-				case "endpoint":
-					id, err = t.as.UpsertEndpoint(db.UpsertEndpointReq{
-						URL:    item.URL,
-						Method: item.Method,
-						Params: item.Params,
-						IP:     item.ServiceIP,
-						TaskID: taskID,
-					})
-
-				default:
-					errs = append(errs, errEntry{Index: i, Error: "unknown type: " + typ})
-					continue
-				}
+				})
 
 				if err != nil {
 					errs = append(errs, errEntry{Index: i, Error: err.Error()})
@@ -339,30 +349,6 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}
 				results = append(results, result{Index: i, ID: id, Type: typ})
 				t.writes.Assets++
-				t.anchorOwner(id)
-				if taskID > 0 {
-					var sourceNodeID *int64
-					if t.ownerNode > 0 {
-						nodeID := t.ownerNode
-						sourceNodeID = &nodeID
-					}
-					summary := "에이전트가 insert_assets로 등록"
-					if t.ownerNode > 0 {
-						summary = fmt.Sprintf("Worker 의도 #%d에서 insert_assets로 등록", t.ownerNode)
-					}
-					_ = t.as.SetTaskAssetSource(taskID, id, "agent", summary, sourceNodeID)
-				}
-				// 自动入测试范围(source='auto')：只对 worker 顶层显式插入的这一项，按其
-				// 类型加保守范围；side-effect 派生的资产不经此处，故范围不盲目扩大。taskID=0 时无操作。
-				// 与覆盖度开关无关：task_scope 是任务的范围边界(list/查询的过滤基准)，
-				// 覆盖度开关只决定要不要把它当分母去算指标，不决定要不要累积范围本身。
-				{
-					svcIP := item.ServiceIP
-					if svcIP == "" {
-						svcIP = item.IP
-					}
-					_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
-				}
 			}
 
 			return jsonResult(map[string]any{

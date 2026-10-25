@@ -478,18 +478,9 @@ func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 		})
 }
 
-// deriveTaskStatus mirrors listTasks' status derivation for the list_tasks tool.
+// Web responses and orchestration tools expose the same lifecycle state.
 func (s *Server) deriveTaskStatus(t *Task) string {
-	lifecycle := t.lifecycleSnapshot()
-	switch {
-	case isTerminalStatus(lifecycle.Status):
-		return lifecycle.Status
-	case lifecycle.Paused || s.engine.IsPaused(t.ID):
-		return "paused"
-	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
-		return "running"
-	}
-	return "created"
+	return s.resolvedTaskStatus(t)
 }
 
 // orchestrationToolSeeds seeds the cross-task tools into the tools table so they

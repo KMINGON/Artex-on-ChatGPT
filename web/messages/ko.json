@@ -310,7 +310,7 @@
       "findings": "취약점",
       "retests": "재검증",
       "assets": "테스트 자산",
-      "coverage": "자산 커버리지 그래프",
+      "coverage": "자산 관찰 그래프",
       "intercept": "가로채기 승인",
       "report": "보고서"
     },
@@ -372,21 +372,21 @@
       "graph": {
         "moreCount": "{kind} {count}개 더",
         "scopeIn": "범위 내",
-        "tested": "테스트됨",
+        "tested": "결과 연결됨",
         "loading": "불러오는 중…",
         "empty": "범위 내 자산이 없습니다(먼저 작업 범위를 지정하세요)",
         "refresh": "새로 고침",
-        "legendTested": "테스트됨(강조)",
-        "legendUntested": "미테스트",
+        "legendTested": "결과 연결됨(강조)",
+        "legendUntested": "결과 연결 없음",
         "legendOutOfScope": "범위 밖",
-        "hint": "포스 레이아웃입니다. 노드를 드래그하고 휠로 확대·축소할 수 있습니다. 회색 「⋯」는 접힌 노드이며, 누르면 더 펼칠 수 있습니다."
+        "hint": "포스 레이아웃입니다. 노드를 드래그하고 휠로 확대·축소할 수 있습니다. 회색 「⋯」는 접힌 노드이며, 누르면 더 펼칠 수 있습니다. 사실·발견 연결 여부이며 취약점 유형별 검증 완료율이 아닙니다."
       },
       "sheet": {
         "attributes": "속성",
         "attrType": "유형",
-        "attrTestState": "테스트 상태",
-        "tested": "테스트됨",
-        "untested": "미테스트",
+        "attrTestState": "결과 연결 상태",
+        "tested": "결과 연결됨",
+        "untested": "결과 연결 없음",
         "outOfScope": "범위 밖(연결 노드)",
         "attrDomain": "도메인",
         "attrRootDomain": "루트 도메인",
@@ -401,7 +401,7 @@
         "rawData": "원본 데이터",
         "refSource": "출처 #{id} · 읽기 전용",
         "foldTitle": "표시되지 않은 {kind} ({count})",
-        "foldHint": "테스트된 항목을 먼저 표시합니다. 「더 보기」를 누르면 다음 묶음을 그래프에 불러옵니다.",
+        "foldHint": "결과가 연결된 항목을 먼저 표시합니다. 「더 보기」를 누르면 다음 묶음을 그래프에 불러옵니다.",
         "showMore": "더 보기 (+{step})"
       }
     },
@@ -586,9 +586,10 @@
         "empty": "동작 제약이 없습니다. 작업을 생성할 때 설명·목표에서 자동으로 추출하며, 여기서 직접 추가·수정·삭제해 「허용/금지할 동작」을 설정할 수도 있습니다."
       },
       "coverage": {
-        "title": "자산 테스트 커버리지",
-        "rough": "(대략적인 추정치이며 참고용입니다)",
-        "testedOf": "테스트됨 {tested} / 범위 내 {total}"
+        "title": "자산 관찰 범위",
+        "rough": "(사실·발견 연결 비율)",
+        "testedOf": "결과 연결 {tested} / 범위 내 {total}",
+        "description": "작업 시작점·기각된 발견은 제외합니다. 결과 연결은 자산을 관찰했다는 뜻이며, 모든 취약점 유형을 검증했거나 안전하다는 뜻은 아닙니다."
       },
       "tokens": {
         "title": "LLM 토큰 사용량",
@@ -684,6 +685,47 @@
           "fuzzy_url": "URL(부분 일치)",
           "cidr": "CIDR 대역"
         }
+      }
+    },
+    "graphTab": {
+      "counts": "노드 {nodes}/{totalNodes} · 연결 {edges}/{totalEdges}",
+      "loadMore": "이전 기록 더 불러오기",
+      "loading": "불러오는 중…",
+      "error": "새로고침에 실패했습니다. 다음 조회에서 재시도합니다.",
+      "hint": "최신 노드와 연결된 이웃을 표시합니다. 일부만 표시된 경우 이전 기록을 추가로 불러올 수 있습니다. 연결된 작업의 진행 중 의도는 제외합니다."
+    },
+    "runtime": {
+      "title": "현재 실행 설정",
+      "hint": "조회 시점의 설정입니다. 아래 모델·추론·프로그램은 요청 설정이며 과거 실행이나 서버 응답 확정값이 아닙니다.",
+      "workers": "작업 Worker 수",
+      "task_snapshot": "{count}개 · 작업 생성 시 저장값",
+      "global": "{count}개 · 전역 설정",
+      "browserLimit": "현재 전역 브라우저 상한",
+      "browser": "브라우저 MCP 설정",
+      "browserState": "MCP {enabled} · Worker 직접 접근 {visible}",
+      "capture": "현재 트래픽 캡처",
+      "enabled": "켜짐",
+      "disabled": "꺼짐",
+      "unknown": "미확인",
+      "browserHint": "MCP 활성화와 접근 허용 상태입니다. Chromium 실행·페이지 접속 성공 여부는 실행 기록에서 확인합니다.",
+      "role": "역할",
+      "model": "요청 모델",
+      "reasoning": "요청 추론 강도",
+      "program": "요청 프로그램",
+      "mainagent": "메인 에이전트",
+      "planner": "Planner",
+      "worker": "Worker",
+      "default": "서버 기본값(생략)",
+      "unavailable": "연결 불가",
+      "activeWorkers": "현재 실행 중인 Worker",
+      "sinceSignal": "마지막 실행 신호 {seconds}초 전",
+      "phase": {
+        "preparing": "준비",
+        "processing": "처리",
+        "model_wait": "모델 응답 대기",
+        "model_stream": "모델 응답 수신",
+        "tool": "도구 실행",
+        "settling": "결과 정리"
       }
     }
   },
@@ -2741,8 +2783,8 @@
       "heartbeatHint": "직전 계획 종료 또는 작업 시작으로부터 이 시간이 지나고 그동안 트리거가 없으면, 한 차례 계획을 자동으로 실행합니다(멈춤 방지 + 실행 중인 worker 감독 재개). 하한은 10분입니다.",
       "seedLabel": "첫 의도를 바로 하달(설명+목표)",
       "seedHint": "켜면 생성 즉시 「설명+목표」를 하나의 의도로 하달해 worker 가 첫 계획을 기다리지 않고 바로 시작하고, 끝나면 planner 가 이어받아 판정·보완합니다. CTF 처럼 보통 work 하나로 바로 해결되는 상황에 권장하며, 끄면 표준대로 먼저 계획한 뒤 실행합니다.",
-      "coverageLabel": "자산 커버리지 기능",
-      "coverageHint": "기본값은 켜짐입니다. 테스트 커버리지를 계산·표시하고, 상황도에 테스트 진행을 보여 주며, 테스트 범위를 자동으로 누적합니다. 끄면 커버리지를 더 이상 계산·표시하지 않고, 상황도는 자산만 보여 주고 진행은 표시하지 않으며, agent 도 범위 관련 도구를 더 이상 받지 않습니다. 끄더라도 「연관 기업 자산 범위」에는 영향이 없습니다.",
+      "coverageLabel": "자산 관찰 범위 집계",
+      "coverageHint": "기본값은 켜짐입니다. 범위 내 자산에 연결된 사실·발견을 집계하고 작업 범위를 자동 누적합니다. 취약점 유형별 검증 완료율은 아닙니다. 끄면 이 집계와 관련 범위 도구가 비활성화되며, 연관 기업 자산 범위에는 영향이 없습니다.",
       "cancel": "취소",
       "creating": "생성 중",
       "create": "생성",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -242,8 +243,9 @@ func NewExecuteExtraTool(reg *Registry, unlock *UnlockSet) CoreTool {
 		},
 		Run: func(ctx context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
 			var args struct {
-				ToolName string          `json:"tool_name"`
-				Params   json.RawMessage `json:"params"`
+				ToolName   string          `json:"tool_name"`
+				Params     json.RawMessage `json:"params"`
+				Parameters json.RawMessage `json:"parameters"`
 			}
 			if err := json.Unmarshal(in, &args); err != nil {
 				return Errorf("Error: " + err.Error()), nil
@@ -260,13 +262,35 @@ func NewExecuteExtraTool(reg *Registry, unlock *UnlockSet) CoreTool {
 					" is not unlocked in this session — load the skill that provides it first."), nil
 			}
 			params := args.Params
+			if len(args.Parameters) != 0 {
+				if len(params) != 0 && !equivalentDeferredParams(params, args.Parameters) {
+					return Errorf("params와 parameters가 서로 다릅니다. 실제 도구 스키마에 맞는 params 하나만 전달하세요."), nil
+				}
+				params = args.Parameters
+			}
 			if len(params) == 0 {
 				params = json.RawMessage("{}")
 			}
 			if err := ValidateInput(t.InputSchema(), params); err != nil {
-				return Errorf("Error: invalid params for " + args.ToolName + ": " + err.Error()), nil
+				return Errorf(InputError(args.ToolName, t.InputSchema(), err)), nil
 			}
 			return t.Call(ctx, params, tc)
 		},
 	})
+}
+
+// parameters is accepted as a compatibility spelling only. Never infer inner
+// argument names (for example code/function), or merge conflicting objects.
+// UseNumber avoids treating different large integer arguments as equal.
+func equivalentDeferredParams(a, b json.RawMessage) bool {
+	decode := func(raw json.RawMessage) (any, error) {
+		d := json.NewDecoder(strings.NewReader(string(raw)))
+		d.UseNumber()
+		var value any
+		err := d.Decode(&value)
+		return value, err
+	}
+	x, xerr := decode(a)
+	y, yerr := decode(b)
+	return xerr == nil && yerr == nil && reflect.DeepEqual(x, y)
 }

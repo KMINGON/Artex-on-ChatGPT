@@ -13,10 +13,19 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-func TestKoreanToolContractsUnchanged(t *testing.T) {
+func TestKoreanToolContractsMatchReviewedChanges(t *testing.T) {
 	var baseline koreanDefaultBaseline
 	if err := json.Unmarshal(koreanDefaultsV1, &baseline); err != nil {
 		t.Fatal(err)
+	}
+	// Keep the production localization baseline immutable: its hashes recognize
+	// historical defaults without overwriting user edits. These three contracts
+	// intentionally evolved for fact/intent linking and completion review; all
+	// other tool schemas must still match the original translation contract.
+	functionalUpdates := map[string]string{
+		"record_fact": "33486853960f5f14a8bfbe6a822c6d52633ef3496ada96eff4065ca0de23f32e",
+		"add_intent":  "cd849d60948f02d4779622d246be160883c503817cdc5cdf47af27790aa7f5ce",
+		"prove_goal":  "0d0c06b7f1924726dd7299d94d05b3bc28fc3505cf2a5e356fed3516a5d11564",
 	}
 	strip := func(value any) any { return value }
 	strip = func(value any) any {
@@ -53,11 +62,39 @@ func TestKoreanToolContractsUnchanged(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if defaultTextHash(string(structural)) != baseline.Tools[key].Contract {
-			t.Errorf("%s: tool schema structure changed during translation", key)
+		expected := baseline.Tools[key].Contract
+		if updated, ok := functionalUpdates[key]; ok {
+			expected = updated
+			delete(functionalUpdates, key)
+		}
+		if got := defaultTextHash(string(structural)); got != expected {
+			t.Errorf("%s: unreviewed schema contract change: got=%s want=%s", key, got, expected)
 		}
 		if strings.IndexFunc(target.Desc+string(raw), func(r rune) bool { return unicode.Is(unicode.Han, r) }) >= 0 {
 			t.Errorf("%s: Chinese remains in a supplied tool description/schema", key)
+		}
+	}
+	if len(functionalUpdates) != 0 {
+		t.Fatalf("reviewed tool contracts missing from catalog: %v", functionalUpdates)
+	}
+	for key, required := range map[string][]string{
+		"record_fact": {"facts", "summary", "intent_id", "detail", "evidence", "confidence", "asset_ids"},
+		"add_intent":  {"intents", "summary", "asset_ids", "parent_ids", "priority"},
+	} {
+		properties, _ := (&Server{}).koreanToolDefaults()[key].Schema["properties"].(map[string]any)
+		if len(properties) == 0 {
+			t.Fatalf("%s: empty active schema", key)
+		}
+		for _, field := range required {
+			if _, ok := properties[field]; !ok {
+				t.Errorf("%s: core field %s removed", key, field)
+			}
+		}
+		if _, ok := properties["follow_ups"]; ok {
+			t.Errorf("%s: retired follow_ups field remains active", key)
+		}
+		if _, ok := properties["follow_up_refs"]; ok {
+			t.Errorf("%s: retired follow_up_refs field remains active", key)
 		}
 	}
 }

@@ -141,18 +141,24 @@ type EnrichTrigger interface {
 // findings under "facts" (record_fact → Facts, insert_assets → Assets,
 // report_finding → Findings; each element of a batch counts once).
 type WriteCounts struct {
-	Facts    int
-	Assets   int
-	Findings int
+	Facts            int
+	Assets           int
+	Findings         int
+	ObservedAssets   int
+	ObservationFacts int
 }
 
-// Total is every node persisted this run, regardless of kind — the
-// "explored but persisted nothing" signal (Total == 0).
+// Total counts explicit result writes. Automatically recorded HTTP observations
+// do not replace the worker's responsibility to record a conclusion/evidence.
 func (w WriteCounts) Total() int { return w.Facts + w.Assets + w.Findings }
 
 // String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0".
 func (w WriteCounts) String() string {
-	return fmt.Sprintf("사실 %d 자산 %d 취약점 %d", w.Facts, w.Assets, w.Findings)
+	text := fmt.Sprintf("사실 %d 자산 %d 취약점 %d", w.Facts, w.Assets, w.Findings)
+	if w.ObservedAssets > 0 || w.ObservationFacts > 0 {
+		text += fmt.Sprintf(" / 자동 HTTP 관찰: 자산 %d, 관찰 사실 %d", w.ObservedAssets, w.ObservationFacts)
+	}
+	return text
 }
 
 // Writes reports what this run wrote back, split by node kind (so the engine can
@@ -224,15 +230,6 @@ func (t *ToolSet) SetEnrich(e EnrichTrigger) { t.enrich = e }
 // intent node; planner/main: the begin root). Assets created/referenced while
 // ownerNode is set are anchored to it as lineage (not visibility).
 func (t *ToolSet) SetOwnerNode(id int64) { t.ownerNode = id }
-
-// anchorOwner records a lineage edge from this run's owner node to an asset
-// (no-op if unset). Provenance only — the asset graph is global and shared, so
-// this no longer affects which assets a task can read.
-func (t *ToolSet) anchorOwner(assetID int64) {
-	if t.ts != nil && t.ownerNode > 0 && assetID > 0 {
-		_ = t.ts.Anchor(t.ownerNode, assetID)
-	}
-}
 
 // pid parses an id that may arrive as a JSON number or string ("" / 0 → 0).
 func pid(raw json.RawMessage) int64 {
@@ -351,6 +348,16 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // graph_overview tool and the planner's wake-up prompt (which pre-injects it so
 // the model needn't spend a turn calling the tool — every plan round starts with
 // an empty context and always needs this first).
+func isHTTPObservationFact(n *db.Node) bool {
+	if n == nil || n.Kind != db.KindFact {
+		return false
+	}
+	var payload struct {
+		Source string `json:"observation_source"`
+	}
+	return json.Unmarshal(n.Payload, &payload) == nil && payload.Source == "http_response"
+}
+
 func (t *ToolSet) graphOverviewData() map[string]any {
 	out := map[string]any{}
 	// goals summary folded in so the planner needn't call list_goals each round.
@@ -442,9 +449,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
 	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
-	out["findings_total"] = len(vulnNodes)             // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
-	out["facts"] = len(factNodes)                      // 探索事实/结论数（含否定结论）
+	factNodes, analysisFacts, observationFacts, _ := t.ts.AnalysisFactOverview(1000) // newest analysis facts first
+	out["findings_total"] = len(vulnNodes)                                           // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
+	out["facts"] = analysisFacts
+	out["http_observation_facts"] = observationFacts
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
@@ -533,7 +541,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 					m["denominator"] = cov.Denominator
 					m["tested"] = cov.Tested
 					m["by_type"] = cov.ByType
-					m["note"] = "coverage는 자산 테스트 커버리지(인터페이스 등 관련 자산 포함)의 대략적인 참고 수치입니다. 현재 작업과 직접 연결된 작업의 scope·사실 기준점을 포함하며 연결된 scope는 읽기 전용입니다. 컨테이너형 자산/대량 열거로 수치가 낮아질 수 있으므로 이 수치만으로 테스트 완료를 판단하지 마세요. add_task_scope로 이 작업의 범위를 보완하거나 list_untested_assets로 미테스트 자산을 볼 수 있습니다【보통 list_untested_assets는 호출하지 않고 작업 진행에 따르면 됩니다】; "
+					m["note"] = "coverage는 fact/finding이 연결된 자산 관찰 비율이며 취약점 유형별 검증률이 아닙니다. 정찰 사실도 포함하므로 이 수치만으로 테스트 완료를 판단하지 마세요. 현재 작업과 직접 연결된 작업의 scope·관찰 기준점을 포함하며 연결된 scope는 읽기 전용입니다. list_untested_assets는 아직 fact/finding이 연결되지 않은 자산을 조회합니다."
 					if cov.Denominator == 0 {
 						m["pct"] = nil
 						m["status"] = "범위가 지정되지 않음"
@@ -670,10 +678,10 @@ func limitCurrentOverviewText(out map[string]any) {
 	}{
 		{"goals", "text", 6_000, 1_000},
 		{"hints", "text", 6_000, 1_200},
+		{"recent_facts", "summary", 4_000, 1_000},
 		{"open_intents", "summary", 4_000, 800},
 		{"running_intents", "summary", 4_000, 800},
 		{"finding_list", "summary", 1_500, 800},
-		{"recent_facts", "summary", 1_500, 800},
 		{"recent_done_intents", "summary", 1_500, 800},
 		{"cold_digests", "body", 1_500, 1_000},
 	} {
@@ -794,20 +802,20 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		}
 		item["hints"] = hintSummary
 
-		facts, _ := ts.ListByKind(db.KindFact, relatedOverviewMaxFactsPerSource)
+		facts, factTotal, observationTotal, _ := ts.AnalysisFactOverview(relatedOverviewMaxFactsPerSource)
 		findings, _ := ts.ListByKind(db.KindFinding, relatedOverviewMaxFindingsPerTask)
 		intentNodes, _ := ts.ListByKind(db.KindIntent, 300)
 		terminalIntent := make(map[int64]bool, len(intentNodes))
 		for _, intent := range intentNodes {
 			terminalIntent[intent.ID] = inheritedIntentSummaryState(intent.State)
 		}
-		item["facts"] = len(facts)
+		item["facts"] = factTotal
+		item["http_observation_facts"] = observationTotal
 		item["findings"] = len(findings)
 		if statsErr == nil {
-			item["facts"] = stats[db.KindFact]
 			item["findings"] = stats[db.KindFinding]
 			if stats[db.KindGoal] > len(goals) || stats[db.KindHint] > len(hints) ||
-				stats[db.KindFact] > len(facts) || stats[db.KindFinding] > len(findings) {
+				factTotal > len(facts) || stats[db.KindFinding] > len(findings) {
 				budget.truncated = true
 			}
 		}
@@ -1094,10 +1102,11 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 
 // intentItem 是 add_intent 批量/单条的一条探索方向。
 type intentItem struct {
-	Summary   string            `json:"summary"`
-	AssetIDs  []json.RawMessage `json:"asset_ids"`
-	ParentIDs []json.RawMessage `json:"parent_ids"`
-	Priority  int               `json:"priority"`
+	FollowUpRefs []db.FollowUpRef  `json:"follow_up_refs"`
+	Summary      string            `json:"summary"`
+	AssetIDs     []json.RawMessage `json:"asset_ids"`
+	ParentIDs    []json.RawMessage `json:"parent_ids"`
+	Priority     int               `json:"priority"`
 }
 
 // addOneIntent 创建一条意图节点并连上游血缘，返回 id。
@@ -1105,6 +1114,17 @@ type intentItem struct {
 // 节点（不能挂在别的意图/目标/提示上）。顶层全新方向留空 parent_ids，兜底连 origin fact。
 // 这样"每个意图都连到 fact 节点、且是发现驱动而非凭空规划"从创建路径上被强制。
 func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
+	return t.addOneIntentContext(context.Background(), it)
+}
+
+func (t *ToolSet) addOneIntentContext(ctx context.Context, it intentItem) (int64, error) {
+	return t.registerOneIntentContext(ctx, it)
+}
+
+func (t *ToolSet) registerOneIntentContext(ctx context.Context, it intentItem) (int64, error) {
+	if len(it.FollowUpRefs) > 0 {
+		return 0, fmt.Errorf("follow_up_refs는 더 이상 사용하지 않습니다. 근거 fact/finding을 parent_ids로 연결하세요")
+	}
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, fmt.Errorf("summary는 비워 둘 수 없습니다")
 	}
@@ -1116,7 +1136,13 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 			return 0, fmt.Errorf("parent_id %d가 이 작업 또는 직접 연결된 작업에 없습니다. parent_ids는 기존 【사실(fact)/발견(finding)】 노드 id여야 하며 최상위 새 방향이면 parent_ids를 비워 두세요", pidv)
 		}
 		if n.Kind != db.KindFact && n.Kind != db.KindFinding {
-			return 0, fmt.Errorf("parent_id %d는 %q 노드이므로 의도의 근거로 사용할 수 없습니다. 의도는 확인된 【사실(fact)/발견(finding)】에만 연결할 수 있고 의도/목표/힌트에는 연결할 수 없습니다. 최상위 새 방향이면 parent_ids를 비워 두세요", pidv, n.Kind)
+			help := ""
+			if n.Kind == db.KindIntent && !n.Inherited {
+				if ids, err := t.ts.OutcomeIDs(pidv); err == nil && len(ids) > 0 {
+					help = fmt.Sprintf(" 이 의도의 결과 노드 %v를 node_detail로 확인한 뒤 실제 근거를 선택하세요.", ids)
+				}
+			}
+			return 0, fmt.Errorf("parent_id %d는 %q 노드이므로 의도의 근거로 사용할 수 없습니다. 의도는 확인된 【사실(fact)/발견(finding)】에만 연결할 수 있고 의도/목표/힌트에는 연결할 수 없습니다. 최상위 새 방향이면 parent_ids를 비워 두세요.%s", pidv, n.Kind, help)
 		}
 	}
 	priority := it.Priority
@@ -1143,42 +1169,27 @@ func (t *ToolSet) addOneIntent(it intentItem) (int64, error) {
 	if len(anchors) > 0 {
 		payload["asset_ids"] = anchors
 	}
-	id, err := t.ts.AddIntent(payload, priority, anchors, "planner")
-	if err != nil {
-		return 0, err
-	}
-	// upstream lineage: link each (validated) fact/finding parent → this intent, so
-	// "multiple facts combine into one new intent" is expressible.
-	for _, parent := range parents {
-		_ = t.ts.Link(parent, db.RelDerivedFrom, id)
-	}
-	// a top-level intent (no explicit parent) connects to the origin fact, so every
-	// intent still traces back to a fact node — at task start the only fact is the
-	// origin, and the first intents derive from it.
-	if len(parents) == 0 {
-		if origin, _ := t.ts.OriginFactID(); origin > 0 {
-			_ = t.ts.Link(origin, db.RelDerivedFrom, id)
-		}
-	}
-	return id, nil
+	return t.ts.AddIntentWithParents(ctx, payload, priority, anchors, parents, "planner")
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
 	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 의도는 고정된 유형이 아닌 열린 탐색 방향입니다. summary 한 문장으로 무엇을 탐색/검증/활용할지 자유롭게 설명하세요.\n"+
 		"★일괄 제출 우선: 한 회차에서 선별한 여러 새 방향을 intents 배열로 한 번에 제출하세요(개별 호출보다 왕복 횟수 절약). 반환 ids 배열은 intents와 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 intents를 생략하고 최상위 summary를 전달하세요.",
-		obj(map[string]any{
+		withBatchSchema(obj(map[string]any{
 			"intents":    map[string]any{"type": "array", "description": "【우선 사용】추가할 탐색 방향 배열이며 순서대로 처리합니다. 각 요소의 필드는 아래 최상위 필드(summary/asset_ids/parent_ids/priority)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
 			"summary":    str("[단일] 이 탐색 방향을 한 문장으로 설명: 할 일+이유. 방향이 명확하면 되며 자산 id에 의존하지 않습니다."),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "이 방향에서 테스트/공격할 【대상 자산 id】(**가능하면 전달**, 0/1/여러 개. list_assets의 자산 id이며 탐색 노드 id가 아님). 대상 자산(사이트/인터페이스/인자/호스트 등)을 지정합니다. 구체적인 자산을 다루면 반드시 전달하세요. 탐색 대상을 구조화하여 중복 확인과 의도·자산 연결에 사용합니다. 구체적인 대상 자산이 없는 순수한 전역 정찰에만 비워 두세요."},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "상위 근거 id(선택 사항, 0/1/여러 개): 이 방향을 종합하여 도출한 【확인된 사실(fact)/발견(finding)】. **기존 fact/finding 노드 id만 지정하며 의도/목표/힌트는 금지**합니다. 의도는 확인된 지식과 발견에 근거해야 하며 근거 없이 계획해서는 안 됩니다. 여러 사실이 함께 새 의도를 만들면 모두 전달하고 최상위 새 정찰 방향이면 비워 두세요(작업 시작점 origin fact에 자동 연결)."},
 			"priority":   intp("우선순위 0-10, 기본 5"),
-		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		}), "intents", "summary"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Intents    []intentItem `json:"intents"`
 				intentItem              // 单条模式：顶层 summary/asset_ids/parent_ids/priority
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("의도 입력을 해석할 수 없습니다: " + err.Error()), nil
+			}
 			batch := len(a.Intents) > 0
 			items := a.Intents
 			if !batch {
@@ -1189,7 +1200,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			errs := map[string]string{}
 			createdAny := false
 			for i, it := range items {
-				id, err := t.addOneIntent(it)
+				id, err := t.registerOneIntentContext(ctx, it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
@@ -1232,60 +1243,60 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 func (t *ToolSet) proveGoal() actool.CoreTool {
 	return t.writeExpTool("prove_goal", "발견/사실이 목표 달성을 증명한다고 판단할 때 호출합니다. 증거 노드를 목표 노드에 연결하고 목표를 met로 표시합니다.",
 		obj(map[string]any{
-			"goal_id":     idp("목표 노드 id"),
-			"evidence_id": idp("목표를 증명하는 발견/사실 노드 id"),
-			"reason":      str("이 증거가 목표를 충족하는 이유"),
-		}, "goal_id", "evidence_id"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			"goal_id":           idp("목표 노드 id"),
+			"evidence_id":       idp("목표를 증명하는 발견/사실 노드 id"),
+			"reason":            str("이 증거가 목표를 충족하는 이유"),
+			"completion_review": str("마지막 목표 달성 시 활성 의도·미완료 Todo가 남으면 필수. 남은 작업과 목표의 관계, 종료해도 되는 근거를 적으세요. 실행 가능한 미검증 방향이 남으면 완료 처리하지 마세요."),
+		}, "goal_id", "evidence_id", "reason"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				GoalID     json.RawMessage `json:"goal_id"`
-				EvidenceID json.RawMessage `json:"evidence_id"`
-				Reason     string          `json:"reason"`
+				GoalID           json.RawMessage `json:"goal_id"`
+				EvidenceID       json.RawMessage `json:"evidence_id"`
+				Reason           string          `json:"reason"`
+				CompletionReview string          `json:"completion_review"`
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("목표 증명 입력이 올바르지 않습니다: " + err.Error()), nil
+			}
 			goal, ev := pid(a.GoalID), pid(a.EvidenceID)
 			if goal == 0 || ev == 0 {
 				return actool.Errorf("goal_id와 evidence_id는 필수입니다"), nil
 			}
-			goalNode, err := t.ts.GetNode(goal)
-			if err != nil || goalNode == nil || goalNode.Kind != db.KindGoal {
-				return actool.Errorf("goal_id는 이 작업의 목표 노드여야 합니다(연결된 작업 목표는 읽기 전용)"), nil
+			if strings.TrimSpace(a.Reason) == "" {
+				return actool.Errorf("reason에 증거가 목표를 충족하는 이유를 적으세요"), nil
 			}
-			evidenceNode, err := t.ts.GetNodeWithSources(ev)
-			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
-				return actool.Errorf("evidence_id는 이 작업 또는 직접 연결된 작업의 사실/취약점 노드여야 합니다"), nil
+			allMet, goalCount, err := t.ts.ProveGoal(ctx, goal, ev, a.Reason, a.CompletionReview)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
 			}
-			_ = t.ts.Link(ev, db.RelProves, goal)
-			_ = t.ts.SetNodeState(goal, "met")
-			// 每标记一个目标 met，就检查本任务是否【所有目标】都已 met；若是，自动判定
-			// 任务完成（置 GoalMet），无需再依赖模型显式调 goal_met。
-			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil && len(goals) > 0 {
-				allMet := true
-				for _, g := range goals {
-					if g.State != "met" {
-						allMet = false
-						break
-					}
-				}
-				if allMet {
-					t.GoalMet = true
-					t.Reason = fmt.Sprintf("목표 %d개가 모두 met입니다(마지막으로 goal %d에서 완료됨)", len(goals), goal)
-					return actool.Text(fmt.Sprintf("goal %d marked met; 이 작업의 모든 목표가 달성되어 자동으로 완료 처리됩니다", goal)), nil
-				}
+			if allMet {
+				t.GoalMet = true
+				t.Reason = fmt.Sprintf("목표 %d개가 모두 met입니다(마지막으로 goal %d에서 완료됨)", goalCount, goal)
+				return actool.Text(fmt.Sprintf("goal %d marked met; 모든 목표의 증명을 저장했습니다. 실행 종료 직전 새 목표·의도·단서·Todo를 다시 확인합니다", goal)), nil
 			}
 			return actool.Text(fmt.Sprintf("goal %d marked met", goal)), nil
 		})
 }
 
 func (t *ToolSet) goalMet() actool.CoreTool {
-	return writeTool("goal_met", "【전체 작업 즉시 종료】 — 작업의 【모든 목표가 실제로 달성되어 전체를 마무리】할 때만 호출하세요(작업 【전체】 완료를 뜻하며 목표/flag/취약점 하나만 달성한 것은 해당하지 않습니다. 그 경우 prove_goal로 해당 목표만 표시하세요). ⚠️\"이번 계획 회차 종료\" 용도가 아닙니다. 새 의도가 없거나 Worker 결과를 기다리는 경우에는 【이 도구를 호출하지 말고 이번 회차만 종료】하세요(의도 0개도 정상). 일반적으로 prove_goal로 목표별 증명을 우선 사용하며 goal_met은 개별 증명을 생략하고 전역적으로 마무리하는 수단일 뿐입니다.",
+	return t.writeExpTool("goal_met", "전체 작업의 최종 완료를 요청합니다. open 목표는 먼저 prove_goal로 근거를 연결해 증명해야 하며, 이 도구로 개별 증명을 생략할 수 없습니다. 마지막 완료 검토 뒤 새 작업이 생기면 실행을 계속합니다. 이번 계획 회차 종료나 Worker 결과 대기에는 호출하지 마세요.",
 		obj(map[string]any{"reason": str("달성 근거(목표를 실제 달성한 증거여야 하며 \"이번 회차에 새 방향 없음\" 같은 회차 종료 이유는 안 됨)")}, "reason"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct{ Reason string }
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("완료 요청 입력이 올바르지 않습니다: " + err.Error()), nil
+			}
+			if strings.TrimSpace(a.Reason) == "" {
+				return actool.Errorf("reason에 전체 작업의 완료 근거를 적으세요"), nil
+			}
+			if open, err := t.ts.HasOpenGoal(); err != nil {
+				return actool.Errorf(err.Error()), nil
+			} else if open {
+				return actool.Errorf("아직 open 목표가 있습니다. prove_goal로 각 목표의 실제 근거와 완료 검토를 먼저 기록하세요"), nil
+			}
 			t.GoalMet = true
 			t.Reason = a.Reason
-			return actool.Text("acknowledged: goal marked met"), nil
+			return actool.Text("최종 완료 검토를 요청했습니다. 실행 종료 직전 남은 작업을 다시 확인합니다"), nil
 		})
 }
 
@@ -1328,7 +1339,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
-		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: pid(a.IntentID), VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs)}
+		intentID, err := t.resultIntent(pid(a.IntentID))
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		input := db.RecordFindingInput{TaskID: t.taskID, ExplorationID: t.ts.ID(), IntentID: intentID, VulnClass: a.VulnClass, Name: a.Name, Severity: a.Severity, Summary: a.Summary, Evidence: a.Evidence, Worker: t.worker, AssetIDs: pidList(a.AssetIDs)}
 		var recorded *db.RecordedFinding
 		if t.findingRecorder != nil {
 			recorded, err = t.findingRecorder.Record(ctx, input, refs)
@@ -1379,6 +1394,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 // must NOT be stuffed into the asset graph via upsert_asset.
 // factItem 是 record_fact 批量/单条的一条事实。
 type factItem struct {
+	FollowUps  []string          `json:"follow_ups"`
 	Summary    string            `json:"summary"`
 	Detail     string            `json:"detail"`
 	Evidence   string            `json:"evidence"`   // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
@@ -1390,6 +1406,37 @@ type factItem struct {
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
 // 批量时的默认意图（本条未给 intent_id 时用）。
 func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error) {
+	return t.recordOneFactContext(context.Background(), it, defaultIntent)
+}
+
+// resultIntent uses the assigned intent as authority, while root-owned tools may
+// still write explicit observations without pretending that a root fact is an intent.
+func (t *ToolSet) resultIntent(intentID int64) (int64, error) {
+	if t.ownerNode > 0 {
+		owner, err := t.ts.GetNode(t.ownerNode)
+		if err != nil || owner == nil {
+			return 0, fmt.Errorf("현재 실행의 출처 노드를 확인하지 못했습니다")
+		}
+		if owner.Kind == db.KindIntent {
+			if intentID > 0 && intentID != owner.ID {
+				return 0, fmt.Errorf("현재 Worker의 결과는 할당된 intent_id %d에만 기록할 수 있습니다", owner.ID)
+			}
+			intentID = owner.ID
+		}
+	}
+	if intentID > 0 {
+		n, err := t.ts.GetNode(intentID)
+		if err != nil || n == nil || n.Kind != db.KindIntent {
+			return 0, fmt.Errorf("intent_id는 이 작업의 의도여야 합니다(연결된 작업 의도는 읽기 전용)")
+		}
+	}
+	return intentID, nil
+}
+
+func (t *ToolSet) recordOneFactContext(ctx context.Context, it factItem, defaultIntent int64) (int64, error) {
+	if len(it.FollowUps) > 0 {
+		return 0, fmt.Errorf("follow_ups는 더 이상 사용하지 않습니다. 새 검증 방향과 근거를 detail에 기록하세요")
+	}
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, fmt.Errorf("summary는 비워 둘 수 없습니다")
 	}
@@ -1407,19 +1454,13 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	if intent <= 0 {
 		intent = defaultIntent
 	}
-	if intent > 0 {
-		node, err := t.ts.GetNode(intent)
-		if err != nil || node == nil || node.Kind != db.KindIntent {
-			return 0, fmt.Errorf("intent_id는 이 작업의 의도여야 합니다(연결된 작업 의도는 읽기 전용)")
-		}
-	}
-	// a fact is its OWN node kind (distinct from a vuln finding).
-	id, err := t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs))
+	intent, err := t.resultIntent(intent)
 	if err != nil {
 		return 0, err
 	}
-	if intent > 0 {
-		_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> fact
+	id, err := t.ts.AddFactWithIntent(ctx, payload, pidList(it.AssetIDs), t.worker, intent)
+	if err != nil {
+		return 0, err
 	}
 	t.writes.Facts++
 	return id, nil
@@ -1433,7 +1474,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"  · evidence=이 결론을 뒷받침하는 핵심 증거 【한 줄】(명령+가장 잘 입증하는 출력 한두 줄). **반드시 간결하게** 작성하세요. 세부 내용은 detail에 있으므로 긴 출력을 다시 붙이지 마세요.\n"+
 		"  · confidence=observed(출력에서 직접 관찰) | inferred(현상에서 추론).\n"+
 		"  · **부정적 결론**(주입 불가/포트 닫힘/진입점 미발견 등)은 \"관찰 + 잠정적 해석\"만 쓰세요. 실제 본 것을 설명하고 방향 포기 여부는 계획자가 전체 현황을 종합하여 결정하게 하세요. evidence는 반드시 제공하고, 수단을 충분히 시도하지 않았거나 증거가 약하면(한 번만 확인/그렇게 보임 포함) inferred, 충분히 시도하고 직접 관찰한 경우에만 observed로 표시하세요.",
-		obj(map[string]any{
+		withBatchSchema(obj(map[string]any{
 			"facts":      map[string]any{"type": "array", "description": "【서로 다른 결론이 여러 개일 때 사용】사실 배열. 각 요소는 아래 최상위 필드(summary/detail/evidence/confidence/intent_id/asset_ids)와 같고 intent_id 생략 시 최상위 값을 사용합니다. 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
 			"summary":    str("이번 탐색 결론을 【요약한 한 문장】(detail의 요약)"),
 			"intent_id":  idp("이 사실을 생성한 의도 id(할당받은 의도. 일괄 제출 시 각 항목의 기본값)"),
@@ -1441,13 +1482,15 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			"evidence":   str("핵심 증거 【한 줄】: 명령 + 결론을 가장 잘 입증하는 출력 한두 줄. 간결하게 쓰고 긴 출력을 붙이지 마세요(상세는 detail)."),
 			"confidence": str("observed(출력에서 직접 관찰) | inferred(현상에서 추론). 부정적 결론은 반드시 정확하게 표시하세요."),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "관련 자산 id(선택 사항, 0/1/여러 개): 이 사실이 다루는 자산"},
-		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		}), "facts", "summary"),
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Facts    []factItem `json:"facts"`
 				factItem            // 单条模式 + 批量默认 intent_id
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("사실 입력을 해석할 수 없습니다: " + err.Error()), nil
+			}
 			batch := len(a.Facts) > 0
 			items := a.Facts
 			if !batch {
@@ -1458,7 +1501,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			for i, it := range items {
-				id, err := t.recordOneFact(it, defaultIntent)
+				id, err := t.recordOneFactContext(ctx, it, defaultIntent)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
@@ -1522,6 +1565,10 @@ type goalItem struct {
 // origin 取 t.worker(缺省 system):goals 拆解器写入的记 "goals"、主 agent 运行时记
 // "human"。唤醒 planner 由 setGoals 在整批写完后统一做(见下),这里只负责落库。
 func (t *ToolSet) addOneGoal(it goalItem) (int64, error) {
+	return t.addOneGoalContext(context.Background(), it)
+}
+
+func (t *ToolSet) addOneGoalContext(ctx context.Context, it goalItem) (int64, error) {
 	text := strings.TrimSpace(it.Text)
 	if text == "" {
 		return 0, fmt.Errorf("text는 비워 둘 수 없습니다")
@@ -1534,14 +1581,7 @@ func (t *ToolSet) addOneGoal(it goalItem) (int64, error) {
 	if origin == "" {
 		origin = "system"
 	}
-	id, err := t.ts.AddNode(db.KindGoal, payload, 0, "open", origin, nil)
-	if err != nil {
-		return 0, err
-	}
-	if of, _ := t.ts.OriginFactID(); of > 0 && id > 0 {
-		_ = t.ts.Link(of, db.RelSpawns, id) // goals descend from the task root (origin fact)
-	}
-	return id, nil
+	return t.ts.AddGoalWithOrigin(ctx, payload, origin)
 }
 
 // setGoals 给【本任务】新增探索目标(goal 节点)。既是目标拆解器的提交工具,也是主
@@ -1556,7 +1596,7 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 			"text":      str("[단일] 독립적으로 검증 가능한 최종 목표"),
 			"vulnclass": str("[단일] 명확한 경우 대응 취약점 유형(예: SQLi/IDOR). 비즈니스 로직 목표는 비워 둘 수 있습니다"),
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
 				return actool.Errorf("set_goals 비활성: ExplorationStore가 초기화되지 않았습니다"), nil
 			}
@@ -1564,7 +1604,9 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 				Goals    []goalItem `json:"goals"`
 				goalItem            // 单条模式:顶层 text/vulnclass
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("목표 입력을 해석할 수 없습니다: " + err.Error()), nil
+			}
 			batch := len(a.Goals) > 0
 			items := a.Goals
 			if !batch {
@@ -1575,7 +1617,7 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 			errs := map[string]string{}
 			var addedTexts []string
 			for i, it := range items {
-				id, err := t.addOneGoal(it)
+				id, err := t.addOneGoalContext(ctx, it)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
@@ -1831,23 +1873,9 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			if intentNode == nil || intentNode.Kind != db.KindIntent {
 				return actool.Errorf("intent_id가 이 작업 또는 직접 연결된 작업에 속하지 않습니다"), nil
 			}
-			acts, _, err := t.ts.ActivityListWithSources(id, 0, 1000)
+			pick, err := t.ts.LatestWorkerOutputWithSources(id)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
-			}
-			var chosen, fallback *db.Activity
-			for i := range acts {
-				switch acts[i].Kind {
-				case "result":
-					chosen = &acts[i]
-					fallback = &acts[i]
-				case "text":
-					fallback = &acts[i]
-				}
-			}
-			pick := chosen
-			if pick == nil {
-				pick = fallback
 			}
 			if pick == nil {
 				if intentNode.Inherited {
@@ -1857,7 +1885,7 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 				}
 				return actool.Text("(이 work에는 아직 출력이 없습니다)"), nil
 			}
-			detail, _ := t.ts.ActivityDetailWithSources(pick.ID)
+			detail := pick.Detail
 			if detail == "" {
 				detail = pick.Summary
 			}

@@ -11,13 +11,15 @@ import (
 )
 
 type taskLLMResolution struct {
-	ProfileID *int64 `json:"profile_id,omitempty"`
-	Name      string `json:"name"`
-	Format    string `json:"format"`
-	Model     string `json:"model"`
-	Source    string `json:"source"`
-	Available bool   `json:"available"`
-	Reason    string `json:"reason,omitempty"`
+	ProfileID        *int64 `json:"profile_id,omitempty"`
+	Name             string `json:"name"`
+	Format           string `json:"format"`
+	Model            string `json:"model"`
+	Source           string `json:"source"`
+	Available        bool   `json:"available"`
+	Reason           string `json:"reason,omitempty"`
+	ReasoningEffort  string `json:"reasoning_effort"`
+	RequestedProgram string `json:"requested_program"`
 }
 
 // 사용자 노출 사유·소스 이름(GET /api/tasks/{id}/llm/resolution 응답). 작업 LLM 설정 체인·
@@ -38,11 +40,13 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 	}
 	id := p.ID
 	result := taskLLMResolution{
-		ProfileID: &id,
-		Name:      p.Name,
-		Format:    p.Format,
-		Model:     p.Model,
-		Source:    source,
+		ProfileID:        &id,
+		Name:             p.Name,
+		Format:           p.Format,
+		Model:            p.Model,
+		Source:           source,
+		ReasoningEffort:  p.ReasoningEffort,
+		RequestedProgram: p.AccessProgramCyber,
 	}
 	if reason := p.UnsupportedReason(); reason != "" {
 		result.Reason = reason
@@ -131,6 +135,7 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 		return taskLLMResolution{
 			Name: name, Format: cfg.Provider(), Model: cfg.Model,
 			Source: "environment", Available: true,
+			ReasoningEffort: cfg.ReasoningEffort, RequestedProgram: cfg.AccessProgramCyber,
 		}, nil
 	}
 	return taskLLMResolution{Source: "global", Reason: reasonNoLLMAvailable}, nil

@@ -361,7 +361,8 @@ func loadColdGraph(ts *db.ExplorationStore) (*coldGraph, map[int64]*db.Node, err
 	cgNodes := make([]cgNode, 0, len(nodes))
 	byID := make(map[int64]*db.Node, len(nodes))
 	for _, n := range nodes {
-		cgNodes = append(cgNodes, cgNode{ID: n.ID, Kind: n.Kind, State: n.State})
+		cgNodes = append(cgNodes, cgNode{ID: n.ID, Kind: n.Kind, State: n.State,
+			KeepHot: n.State == "origin"})
 		byID[n.ID] = n
 	}
 	cgEdges := make([]cgEdge, 0, len(edges))
@@ -476,8 +477,9 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		memberSet[m] = true
 	}
 	var sb strings.Builder
+	detailBudget := 24_000
 	sb.WriteString("【구성 노드(압축 대상)】: \n")
-	for _, m := range b.Members {
+	for memberIndex, m := range b.Members {
 		n := nodeByID[m]
 		kind := "fact"
 		if n != nil && n.Kind == db.KindIntent {
@@ -493,6 +495,40 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		}
 		sb.WriteString(line)
 		sb.WriteByte('\n')
+		if n != nil {
+			var payload map[string]json.RawMessage
+			if json.Unmarshal(n.Payload, &payload) == nil {
+				// Reserve input for every member, not only the first large payloads.
+				nodeBudget := detailBudget / (len(b.Members) - memberIndex)
+				var fields []struct{ name, value string }
+			for _, field := range []string{"follow_ups", "evidence", "detail"} {
+					raw := payload[field]
+					if len(raw) == 0 || string(raw) == "null" {
+						continue
+					}
+					var value string
+					if json.Unmarshal(raw, &value) != nil {
+						value = string(raw)
+					}
+					if strings.TrimSpace(value) == "" {
+						continue
+					}
+					fields = append(fields, struct{ name, value string }{field, value})
+				}
+				for i, field := range fields {
+					limit := min(3_000, nodeBudget/(len(fields)-i))
+					preview, omitted := compressionPreview(field.value, limit)
+					used := len([]rune(preview))
+					detailBudget -= used
+					nodeBudget -= used
+					fmt.Fprintf(&sb, "  %s: %s", field.name, preview)
+					if omitted {
+						fmt.Fprintf(&sb, " [일부 생략: node_detail(%d)의 %s 원문 확인 필요]", m, field.name)
+					}
+					sb.WriteByte('\n')
+				}
+			}
+		}
 	}
 	// internal edges among members
 	var edgeLines []string
@@ -521,6 +557,24 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		}
 	}
 	return sb.String()
+}
+
+// Preserve both the observation prefix and the later limitations/next steps.
+// Omitted detail remains explicitly addressable by the source node id.
+func compressionPreview(value string, limit int) (string, bool) {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value, false
+	}
+	if limit <= 0 {
+		return "", true
+	}
+	if limit < 8 {
+		return string(runes[:limit]), true
+	}
+	front := (limit - 3) * 2 / 3
+	back := limit - 3 - front
+	return string(runes[:front]) + " … " + string(runes[len(runes)-back:]), true
 }
 
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
@@ -555,7 +609,7 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 const compressionSystemPrompt = `서로 연관된 탐색 노드 묶음을 압축하여 종합 결론(body)을 작성합니다. 계획자가 "이 영역에서 무엇을 확인했는지" 빠르게 파악할 수 있어야 합니다.
 
 입력은 연결된 부분 그래프입니다:
-- 노드: 의도 또는 사실의 summary(한 문장)이며 id, 유형(intent/fact), state, confidence(있는 경우)가 포함됩니다.
+- 노드: 의도 또는 사실의 summary와 id, 유형(intent/fact), state, confidence 및 가능한 detail/evidence/과거 follow_ups가 포함됩니다. detail이 생략됐으면 해당 원문에 확인할 내용이 남아 있음을 본문에 표시하세요.
 - 관계: 노드 간 계보 관계(A가 B에서 파생 / A가 B를 생성)로 연결 방식을 보여 줍니다.
 - 노드 간 직접 계보 관계가 없지만 같은 상위 의도에 속한다면(해당 의도를 "공통 부모 #p"로 별도 제공), "이 의도(#p)가 무엇을 알아냈는가"를 기준으로 종합합니다. 공통 부모는 컨텍스트 기준점이며 압축 대상 구성원이 아닙니다.
 
@@ -565,6 +619,7 @@ const compressionSystemPrompt = `서로 연관된 탐색 노드 묶음을 압축
 3. 증거의 강도를 보존하세요. confidence가 있는 결론은 observed / inferred를 표시하세요. inferred인 부정적이거나 불확실한 결론은 추론이며 재검증할 수 있음을 밝히고 확정된 결론처럼 쓰지 마세요.
 4. id를 포함하세요. 각 결론 뒤에 출처 노드 id(예: "…(#12,#28)")를 표시하여 계획자가 원본 노드를 찾아볼 수 있게 하세요.
 5. 입력에 있는 내용만 직접 서술하세요. 추측하거나 입력에 없는 판단을 추가하지 마세요.
-6. 내용에 맞게 길이를 조절하세요. 결론이 적으면 짧게, 서로 다른 결론이 많으면 충분히 쓰되 전체 길이는 모든 입력 summary의 합보다 확실히 짧아야 합니다.
+   과거 follow_ups가 있으면 출처와 내용을 보존하되 별도 상태 큐로 해석하지 마세요. 생략된 상세를 읽었다고 가정하지 마세요.
+6. 중복을 합쳐 전체 입력보다 짧게 쓰되, 요약 길이를 줄이려고 검증 근거·제약·후속 단서·출처 ID를 없애지 마세요. 서로 다른 결론은 구분해서 보존하세요.
 
 body 본문만 출력하세요.`

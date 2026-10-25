@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -195,25 +196,22 @@ func (s *ExplorationStore) Root() (description, goal string, err error) {
 
 // AddNode writes a typed reasoning node with optional anchors to asset ids.
 func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64) (int64, error) {
-	raw, _ := json.Marshal(payload)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	var id int64
-	if err := tx.QueryRow(`
-INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-		s.expID, kind, string(raw), priority, state, origin).Scan(&id); err != nil {
+	if err := lockGraphTaskTx(context.Background(), tx, s.expID); err != nil {
 		return 0, err
 	}
-	for _, a := range anchors {
-		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, a); err != nil {
-			return 0, err
-		}
+	id, err := addGraphNodeTx(context.Background(), tx, s.expID, kind, payload, priority, state, origin, anchors)
+	if err != nil {
+		return 0, err
 	}
-	return id, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 // AddIntent is a convenience: an open intent.
@@ -226,7 +224,7 @@ func (s *ExplorationStore) AddIntent(payload map[string]any, priority int, ancho
 
 // AddGoal writes a goal node (state open).
 func (s *ExplorationStore) AddGoal(payload map[string]any, origin string) (int64, error) {
-	return s.AddNode("goal", payload, 0, "open", origin, nil)
+	return s.AddGoalWithOrigin(context.Background(), payload, origin)
 }
 
 // OriginFactID returns this exploration's root fact id — the KindFact node with
@@ -266,7 +264,7 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, from, re
 // SetNodeState updates any node's state (never deletes). content_version bumps
 // so a folded member's state flip invalidates its digest's cached body (§5.3).
 func (s *ExplorationStore) SetNodeState(id int64, state string) error {
-	_, err := s.db.Exec(`UPDATE exploration_nodes SET state=$1, blocked_reason=NULL, content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, state, id, s.expID)
+	_, err := s.execGraphStateMutation(false, `UPDATE exploration_nodes SET state=$1, blocked_reason=NULL, content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, state, id, s.expID)
 	return err
 }
 
@@ -274,19 +272,55 @@ func (s *ExplorationStore) SetNodeState(id int64, state string) error {
 // scoped to kind='goal' so it can never mutate an intent/fact by id. Returns an
 // error if no such goal exists in this exploration.
 func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) error {
-	payload := map[string]any{"text": text}
-	if vulnclass != "" {
-		payload["vulnclass"] = vulnclass
-	}
-	raw, _ := json.Marshal(payload)
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET payload=$1 WHERE id=$2 AND exploration_id=$3 AND kind='goal'`, string(raw), id, s.expID)
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("목표가 없습니다")
+	defer tx.Rollback()
+	if err := lockGraphTaskTx(ctx, tx, s.expID); err != nil {
+		return err
 	}
-	return nil
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, `SELECT payload FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal' FOR UPDATE`, id, s.expID).Scan(&raw); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("목표가 없습니다")
+		}
+		return err
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	var oldText, oldClass string
+	_ = json.Unmarshal(payload["text"], &oldText)
+	_ = json.Unmarshal(payload["vulnclass"], &oldClass)
+	if oldText == text && oldClass == vulnclass {
+		return tx.Commit()
+	}
+	if payload == nil {
+		payload = map[string]json.RawMessage{}
+	}
+	payload["text"], _ = json.Marshal(text)
+	if vulnclass != "" {
+		payload["vulnclass"], _ = json.Marshal(vulnclass)
+	} else {
+		delete(payload, "vulnclass")
+	}
+	// A proof of the old objective cannot satisfy edited acceptance criteria.
+	delete(payload, "proofs")
+	delete(payload, "completion_review")
+	raw, err = json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM exploration_edges WHERE exploration_id=$1 AND dst_id=$2 AND rel='proves'`, s.expID, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE exploration_nodes SET payload=$1,state='open',blocked_reason=NULL,content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, string(raw), id, s.expID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteGoal hard-deletes a goal node; scoped to kind='goal' so it can never drop
@@ -294,11 +328,11 @@ func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) e
 // CASCADE, so they go with it; activity.node_id is ON DELETE SET NULL. Returns an
 // error if no such goal exists in this exploration.
 func (s *ExplorationStore) DeleteGoal(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal'`, id, s.expID)
+	n, err := s.execGraphStateMutation(false, `DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal'`, id, s.expID)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n == 0 {
 		return fmt.Errorf("목표가 없습니다")
 	}
 	return nil
@@ -310,13 +344,8 @@ func (s *ExplorationStore) DeleteGoal(id int64) error {
 // backend restart or crashed worker goroutine left it stuck) would otherwise spin
 // forever in the UI. Workers resume from their transcript, so reopening is safe.
 func (s *ExplorationStore) ResetRunningIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+	return s.execGraphStateMutation(true, `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL,content_version=content_version+1
 WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
 }
 
 // ReopenIntent flips ONE not-successfully-finished intent (blocked/exhausted/stopped)
@@ -324,34 +353,25 @@ WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 // The worker resumes from its prior LLM transcript instead of restarting from scratch.
 // done/open/running are left untouched. Returns whether a row changed. Used by "重跑".
 func (s *ExplorationStore) ReopenIntent(id int64) (bool, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state='open', completed_at=NULL, blocked_reason=NULL
+	n, err := s.execGraphStateMutation(false, `UPDATE exploration_nodes
+SET state='open', completed_at=NULL, blocked_reason=NULL,content_version=content_version+1
 WHERE id=$1 AND exploration_id=$2 AND kind='intent'
   AND state IN ('blocked','exhausted','stopped')`, id, s.expID)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	return n > 0, err
 }
 
 // ReopenBlockedIntents flips EVERY 'blocked' intent in this exploration back to 'open'
 // (batch rerun after e.g. an LLM/network outage that blocked many at once). Returns the
 // number reopened. Workers resume from their transcripts; kept graph writes remain.
 func (s *ExplorationStore) ReopenBlockedIntents() (int64, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL
+	return s.execGraphStateMutation(false, `UPDATE exploration_nodes SET state='open', completed_at=NULL, blocked_reason=NULL,content_version=content_version+1
 WHERE exploration_id=$1 AND kind='intent' AND state='blocked'`, s.expID)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := res.RowsAffected()
-	return n, nil
 }
 
 func (s *ExplorationStore) SetIntentState(id int64, state string) error {
 	// terminal states stamp completed_at; reopening (back to open/running) clears it.
 	terminal := state == "done" || state == "blocked" || state == "exhausted" || state == "stopped"
-	_, err := s.db.Exec(`UPDATE exploration_nodes
+	_, err := s.execGraphStateMutation(false, `UPDATE exploration_nodes
 SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $4 THEN now() ELSE NULL END
 WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, terminal)
 	return err
@@ -362,13 +382,9 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, termin
 // worker settlement, so a stale API read cannot overwrite a concurrent finish.
 func (s *ExplorationStore) CompareAndSetIntentState(id int64, expected, state string) (bool, error) {
 	terminal := state == "done" || state == "blocked" || state == "exhausted" || state == "stopped"
-	res, err := s.db.Exec(`UPDATE exploration_nodes
+	n, err := s.execGraphStateMutation(false, `UPDATE exploration_nodes
 SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $5 THEN now() ELSE NULL END
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.expID, expected, terminal)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
 	return n == 1, err
 }
 
@@ -392,6 +408,9 @@ func (s *ExplorationStore) SoftDeleteIntent(id int64, reason string) (string, er
 		return "", err
 	}
 	defer tx.Rollback()
+	if err := lockGraphTaskTx(context.Background(), tx, s.expID); err != nil {
+		return "", err
+	}
 
 	var state string
 	var rawPayload []byte
@@ -438,6 +457,9 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 		return out, err
 	}
 	defer tx.Rollback()
+	if err := lockGraphTaskTx(context.Background(), tx, s.expID); err != nil {
+		return out, err
+	}
 
 	// 锁定意图行确认存在(幂等:已删则 not found)。状态不校验——真删除对任何状态成立,
 	// running 的 worker 由调用方先停。
@@ -1171,13 +1193,9 @@ WHERE exploration_id=$1 AND kind='goal' AND state='open')`, s.expID).Scan(&exist
 
 // ClaimIntent atomically moves an open intent to running. Returns true if claimed.
 func (s *ExplorationStore) ClaimIntent(id int64, owner string) (bool, error) {
-	res, err := s.db.Exec(`UPDATE exploration_nodes SET state='running', owner=$1
+	n, err := s.execGraphStateMutation(true, `UPDATE exploration_nodes SET state='running', owner=$1
 WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id, s.expID)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	return n == 1, nil
+	return n == 1, err
 }
 
 // Stats returns node counts grouped by kind (for dashboard).

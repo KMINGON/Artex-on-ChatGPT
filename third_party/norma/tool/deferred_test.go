@@ -107,7 +107,7 @@ func TestExecuteExtraTool(t *testing.T) {
 
 	// invalid params (missing required msg) → schema validation error
 	r, _ = exec.Call(context.Background(), json.RawMessage(`{"tool_name":"echo","params":{}}`), nil)
-	if !r.IsError || !strings.Contains(r.Content[0].Text, "invalid params") {
+	if !r.IsError || !strings.Contains(r.Content[0].Text, "msg:string") {
 		t.Fatalf("invalid params should error, got %+v", r)
 	}
 }

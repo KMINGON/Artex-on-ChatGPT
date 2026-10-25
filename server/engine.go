@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/chatgptllm"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/harness"
@@ -109,12 +110,13 @@ type Engine struct {
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
-	started  sync.Map // taskID -> bool, so Run is idempotent per task
-	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
-	llmCalls sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
-	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
-	deleting sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
-	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	started        sync.Map // taskID -> bool, so Run is idempotent per task
+	lastAct        sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
+	llmCalls       sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
+	paused         sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
+	deleting       sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
+	dropCnt        sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	workerProgress sync.Map // intentID -> *workerProgressState, only active runs
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
@@ -864,23 +866,30 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if e.isSettling(t.ID) {
 			return
 		}
-		// goalless（人工直投）分支：任务已无 open 目标时 planner 不跑——跑了会重判
-		// met→cancelExec 杀掉用户经主 agent 直投的意图。是否结束改由 frontier 决定：
-		// 还有 open/running 意图 → 保持 running、静默等待；意图已全部跑干 → 落 done。
-		// 整段纯 Go、不触发任何 LLM 调用，也不打规划轮 marker。
+		// 목표 없는 수동 의도는 실행 중 재판정으로 중단하지 않는다. 마지막
+		// 완료 검토 뒤 새 단서/Todo가 생겼다면 목표를 다시 열고 Planner로 넘긴다.
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
-			t.drainTriggers() // 丢弃累积的 done/finding 触发，避免 goalless 长会话里无界增长
-			if active, err := t.Store.HasActiveIntent(); err == nil && !active {
-				// frontier 抽干且无在跑意图 → 收尾。用 Guarded 版做 CAS，避免踩到并发的
-				// pause/delete/超时收尾的状态转换。
-				if won, err := e.m.SetTaskStatusGuarded(t.ID, "done"); err != nil {
+			if active, err := t.Store.HasActiveIntent(); err != nil || active {
+				return
+			}
+			{
+				// 작업 행 잠금 아래 최종 검토하여 새 목표나 동시 상태 전환을 보존한다.
+				if won, err := e.m.CompleteReviewedTask(ctx, t.ID, nil); err != nil {
 					log.Printf("[goalless] task %s 마무리 done 상태 저장 실패: %v", t.ID, err)
+					return
 				} else if won {
+					t.drainTriggers()
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
 						Summary: goallessTaskDoneSummary})
+					return
 				}
 			}
-			return // goalless 分支永不进入 planner.Plan
+			// 새 단서/Todo가 남은 구형·목표 없는 작업도 Planner가 검토해야 한다.
+			// 완료 거절이 사용자 중지나 다른 최종 전환 때문인 경우에는 진행하지 않는다.
+			state := t.lifecycleSnapshot()
+			if ctx.Err() != nil || e.IsPaused(t.ID) || e.IsDeleting(t.ID) || state.Paused || state.Queued || isTerminalStatus(state.Status) {
+				return
+			}
 		}
 		if !e.beginTaskOperation(t.ID) {
 			return
@@ -909,16 +918,15 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
-		case met:
+		case met && ectx.Err() == nil:
 			log.Printf("[planner] task %s 목표 달성 판정: %s", t.ID, reason)
-			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
-			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
+			// 증명 뒤 생긴 작업을 확인하고, 완료 저장에 성공한 실행만 취소한다.
+			if won, err := e.m.CompleteReviewedTask(ectx, t.ID, func() { e.cancelExec(t.ID, agent.AbortGoalMet) }); err != nil {
 				log.Printf("[planner] task %s 완료 상태 저장 실패: %v", t.ID, err)
+			} else if !won {
+				log.Printf("[planner] task %s 완료 판정 이후 변경을 확인하여 계획을 계속합니다", t.ID)
+				t.Notify()
 			}
-			// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
-			// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
-			// 归为 stopped(而非 blocked)。
-			e.cancelExec(t.ID, agent.AbortGoalMet)
 		default:
 			log.Printf("[planner] task %s 계획 완료", t.ID)
 		}
@@ -1021,6 +1029,9 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	// per-work child context so the planner's kill_work can stop just this work.
 	workCtx, workCancel := context.WithCancelCause(ectx)
 	e.registerWork(intent.ID, workCancel)
+	progress := e.beginWorkerProgress(t.ID, name, intent.ID)
+	defer e.endWorkerProgress(progress)
+	workCtx = chatgptllm.WithStreamProgressObserver(workCtx, progress.stream)
 	// wrap the guard hooks so steer_work can inject a mid-run course-correction
 	// for THIS intent (drained before the worker's next tool call).
 	iid := intent.ID
@@ -1047,6 +1058,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var err error
 	runAttempt := 1
 	runEmit := func(activity db.Activity) {
+		progress.activity(activity)
 		if activity.Kind == "result" && activity.IsError {
 			metadata := map[string]any{}
 			_ = json.Unmarshal(activity.Metadata, &metadata)

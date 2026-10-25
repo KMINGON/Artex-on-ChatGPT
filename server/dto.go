@@ -31,6 +31,7 @@ func rawString(raw json.RawMessage) string {
 
 // ---- Task (frontend "Task") ---- created_at as RFC3339, plus a derived status.
 type TaskDTO struct {
+	Runtime            *TaskRuntimeDTO      `json:"runtime,omitempty"`
 	ExecutionProfile   *db.ExecutionProfile `json:"execution_profile,omitempty"`
 	ID                 string               `json:"id"`
 	ExplorationID      int64                `json:"exploration_id"`
@@ -43,7 +44,9 @@ type TaskDTO struct {
 	Goal               string               `json:"goal"`
 	Status             string               `json:"status"` // created | running | paused | done | failed
 	CreatedAt          string               `json:"created_at"`
-	CreatedUnix        int64                `json:"created_unix"`       // created_at as unix seconds (for run-duration calc)
+	CreatedUnix        int64                `json:"created_unix"` // created_at as unix seconds (for run-duration calc)
+	FirstRunAt         string               `json:"first_run_at,omitempty"`
+	FirstRunUnix       int64                `json:"first_run_unix,omitempty"`
 	CompletedAt        string               `json:"completed_at"`       // RFC3339 finish time (done/failed); "" if unfinished
 	CompletedUnix      int64                `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
 	LastActivity       int64                `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
@@ -125,6 +128,8 @@ func taskDTO(t *Task, status string) TaskDTO {
 		Status:             status,
 		CreatedAt:          rfc3339(time.Unix(t.CreatedAt, 0)),
 		CreatedUnix:        t.CreatedAt,
+		FirstRunAt:         completedRFC(lifecycle.FirstRunAt),
+		FirstRunUnix:       lifecycle.FirstRunAt,
 		CompletedAt:        completedRFC(lifecycle.CompletedAt),
 		CompletedUnix:      lifecycle.CompletedAt,
 		Paused:             lifecycle.Paused,

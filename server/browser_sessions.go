@@ -45,12 +45,35 @@ type browserSession struct {
 	proxy, bypass        string
 	active               bool
 	deleted              bool
-	waiting              chan struct{}
+	waiting              *browserHumanWait
 	reason               string
 	last                 time.Time
 	bridge               *browserBridge
 	manager              *browserSessionManager
 	hasSlot              bool
+	observationEpoch     string // observation cursor fields are serialized by op
+	observationCursor    int64
+	observationDropped   int
+}
+
+type browserHumanWait struct {
+	done chan struct{}
+	err  error // finalized before done closes; preserved across later handoffs
+}
+
+func (w *browserHumanWait) wait(ctx context.Context) error {
+	if w == nil {
+		return ctx.Err()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.done:
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return w.err
+	}
 }
 
 type browserSessionView struct {
@@ -267,7 +290,7 @@ func (m *browserSessionManager) acquire(ctx context.Context, key string, config 
 		s.release()
 		return nil, err
 	}
-	return &managedBrowserClient{client: client, session: s}, nil
+	return &managedBrowserClient{client: client, session: s, ctx: ctx}, nil
 }
 
 func browserScript(name string) string {
@@ -292,6 +315,7 @@ func (s *browserSession) ensure(ctx context.Context) error {
 		select {
 		case <-s.bridge.done:
 			s.bridge = nil
+			s.finishHumanLocked(errors.New(trMsg("브라우저 세션이 종료되었습니다")))
 			if s.hasSlot {
 				s.manager.releaseSlot()
 				s.hasSlot = false
@@ -341,6 +365,7 @@ func (s *browserSession) watchBridge(b *browserBridge) {
 	s.bridge = nil
 	hadSlot := s.hasSlot
 	s.hasSlot = false
+	s.finishHumanLocked(errors.New(trMsg("브라우저 세션이 종료되었습니다")))
 	s.mu.Unlock()
 	if hadSlot {
 		s.manager.releaseSlot()
@@ -355,11 +380,7 @@ func (s *browserSession) close() {
 	hadSlot := s.hasSlot
 	s.hasSlot = false
 	s.bridge = nil
-	if s.waiting != nil {
-		close(s.waiting)
-		s.waiting = nil
-		s.reason = ""
-	}
+	s.finishHumanLocked(errors.New(trMsg("브라우저 세션이 종료되었습니다")))
 	s.mu.Unlock()
 	if b != nil {
 		b.close()
@@ -451,24 +472,30 @@ func (m *browserSessionManager) drop(id string) error {
 	return nil
 }
 
-func (s *browserSession) beginHuman(reason string) {
+func (s *browserSession) beginHuman(reason string) *browserHumanWait {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.waiting == nil {
-		s.waiting = make(chan struct{})
+		s.waiting = &browserHumanWait{done: make(chan struct{})}
 	}
 	s.reason = reason
 	s.last = time.Now()
+	return s.waiting
+}
+
+func (s *browserSession) finishHumanLocked(err error) {
+	if s.waiting != nil {
+		s.waiting.err = err
+		close(s.waiting.done)
+		s.waiting = nil
+	}
+	s.reason = ""
 }
 
 func (s *browserSession) resume() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.waiting != nil {
-		close(s.waiting)
-		s.waiting = nil
-	}
-	s.reason = ""
+	s.finishHumanLocked(nil)
 	s.last = time.Now()
 }
 
@@ -476,15 +503,7 @@ func (s *browserSession) wait(ctx context.Context) error {
 	s.mu.Lock()
 	waiting := s.waiting
 	s.mu.Unlock()
-	if waiting == nil {
-		return nil
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-waiting:
-		return nil
-	}
+	return waiting.wait(ctx)
 }
 
 func (s *browserSession) view(ctx context.Context) browserSessionView {
@@ -513,11 +532,23 @@ func (s *browserSession) view(ctx context.Context) browserSessionView {
 type managedBrowserClient struct {
 	client  *mcp.Client
 	session *browserSession
+	ctx     context.Context
 	once    sync.Once
 }
 
 func (c *managedBrowserClient) Close() error {
-	c.once.Do(func() { _ = c.client.Close(); c.session.release() })
+	c.once.Do(func() {
+		_ = c.client.Close()
+		if c.ctx != nil {
+			c.session.op.Lock()
+			summary := c.session.collectObservations(c.ctx, 20)
+			c.session.op.Unlock()
+			if summary != nil {
+				agent.ReportHTTPObservationFlush(c.ctx, *summary)
+			}
+		}
+		c.session.release()
+	})
 	return nil
 }
 func (c *managedBrowserClient) Tools(ctx context.Context) ([]actool.CoreTool, error) {
@@ -539,6 +570,9 @@ type managedBrowserTool struct {
 
 func (t *managedBrowserTool) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return actool.Result{}, err
+		}
 		if err := t.session.wait(ctx); err != nil {
 			return actool.Result{}, err
 		}
@@ -554,8 +588,97 @@ func (t *managedBrowserTool) Call(ctx context.Context, input json.RawMessage, tc
 		if err := t.session.ensure(ctx); err != nil {
 			return actool.Errorf(trMsg(err.Error())), nil
 		}
-		return t.CoreTool.Call(ctx, input, tc)
+		result, err := t.CoreTool.Call(ctx, input, tc)
+		if observation := t.session.collectObservations(ctx, 4); observation != nil {
+			if raw, encodeErr := json.Marshal(map[string]any{"browser_observations": observation}); encodeErr == nil {
+				result.Content = append(result.Content, actool.Text(string(raw)).Content...)
+			}
+		}
+		return result, err
 	}
+}
+
+type browserObservationSummary = agent.HTTPObservationSummary
+
+// collectObservations runs under op. A failed DB batch keeps its cursor so the
+// next tool retries the same source IDs, without repeating the browser action.
+func (s *browserSession) collectObservations(runCtx context.Context, maxPages int) *browserObservationSummary {
+	ctx := runCtx
+	if ctx.Err() != nil {
+		return nil
+	}
+	s.mu.Lock()
+	b := s.bridge
+	deleted := s.deleted
+	s.mu.Unlock()
+	if b == nil || deleted {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var summary browserObservationSummary
+	for range maxPages {
+		var batch struct {
+			Epoch string `json:"epoch"`
+			Items []struct {
+				agent.HTTPObservation
+				Sequence int64 `json:"sequence"`
+			} `json:"items"`
+			Cursor  int64 `json:"cursor"`
+			HasMore bool  `json:"has_more"`
+			Dropped int   `json:"dropped"`
+		}
+		if err := b.call(ctx, map[string]any{"action": "observations", "after": s.observationCursor, "epoch": s.observationEpoch, "limit": 100}, &batch); err != nil {
+			if runCtx.Err() != nil {
+				return nil
+			}
+			summary.ReadFailed = true
+			break
+		}
+		if batch.Epoch == "" {
+			return nil
+		} // Older/custom bridges do not expose observations.
+		if batch.Epoch != s.observationEpoch {
+			s.observationEpoch = batch.Epoch
+			s.observationCursor = 0
+			s.observationDropped = 0
+		}
+		summary.Dropped += max(0, batch.Dropped-s.observationDropped)
+		s.observationDropped = batch.Dropped
+		summary.HasMore = batch.HasMore
+		observations := make([]agent.HTTPObservation, len(batch.Items))
+		for i, item := range batch.Items {
+			observations[i] = item.HTTPObservation
+			observations[i].SourceID = fmt.Sprintf("browser:%s:%s:%d", s.id, batch.Epoch, item.Sequence)
+		}
+		if len(observations) > 0 {
+			result := agent.ObserveHTTP(ctx, observations)
+			summary.Registered += result.Registered
+			summary.Skipped += result.Skipped
+			summary.Failed += result.Failed
+			summary.Limited = summary.Limited || result.Limited
+			if result.FactID > 0 {
+				summary.FactID = result.FactID
+			}
+			for _, id := range result.AssetIDs {
+				if len(summary.AssetIDs) < 20 {
+					summary.AssetIDs = append(summary.AssetIDs, id)
+				}
+			}
+			if result.Failed > 0 || ctx.Err() != nil {
+				summary.HasMore = true
+				break
+			}
+		}
+		s.observationCursor = batch.Cursor
+		if !batch.HasMore {
+			break
+		}
+	}
+	if summary.Registered+summary.Skipped+summary.Failed+summary.Dropped == 0 && !summary.HasMore && !summary.ReadFailed {
+		return nil
+	}
+	return &summary
 }
 func (s *browserSession) handoffTool() actool.CoreTool {
 	return actool.Build(actool.Spec{
@@ -577,12 +700,12 @@ func (s *browserSession) handoffTool() actool.CoreTool {
 				s.op.Unlock()
 				return actool.Errorf(trMsg(err.Error())), nil
 			}
-			s.beginHuman(args.Reason)
+			waiting := s.beginHuman(args.Reason)
 			s.op.Unlock()
 			if tc != nil && tc.Emit != nil {
 				tc.Emit(actool.ProgressInfo{Message: trMsg("브라우저 인증을 기다립니다. 브라우저 세션 패널에서 인증을 완료해 주세요.")})
 			}
-			if err := s.wait(ctx); err != nil {
+			if err := waiting.wait(ctx); err != nil {
 				return actool.Result{}, err
 			}
 			return actool.Text(trMsg("사용자가 브라우저 제어를 반환했습니다. 현재 페이지의 인증 상태를 확인하고 작업을 이어가세요.")), nil

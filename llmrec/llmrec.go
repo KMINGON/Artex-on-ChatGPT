@@ -5,8 +5,10 @@ package llmrec
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"iter"
 	"log"
 	"strings"
@@ -71,9 +73,10 @@ type Recorder struct {
 	// thinkingType / reasoningEffort 是配置级思考参数(思考开关 / 思考强度)。它们在
 	// norma 的 buildBody() 里从 provider 配置注入真正的 HTTP body,不出现在
 	// CompletionRequest 上,故 Recorder 需在此单独带一份,序列化时写进录制。
-	thinkingType    string
-	reasoningEffort string
-	enabled         func() bool // reports whether recording is currently on; nil = always record
+	thinkingType                             string
+	reasoningEffort                          string
+	authMode, requestedProgram, buildVersion string
+	enabled                                  func() bool // reports whether recording is currently on; nil = always record
 }
 
 // Wrap returns a Provider that records calls to pg when enabled() reports true.
@@ -85,6 +88,36 @@ func Wrap(inner llm.Provider, pg *db.DB, model, profName, thinkingType, reasonin
 		inner: inner, pg: pg, model: model, prof: profName,
 		thinkingType: thinkingType, reasoningEffort: reasoningEffort, enabled: enabled,
 	}
+}
+
+// WithRuntimeConfig is called before publishing the provider to concurrent runs.
+func (r *Recorder) WithRuntimeConfig(authMode, requestedProgram, buildVersion string) *Recorder {
+	r.authMode, r.requestedProgram, r.buildVersion = authMode, requestedProgram, buildVersion
+	return r
+}
+
+func (r *Recorder) runtimeMetadata(req llm.CompletionRequest, observed *chatgptllm.ResponseMetadata) json.RawMessage {
+	system, _ := json.Marshal(req.System)
+	tools, _ := json.Marshal(req.Tools)
+	names := make([]string, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		names = append(names, tool.Name)
+	}
+	value := map[string]any{
+		"requested_model": r.model, "reasoning_effort": r.reasoningEffort,
+		"thinking_requested": req.Thinking,
+		"requested_program":  r.requestedProgram, "auth_mode": r.authMode, "build_version": r.buildVersion,
+		"system_sha256": fmt.Sprintf("%x", sha256.Sum256(system)), "tools_sha256": fmt.Sprintf("%x", sha256.Sum256(tools)),
+		"tools": names, "max_output_tokens_requested": req.MaxTokens,
+	}
+	if req.Temperature != nil {
+		value["temperature_requested"] = *req.Temperature
+	}
+	if observed != nil {
+		value["response"] = observed
+	}
+	raw, _ := json.Marshal(value)
+	return raw
 }
 
 // parseSession extracts task id and worker role from session strings like
@@ -171,7 +204,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, observed.received(err))
+			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, observed.received(err), r.runtimeMetadata(req, observed.metadata))
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, observed.metadata)
@@ -251,7 +284,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	if err != nil {
 		status = "error"
 	}
-	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, observed.received(err))
+	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, observed.received(err), r.runtimeMetadata(req, observed.metadata))
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err, observed.metadata)
 	}
@@ -270,7 +303,7 @@ func thinkingText(msg llm.Message) string {
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string, usageReceived *bool) {
+func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string, usageReceived *bool, metadata json.RawMessage) {
 	if r.pg == nil {
 		return
 	}
@@ -291,6 +324,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		CacheWrite:    usage.CacheWriteTokens,
 		Status:        status,
 		UsageReceived: usageReceived,
+		Metadata:      metadata,
 	})
 	if err != nil {
 		log.Printf("[llmusage] insert: %v", err)

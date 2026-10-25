@@ -127,7 +127,10 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 		if host != "" && net.ParseIP(host) == nil {
 			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "subdomain", Domain: host})
 		}
-		// IP-literal host or no host → fall back to ip scope if we have one.
+		// A URL's literal host is authoritative even when the optional resolved IP is absent.
+		if net.ParseIP(host) != nil {
+			ip = host
+		}
 		if c := ipToHostCIDR(ip); c != "" {
 			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "ip", Net: c})
 		}
@@ -309,18 +312,23 @@ target AS (
        (ts.kind='company'     AND a.company_id = ts.company_id)
     OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
     OR (ts.kind='subdomain'   AND a.domain = ts.domain)
-    OR (ts.kind IN ('ip','cidr') AND ts.net >>= try_inet(a.ip))
+    OR (ts.kind IN ('ip','cidr') AND (ts.net >>= try_inet(a.ip) OR ts.net >>= try_inet(a.domain)))
     OR (ts.kind='icp' AND (
          lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
          OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
        ))
   )
+  UNION
+  SELECT a.id, a.type, COALESCE(a.url, a.domain, a.ip, a.app_name, a.root_domain, '') AS label
+  FROM assets a
+  JOIN exploration_anchors ea ON ea.asset_id=a.id
+  JOIN exploration_nodes en ON en.id=ea.node_id AND en.exploration_id=$2
 ),
 tested AS (
   SELECT DISTINCT ea.asset_id
   FROM exploration_anchors ea
   JOIN exploration_nodes en ON en.id = ea.node_id
-  WHERE en.exploration_id = $2 AND en.kind = 'fact'
+  WHERE en.exploration_id = $2 AND en.kind IN ('fact','finding') AND en.state NOT IN ('dismissed','origin')
 )`
 
 // TaskCoverage computes rough per-type coverage for a task. taskID indexes

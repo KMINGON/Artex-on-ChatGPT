@@ -97,3 +97,19 @@ failures, preserved post-checkpoint tool results, source immutability, repeated
 resume, cancelled queues, output limits, spill markers, MCP children, and
 Monitor environment propagation. These tests use temporary files and local
 fixtures, with no live model or production database access.
+
+2026-10-24 핵심 연결 보완:
+
+- `TodoStore`에 초기 목록과 선택적 저장 콜백을 추가했습니다. 저장 성공 후에만
+  메모리 목록을 갱신하며 실패·취소 시 기존 목록을 보존합니다. ARTEX Planner는
+  작업 시작 사실의 payload와 revision으로 저장·재시작·보관 복원을 처리합니다.
+  일반 Norma 세션의 메모리 Todo 동작은 유지합니다.
+- 직접 호출과 `ExecuteExtraTool`의 인자 검증 오류에 현재 스키마의 필수 필드와
+  타입을 안내합니다. 전달된 값·기본값은 오류 안내에 복사하지 않고, 빠진 값을
+  임의로 만들어 실행하지 않습니다. `required`의 Go `[]string`과 JSON `[]any`
+  표현을 모두 검사합니다.
+- `ExecuteExtraTool` wrapper는 기존 `params`와 모델이 보내기도 하는
+  `parameters`를 같은 인자 객체로 해석합니다. 둘 다 있으면 JSON 값을 비교해
+  다를 때 도구 실행을 거부합니다. 내부 도구 필드 이름은 추론하거나 변경하지
+  않고 실제 도구 스키마로 검증합니다. alias·충돌·타입 회귀는 `./tool`에서
+  검사했습니다.

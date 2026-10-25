@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
@@ -247,14 +249,18 @@ func workerTrafficBlock(recording bool) string {
 // pentest agent's prompt — intermediate artifacts must land in the shared work
 // dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
 func artifactSpec(dir string) string {
-	return "\n\n**중간 산출물 저장 규칙**: 스크립트, payload, 수집한 응답 본문, 임시 데이터 등 모든 중간 산출물은 **이 작업의 디렉터리 " + dir + "에 저장하세요**(상대 경로를 사용하면 이곳에 저장되며 이 절대 경로를 사용해도 됩니다). **/tmp나 다른 절대 경로에 저장하지 마세요**."
+	return "\n\n**중간 산출물 저장 규칙**: 스크립트, payload, 수집한 응답 본문, 임시 데이터 등 모든 중간 산출물은 **이 작업의 디렉터리 " + dir + " 아래에 저장하세요**(상대 경로를 사용하면 이곳에 저장되며 이 디렉터리 안의 절대 경로를 사용해도 됩니다). **/tmp나 이 작업 밖에 저장하지 마세요**."
 }
 
 // workerArtifactSpec is the worker's 段 [C]: its per-intent run dir is pre-created
 // by the engine (ensureRunDir), so it just writes relative paths there — no manual
 // mkdir, no cross-worker name collisions.
-func workerArtifactSpec(runDir string) string {
-	return "\n\n**중간 산출물 저장 규칙**: 스크립트, payload, 수집한 응답 본문, 임시 데이터 등 모든 중간 산출물은 **이번 의도의 전용 작업 디렉터리 " + runDir + "에 저장하세요**(이미 자동 생성되었으므로 디렉터리를 다시 만들 필요 없이 상대 경로를 사용하면 됩니다). **/tmp나 다른 절대 경로에 저장하지 마세요**."
+func workerArtifactSpec(taskRoot, runDir string) string {
+	return "\n\n**중간 산출물 저장 규칙**: intent_dir=" + runDir + ". 이번 의도의 스크립트·응답·개별 증거는 이 디렉터리에 저장하세요. 파일 도구와 Bash의 상대 경로는 intent_dir 기준이며 다른 Worker는 다른 디렉터리를 사용합니다. 다른 에이전트에게 파일을 인계할 때에는 실제 저장한 절대 경로를 fact의 detail에 기록하세요. **/tmp나 이 작업 밖에 저장하지 마세요**." + sharedArtifactSpec(taskRoot)
+}
+
+func sharedArtifactSpec(taskRoot string) string {
+	return "\n\n**작업 공유 산출물**: task_root=" + taskRoot + ", shared_dir=" + filepath.Join(taskRoot, "shared") + ". 실제 공유할 파일은 shared_dir에 저장하고 인계에는 절대 경로를 사용하세요. 다른 의도의 상대 경로를 자신의 현재 디렉터리에 붙여 읽지 마세요. 브라우저/MCP가 자체 관리 디렉터리에 저장한 로컬 산출물은 도구가 반환한 실제 경로를 참조하고, 원격 리소스는 해당 MCP로 조회하세요. 브라우저·인증 세션은 Worker마다 다르므로 파일 공유만으로 로그인 상태가 공유된다고 가정하지 마세요. 인증 자료의 내용은 그래프·출력에 복사하지 말고 해당 작업·계정에 한정된 비공개 파일 참조로 전달하세요."
 }
 
 // ensureRunDir builds and creates an agent's working directory under base:
@@ -264,6 +270,7 @@ func workerArtifactSpec(runDir string) string {
 // failure, writes fail the same way an unwritable CWD would.
 func ensureRunDir(base string, taskID, intentID int64) string {
 	dir := filepath.Join(base, "tasks", strconv.FormatInt(taskID, 10))
+	_ = os.MkdirAll(filepath.Join(dir, "shared"), 0o700)
 	if intentID > 0 {
 		dir = filepath.Join(dir, "i"+strconv.FormatInt(intentID, 10))
 	}
@@ -274,12 +281,12 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
+func workerSystem(proxyAddr, caCert, dataDir, taskRoot, runDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + langDirective(resolveOutputLang())
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(taskRoot, runDir) + followUpWorkerInstructions + findingReportContract + langDirective(resolveOutputLang())
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -303,7 +310,7 @@ func intentAssetIDs(intent *db.Node) []int64 {
 }
 
 func renderIntentTask(intent *db.Node) string {
-	return fmt.Sprintf("\n\n【할당된 의도(이번의 유일한 작업: 이 의도만 수행하고 사실만 생성하며 완료 후 즉시 중지)】: \n%s\n의도 id: %d(record_fact / report_finding으로 기록할 때 전달)", string(intent.Payload), intent.ID)
+	return fmt.Sprintf("\n\n【할당된 의도(이 의도를 수행하고 관찰·자산·확인된 결함을 해당 도구로 기록한 뒤 반환)】: \n%s\n의도 id: %d(record_fact / report_finding으로 기록할 때 전달)", string(intent.Payload), intent.ID)
 }
 
 // renderWorkerGraphOverview folds the global situational snapshot into the worker's
@@ -359,6 +366,15 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx.SetOwnerNode(intent.ID)         // assets this worker discovers anchor to its intent → visible to the task
 	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
 	tsx.SetNotifyFinding(notifyFinding) // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
+	var observedAssets, observationFact atomic.Int64
+	writeCounts := func() WriteCounts {
+		counts := tsx.Writes()
+		counts.ObservedAssets = int(observedAssets.Load())
+		if observationFact.Load() > 0 {
+			counts.ObservationFacts = 1
+		}
+		return counts
+	}
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).
@@ -367,8 +383,36 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
+	ctx = WithHTTPObservationFlushReporter(ctx, func(summary HTTPObservationSummary) {
+		if emit == nil || (summary.Failed == 0 && !summary.ReadFailed && summary.Dropped == 0 && !summary.Limited && !summary.HasMore) {
+			return
+		}
+		raw, _ := json.Marshal(summary)
+		id := intent.ID
+		emit(db.Activity{Kind: "observation", NodeID: &id, Worker: name, Summary: "브라우저 종료 시 HTTP 관찰 미저장·생략: " + string(raw)})
+	})
+	if as != nil && taskID > 0 {
+		ctx = WithHTTPObserver(ctx, func(observeCtx context.Context, observations []HTTPObservation) HTTPObservationResult {
+			result, err := as.RecordHTTPObservations(observeCtx, taskID, ts.ID(), intent.ID, observations)
+			if err != nil {
+				return HTTPObservationResult{Failed: len(observations)}
+			}
+			observedAssets.Add(int64(result.Registered))
+			if result.FactID > 0 {
+				observationFact.Store(result.FactID)
+			}
+			if emit != nil && (result.Registered > 0 || result.Limited) {
+				raw, _ := json.Marshal(result)
+				id := intent.ID
+				emit(db.Activity{Kind: "observation", NodeID: &id, Worker: name, Summary: "HTTP 관찰 등록 결과: " + string(raw)})
+			}
+			return result
+		})
+	}
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
-	defer cleanup()
+	var cleanupOnce sync.Once
+	releaseTools := func() { cleanupOnce.Do(cleanup) }
+	defer releaseTools()
 
 	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同启动指令、意图锚定的目标资产
 	// 原始数据一起放进 system prompt：system 每次 run 都重新拼一遍、绝不会被 compaction 压掉，
@@ -382,7 +426,8 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, filepath.Dir(runDir), runDir)
+	sysBody += workerRuntimeTools()
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
@@ -390,18 +435,13 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	sysBody += renderIntentTask(intent)
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
-			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
+			assets, err := as.PrepareIntentAssets(ctx, taskID, explorationID(ts), intent.ID, ids, coverageEnabled)
+			if err != nil {
+				return harness.ReasonStorageError, writeCounts(), fmt.Errorf("Worker 시작 자산 준비 실패: %w", err)
+			}
+			if len(assets) > 0 {
 				if b, err := json.Marshal(assets); err == nil {
 					sysBody += "\n\n이 의도의 asset_ids에 대응하는 대상 자산:\n" + string(b)
-				}
-				// 意图明确针对的这些资产 → 自动纳入任务测试范围（与 insertAssets 同一套
-				// 保守粒度）。upsertTaskScope 的 ON CONFLICT DO NOTHING + uq_task_scope
-				// 唯一索引保证不会重复添加；重跑/重试同样是幂等 no-op。
-				// 资产覆盖度功能关闭时不再累积测试范围(分母)。
-				if coverageEnabled {
-					for _, a := range assets {
-						_ = as.AddAutoScope(taskID, a.Type, a.Domain, a.URL, a.IP)
-					}
 				}
 			}
 		}
@@ -530,7 +570,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
 	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
 	if closeErr := s.Close(); closeErr != nil {
-		return harness.ReasonStorageError, tsx.Writes(), closeErr
+		releaseTools()
+		return harness.ReasonStorageError, writeCounts(), closeErr
 	}
-	return reason, tsx.Writes(), err
+	releaseTools()
+	return reason, writeCounts(), err
 }

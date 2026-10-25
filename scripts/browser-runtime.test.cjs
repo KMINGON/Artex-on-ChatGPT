@@ -120,6 +120,15 @@ async function main() {
     await session.call('browser_navigate', { url: `${base}/probe` });
   }));
   const first = sessions[0];
+  const observed = await first.bridge.request({ action: 'observations', after: 0, limit: 100 });
+  assert.ok(observed.items.some((item) => item.url === `${base}/data` && item.method === 'GET' && item.status === 200), 'JS fetch response was not observed');
+  assert.ok(observed.items.some((item) => item.url === `${base}/probe`), 'document response was not observed');
+  assert.ok(observed.items.some((item) => item.url === `${base}/?name=alpha`), 'private observation queue lost query-dependent gate input');
+  assert.equal(new Set(observed.items.map((item) => `${item.method} ${item.url}`)).size, observed.items.length, 'duplicate endpoint observations');
+  const replayed = await first.bridge.request({ action: 'observations', after: 0, limit: 100 });
+  assert.deepEqual(replayed.items, observed.items, 'unacknowledged observations were lost');
+  const acknowledged = await first.bridge.request({ action: 'observations', after: observed.cursor, epoch: observed.epoch, limit: 100 });
+  assert.equal(acknowledged.items.length, 0);
   await first.call('browser_evaluate', { function: '() => document.querySelector("#human").focus()' });
   await first.bridge.request({ action: 'type', text: 'manual-fixture' });
   await first.bridge.request({ action: 'key', key: 'Enter' });
@@ -128,8 +137,11 @@ async function main() {
   assert.ok(image.content.some((c) => c.type === 'image' && c.mimeType === 'image/png' && c.data.length > 100));
   await Promise.all(sessions.map((s) => s.close()));
   const saved = JSON.parse(fs.readFileSync(path.join(root, 'alpha', 'session.json'), 'utf8'));
+  assert.equal(saved.observations, undefined, 'discovery queue with query values was persisted');
   assert.ok(saved.pages.some((p) => p.storage?.sid === 'alpha'), 'sessionStorage was not saved before shutdown');
   const restored = await browser('alpha');
+  const restoredObservations = await restored.bridge.request({ action: 'observations', after: observed.cursor, epoch: observed.epoch, limit: 100 });
+  assert.notEqual(restoredObservations.epoch, observed.epoch, 'fresh browser queue reused an old cursor namespace');
   const state = text(await restored.call('browser_evaluate', { function: '() => ({cookie:document.cookie,local:localStorage.getItem("sid"),session:sessionStorage.getItem("sid")})' }));
   assert.ok(state.includes('sid=alpha')); assert.ok(state.includes('auth=manual')); assert.equal((state.match(/"alpha"/g) || []).length, 2, state);
   await restored.call('browser_evaluate', { function: '() => sessionStorage.setItem("sid","rotated")' });

@@ -310,7 +310,7 @@
       "findings": "Findings",
       "retests": "Retests",
       "assets": "Test assets",
-      "coverage": "Asset coverage graph",
+      "coverage": "Asset observation graph",
       "intercept": "Intercept approval",
       "report": "Report"
     },
@@ -372,21 +372,21 @@
       "graph": {
         "moreCount": "{count} more {kind}",
         "scopeIn": "In scope",
-        "tested": "Tested",
+        "tested": "Result linked",
         "loading": "Loading…",
         "empty": "No in-scope assets (define the task scope first)",
         "refresh": "Refresh",
-        "legendTested": "Tested (highlighted)",
-        "legendUntested": "Untested",
+        "legendTested": "Result linked (highlighted)",
+        "legendUntested": "No linked result",
         "legendOutOfScope": "Out of scope",
-        "hint": "Force-directed layout. Drag nodes and scroll to zoom. Gray “⋯” marks collapsed nodes; click to expand further."
+        "hint": "Force-directed layout. Drag nodes and scroll to zoom. Gray “⋯” marks collapsed nodes; click to expand further. Highlights indicate linked facts or findings, not completion of vulnerability testing."
       },
       "sheet": {
         "attributes": "Attributes",
         "attrType": "Type",
-        "attrTestState": "Test state",
-        "tested": "Tested",
-        "untested": "Untested",
+        "attrTestState": "Result linkage",
+        "tested": "Result linked",
+        "untested": "No linked result",
         "outOfScope": "Out of scope (linked node)",
         "attrDomain": "Domain",
         "attrRootDomain": "Root domain",
@@ -401,7 +401,7 @@
         "rawData": "Raw data",
         "refSource": "Source #{id} · read-only",
         "foldTitle": "Hidden {kind} ({count})",
-        "foldHint": "Tested items are shown first. Click “Show more” to load the next batch into the graph.",
+        "foldHint": "Items with linked results are shown first. Click “Show more” to load the next batch into the graph.",
         "showMore": "Show more (+{step})"
       }
     },
@@ -586,9 +586,10 @@
         "empty": "No action constraints. They're extracted automatically from the description and goals at task creation, and you can also add, edit, or delete them here to set which actions to allow or deny."
       },
       "coverage": {
-        "title": "Asset test coverage",
-        "rough": "(Rough estimate, for reference only)",
-        "testedOf": "Tested {tested} / in scope {total}"
+        "title": "Asset observation coverage",
+        "rough": "(linked facts and findings)",
+        "testedOf": "Results linked {tested} / in scope {total}",
+        "description": "Excludes the task origin and dismissed findings. A linked result indicates an observation, not completion of all vulnerability checks or proof of safety."
       },
       "tokens": {
         "title": "LLM token usage",
@@ -684,6 +685,47 @@
           "fuzzy_url": "URL (partial match)",
           "cidr": "CIDR range"
         }
+      }
+    },
+    "graphTab": {
+      "counts": "Nodes {nodes}/{totalNodes} · Edges {edges}/{totalEdges}",
+      "loadMore": "Load earlier history",
+      "loading": "Loading…",
+      "error": "Refresh failed. The next poll will retry.",
+      "hint": "Shows recent nodes and their neighbours. Load earlier history when the view is partial. Live intents from related tasks are excluded."
+    },
+    "runtime": {
+      "title": "Current execution configuration",
+      "hint": "Configuration at read time. Model, reasoning and program values are request settings, not historical execution or provider-confirmed values.",
+      "workers": "Task workers",
+      "task_snapshot": "{count} · saved with task",
+      "global": "{count} · global setting",
+      "browserLimit": "Current global browser limit",
+      "browser": "Browser MCP configuration",
+      "browserState": "MCP {enabled} · direct worker access {visible}",
+      "capture": "Current traffic capture",
+      "enabled": "on",
+      "disabled": "off",
+      "unknown": "unknown",
+      "browserHint": "MCP enablement and access configuration only. Chromium readiness and successful page access must be checked in execution records.",
+      "role": "Role",
+      "model": "Requested model",
+      "reasoning": "Requested reasoning",
+      "program": "Requested program",
+      "mainagent": "Main agent",
+      "planner": "Planner",
+      "worker": "Worker",
+      "default": "Server default (omitted)",
+      "unavailable": "unavailable",
+      "activeWorkers": "Active workers",
+      "sinceSignal": "last execution signal {seconds}s ago",
+      "phase": {
+        "preparing": "preparing",
+        "processing": "processing",
+        "model_wait": "waiting for model",
+        "model_stream": "receiving model response",
+        "tool": "running tool",
+        "settling": "settling result"
       }
     }
   },
@@ -2741,8 +2783,8 @@
       "heartbeatHint": "If this much time passes since the last planning finished or the task started with no trigger in between, one planning round runs automatically (to prevent stalls and resume supervision of running workers). The minimum is 10 minutes.",
       "seedLabel": "Dispatch the first intent immediately (description + goal)",
       "seedHint": "When on, right after creation it dispatches \"description + goal\" as a single intent so the worker starts immediately without waiting for the first planning round; when it finishes, the planner takes over to assess and follow up. Recommended for cases usually solved by a single work, like CTF; when off, it follows the standard flow of planning first, then executing.",
-      "coverageLabel": "Asset coverage feature",
-      "coverageHint": "On by default. It calculates and displays test coverage, shows testing progress on the situation map, and automatically accumulates the tested scope. When off, coverage is no longer calculated or displayed, the situation map shows only assets without progress, and the agent no longer receives scope-related tools. Turning it off does not affect \"Linked company asset scope\".",
+      "coverageLabel": "Asset observation coverage",
+      "coverageHint": "On by default. Counts in-scope assets with linked facts or findings and accumulates task scope. This is not a vulnerability verification rate. Turning it off disables this metric and related scope tools without affecting linked company asset scopes.",
       "cancel": "Cancel",
       "creating": "Creating",
       "create": "Create",

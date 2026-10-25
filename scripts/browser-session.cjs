@@ -3,10 +3,56 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const { randomUUID } = require('node:crypto');
 const { prepareBrowserHome } = require('./browser-runtime.cjs');
-const { chromium } = require('playwright');
+
+function sanitizeObservedURL(raw, keepQuery = false) {
+  try {
+    const url = new URL(raw);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    url.username = ''; url.password = ''; url.hash = '';
+    // Discovery records endpoint identity, not user-supplied query credentials.
+    if (!keepQuery) url.search = '';
+    return url.href.length <= 4096 ? url.href : null;
+  } catch { return null; }
+}
+
+function createObservationBuffer(capacity = 2000) {
+  const epoch = randomUUID();
+  let sequence = 0, acknowledged = 0, dropped = 0;
+  const pending = [];
+  const seen = new Map();
+  const remember = (key) => {
+    seen.delete(key); seen.set(key, true);
+    if (seen.size > capacity * 2) seen.delete(seen.keys().next().value);
+  };
+  return {
+    record(raw, method, status, resourceType) {
+      if (!['document', 'xhr', 'fetch'].includes(resourceType)) return;
+      // The private in-memory queue retains query values for the host's block
+      // rules. Only the host's redacted records may enter the graph or tool output.
+      const url = sanitizeObservedURL(raw, true);
+      if (!url || !/^[A-Z]{1,20}$/.test(method) || !Number.isInteger(status) || status < 100 || status > 599) return;
+      const key = `${method} ${url}`;
+      if (seen.has(key)) return;
+      remember(key);
+      pending.push({ sequence: ++sequence, url, method, status });
+      if (pending.length > capacity) { pending.shift(); dropped++; }
+    },
+    read(after = 0, limit = 100, expectedEpoch = '') {
+      if (expectedEpoch && expectedEpoch !== epoch) after = 0;
+      after = Number.isSafeInteger(after) && after >= 0 ? Math.min(after, sequence) : 0;
+      acknowledged = Math.max(acknowledged, after);
+      while (pending.length && pending[0].sequence <= acknowledged) pending.shift();
+      limit = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, limit)) : 100;
+      const items = pending.slice(0, limit);
+      return { epoch, items, cursor: items.at(-1)?.sequence || acknowledged, has_more: pending.length > items.length, dropped };
+    },
+  };
+}
 
 async function main() {
+  const { chromium } = require('playwright');
   const options = JSON.parse(process.env.ARTEX_BROWSER_OPTIONS || '{}');
   const root = options.directory;
   if (!root || !Number.isInteger(options.port)) throw new Error('브라우저 실행 설정이 없습니다');
@@ -35,6 +81,11 @@ async function main() {
     };
   }
   const context = await chromium.launchPersistentContext(path.join(root, 'profile'), launch);
+  const observations = createObservationBuffer();
+  context.on('response', (response) => {
+    const request = response.request();
+    observations.record(response.url(), request.method(), response.status(), request.resourceType());
+  });
   context.setDefaultTimeout(10000);
   // Session cookies are not reliably persisted by Chromium across process exits.
   if (Array.isArray(saved.cookies) && saved.cookies.length) await context.addCookies(saved.cookies);
@@ -128,6 +179,7 @@ async function main() {
         const p = await page();
         let result;
         switch (request.action) {
+          case 'observations': result = observations.read(request.after, request.limit, request.epoch); break;
           case 'status': result = await status(); break;
           case 'screenshot': result = { image: await screenshot(p) }; break;
           case 'click': await p.mouse.click(request.x, request.y); break;
@@ -160,7 +212,8 @@ async function main() {
   });
   process.stdout.write(`${JSON.stringify({ ready: true })}\n`);
 }
-main().catch(() => {
+if (require.main === module) main().catch(() => {
   process.stderr.write('브라우저 시작 실패: 설치된 Chromium, 프로필 잠금 및 프록시 CA 설정을 확인해 주세요.\n');
   process.exit(1);
 });
+module.exports = { createObservationBuffer, sanitizeObservedURL };

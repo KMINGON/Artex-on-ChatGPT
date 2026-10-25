@@ -35,6 +35,7 @@ import type {
   DeleteTaskResult,
   Edge,
   EvidenceBodyPreview,
+  ExplorationGraphPage,
   ExplorationNodePage,
   ExplorationNodeQuery,
   Finding,
@@ -745,7 +746,13 @@ export const api = {
     get<ConvTokenSummary[]>("/tokens/conversations")
       .then(arr)
       .catch(() => [] as ConvTokenSummary[]),
-  explorationGraph: (task?: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/graph${tq(task)}`),
+  explorationGraph: (task?: string, page?: { before?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (task) query.set("task", task);
+    if (page?.before) query.set("before", page.before);
+    if (page?.limit) query.set("limit", String(page.limit));
+    return get<ExplorationGraphPage>(`/exploration/graph?${query}`);
+  },
   // 播报板:服务端按创建顺序分页的探索节点(默认最新在前)。
   explorationNodes: (task: string, query: ExplorationNodeQuery = {}) => {
     const q = new URLSearchParams();

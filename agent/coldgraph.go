@@ -24,9 +24,10 @@ import (
 
 // cgNode is the minimal node view the cold-graph algorithms need.
 type cgNode struct {
-	ID    int64
-	Kind  string
-	State string
+	ID      int64
+	Kind    string
+	State   string
+	KeepHot bool // task root or unresolved follow-up that has not left the frontier
 }
 
 // cgEdge is one exploration edge (From = parent/upstream, To = child/downstream).
@@ -106,7 +107,7 @@ func (g *coldGraph) hotSet() map[int64]bool {
 	hot := map[int64]bool{}
 	var stack []int64
 	for _, n := range g.nodes {
-		if isLiveIntent(n) {
+		if isLiveIntent(n) || n.KeepHot {
 			stack = append(stack, n.ID)
 		}
 	}

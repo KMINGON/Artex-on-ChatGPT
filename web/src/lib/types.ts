@@ -16,6 +16,26 @@ export interface Task {
   status: TaskStatus;
   created_at: string;
   created_unix?: number; // created_at as unix seconds (run-duration calc)
+  first_run_at?: string;
+  first_run_unix?: number;
+  execution_profile?: { id: string; version: number; workers: number; browser_limit: number };
+  runtime?: {
+    workers: number;
+    worker_source: "task_snapshot" | "global";
+    browser_limit: number;
+    browser_enabled: boolean | null;
+    browser_worker_visible: boolean | null;
+    traffic_capture: boolean;
+    models: Partial<TaskLLMResolutions>;
+    worker_progress?: Array<{
+      intent_id: number;
+      worker: string;
+      phase: string;
+      idle_seconds: number;
+      tool?: string;
+      pending_tools: number;
+    }>;
+  };
   completed_at?: string; // RFC3339 finish time (done/failed); "" if unfinished
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
@@ -429,6 +449,17 @@ export interface TaskNode {
   delete_reason?: string; // 意图假删除(state='deleted')时的删除原因
 }
 
+// Metadata is optional for older servers and local fixture compatibility.
+export interface ExplorationGraphPage {
+  nodes: TaskNode[];
+  edges: Edge[];
+  total_nodes?: number;
+  total_edges?: number;
+  page_nodes?: number;
+  next_before?: string;
+  has_more?: boolean;
+}
+
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),
 // 这样每条播报都能说清「从哪来、产出了什么」,而不用把整张图拉下来。
 export interface ExplorationNodePage {
@@ -686,6 +717,8 @@ export interface TaskLLMResolution {
   format: string;
   model: string;
   source: "task_chain" | "agent_binding" | "global_profile" | "environment" | "global";
+  reasoning_effort?: string;
+  requested_program?: string;
   available: boolean;
   reason?: string;
 }

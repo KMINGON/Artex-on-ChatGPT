@@ -22,6 +22,7 @@ import {
 import { useTranslations } from "next-intl";
 
 import { StatusBadge } from "@/components/status-badge";
+import { TaskRuntimeSummary } from "@/components/task-runtime-summary";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -687,6 +688,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         </CardContent>
       </Card>
       <TaskInterceptRulesCard taskId={taskId} />
+      {task && <TaskRuntimeSummary task={task} />}
       {coverage && coverage.enabled && coverage.scope_rows > 0 && (
         <Card>
           <CardHeader>
@@ -694,6 +696,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
               <TargetIcon className="size-4 text-emerald-500" /> {t("coverage.title")}
               <span className="text-muted-foreground text-xs font-normal">{t("coverage.rough")}</span>
             </CardTitle>
+            <CardDescription>{t("coverage.description")}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <div className="flex items-baseline gap-3">

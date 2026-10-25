@@ -1,6 +1,7 @@
 package db
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"time"
@@ -14,18 +15,19 @@ import (
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
 type LLMUsage struct {
-	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
-	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
-	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
-	Model         string `json:"model"`
-	ProfileName   string `json:"profile_name"`
-	LatencyMs     int    `json:"latency_ms"`
-	InputTokens   int    `json:"input_tokens"`
-	OutputTokens  int    `json:"output_tokens"`
-	CacheRead     int    `json:"cache_read"`
-	CacheWrite    int    `json:"cache_write"`
-	UsageReceived *bool  `json:"usage_received"` // nil: legacy/unknown; false: no server usage; true: known usage (including zero).
-	Status        string `json:"status"`         // ok | error
+	TaskID        string          `json:"task_id"`        // task registry id (matches llm_records.task_id)
+	ExplorationID int64           `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
+	Worker        string          `json:"worker"`         // agent lane: worker / planner / mainagent / goals
+	Model         string          `json:"model"`
+	ProfileName   string          `json:"profile_name"`
+	LatencyMs     int             `json:"latency_ms"`
+	InputTokens   int             `json:"input_tokens"`
+	OutputTokens  int             `json:"output_tokens"`
+	CacheRead     int             `json:"cache_read"`
+	CacheWrite    int             `json:"cache_write"`
+	UsageReceived *bool           `json:"usage_received"`     // nil: legacy/unknown; false: no server usage; true: known usage (including zero).
+	Status        string          `json:"status"`             // ok | error
+	Metadata      json.RawMessage `json:"metadata,omitempty"` // Non-secret settings and observed response identity; never bodies.
 }
 
 const llmUsageSchema = `
@@ -46,6 +48,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     usage_received BOOLEAN
 );
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS usage_received BOOLEAN;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -70,15 +73,19 @@ func (d *DB) EnsureLLMUsageTable() error {
 // InsertLLMUsage appends one metering row. Best-effort: callers log and continue on
 // error (a lost metering row must never break the LLM call).
 func (d *DB) InsertLLMUsage(u *LLMUsage) error {
+	metadata := u.Metadata
+	if len(metadata) == 0 {
+		metadata = json.RawMessage(`{}`)
+	}
 	var expID any
 	if u.ExplorationID > 0 {
 		expID = u.ExplorationID
 	}
 	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, usage_received)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, usage_received,metadata)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13::jsonb)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.UsageReceived)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, u.UsageReceived, string(metadata))
 	return err
 }
 

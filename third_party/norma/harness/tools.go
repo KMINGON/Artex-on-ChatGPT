@@ -52,7 +52,7 @@ func (l *loop) execOneContext(ctx context.Context, use llm.ContentBlock, emitPro
 	// still advertised to the model either way — see tool.Spec.RawInput.
 	if !acceptsRawInput(t) {
 		if err := tool.ValidateInput(t.InputSchema(), input); err != nil {
-			return llm.ToolResultText(use.ID, "Error: invalid tool input: "+err.Error(), true), nil
+			return llm.ToolResultText(use.ID, tool.InputError(use.Name, t.InputSchema(), err), true), nil
 		}
 	}
 

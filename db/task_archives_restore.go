@@ -593,6 +593,23 @@ func remapArchiveAssetReferences(tables map[string]json.RawMessage, mapping map[
 				}
 				container[key] = values
 			}
+			// HTTP observation facts also carry endpoint IDs inside their typed
+			// observation array. Natural-key merges during restore must keep these
+			// references aligned with the remapped anchors and task provenance.
+			if table == "exploration_nodes" && container["observation_source"] == "http_response" {
+				observations, _ := container["observations"].([]any)
+				for _, value := range observations {
+					observation, ok := value.(map[string]any)
+					if !ok {
+						continue
+					}
+					if old, ok := jsonInt64(observation["asset_id"]); ok {
+						if replacement, exists := mapping[old]; exists {
+							observation["asset_id"] = replacement
+						}
+					}
+				}
+			}
 		}
 		out[table], _ = json.Marshal(rows)
 	}

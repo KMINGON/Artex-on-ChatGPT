@@ -153,6 +153,107 @@ func TestBrowserHumanTakeoverBlocksToolsUntilResume(t *testing.T) {
 	}
 }
 
+func TestBrowserHumanHandoffDistinguishesResumeCloseDeleteAndCancel(t *testing.T) {
+	for _, action := range []string{"resume", "close", "delete", "cancel_and_resume"} {
+		t.Run(action, func(t *testing.T) {
+			s := fakeBrowserSession(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			m := &browserSessionManager{dir: filepath.Dir(s.directory), sessions: map[string]*browserSession{s.id: s}}
+			result, err := s.handoffTool().Call(ctx, json.RawMessage(`{"reason":"local fixture"}`), &actool.ToolContext{
+				Emit: func(actool.ProgressInfo) {
+					// Closing immediately after the handoff begins used to look like
+					// successful user authentication, even before wait captured it.
+					switch action {
+					case "resume":
+						s.resume()
+					case "close":
+						s.close()
+					case "delete":
+						if dropErr := m.drop(s.id); dropErr != nil {
+							t.Fatal(dropErr)
+						}
+					case "cancel_and_resume":
+						cancel()
+						s.resume()
+					}
+				},
+			})
+			if action == "resume" {
+				if err != nil || len(result.Content) == 0 {
+					t.Fatalf("manual resume failed: %v", err)
+				}
+				return
+			}
+			if err == nil || len(result.Content) != 0 {
+				t.Fatalf("%s falsely reported successful handoff: err=%v", action, err)
+			}
+			if action == "cancel_and_resume" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation lost to resume: %v", err)
+			}
+			if action == "delete" {
+				if err := s.ensure(t.Context()); err == nil {
+					t.Fatal("deleted handoff session reopened")
+				}
+			}
+		})
+	}
+}
+
+func TestBrowserHumanWaitKeepsItsOwnCompletion(t *testing.T) {
+	s := fakeBrowserSession(t)
+	closed := s.beginHuman("first fixture")
+	s.close()
+	resumed := s.beginHuman("second fixture")
+	s.resume()
+	if err := closed.wait(t.Context()); err == nil {
+		t.Fatal("later resume overwrote the earlier session close")
+	}
+	if err := resumed.wait(t.Context()); err != nil {
+		t.Fatalf("later handoff did not resume: %v", err)
+	}
+	if err := closed.wait(t.Context()); err == nil {
+		t.Fatal("reading completion consumed the close result")
+	}
+}
+
+func TestBrowserUnexpectedExitEndsHumanWait(t *testing.T) {
+	s := fakeBrowserSession(t)
+	if err := s.ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	waiting := s.beginHuman("exit fixture")
+	if err := s.bridge.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	if err := waiting.wait(ctx); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bridge exit did not interrupt human wait: %v", err)
+	}
+}
+
+func TestBrowserRestartDoesNotResumeOldHumanWait(t *testing.T) {
+	s := fakeBrowserSession(t)
+	done := make(chan struct{})
+	close(done)
+	s.bridge = &browserBridge{done: done}
+	waiting := s.beginHuman("old process fixture")
+	if err := s.ensure(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := waiting.wait(ctx); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("restart lost old process termination: %v", err)
+	}
+	resumed := s.beginHuman("new process fixture")
+	s.resume()
+	if err := resumed.wait(t.Context()); err != nil {
+		t.Fatalf("new process handoff failed: %v", err)
+	}
+}
+
 func TestBrowserLimitResizeAndCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

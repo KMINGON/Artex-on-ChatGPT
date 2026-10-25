@@ -91,12 +91,8 @@ func (e *Engine) resetTimeoutRevival(taskID string) {
 	e.coordStarted.Delete(taskID)
 }
 
-// stampFirstRun records first_run_at + deadline_at on the FIRST real run (LLM ready)
-// of a timeout task, once per process. No-op when the task has no timeout.
+// stampFirstRun records every task's first real run. Only timed tasks acquire a deadline.
 func (e *Engine) stampFirstRun(t *Task) {
-	if t.TimeoutSeconds <= 0 {
-		return
-	}
 	if _, loaded := e.stamped.LoadOrStore(t.ID, true); loaded {
 		return
 	}
@@ -209,13 +205,8 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 	}
 	defer e.decInflight(t.ID)
 
-	// ⑥ 定终态(带守卫):met → done(completed);否则 timeout。若常规路径已先落 done,
-	// 守卫(SetTaskStatusGuarded)会拒绝覆盖,保留 completed 语义。
-	status := "timeout"
-	if met {
-		status = "done"
-	}
-	won, err := e.m.SetTaskStatusGuarded(t.ID, status)
+	// 마지막 시간 제한 판정도 일반 완료와 같은 검토를 거친다.
+	status, won, err := e.finishTimedTask(ctx, t, met)
 	switch {
 	case err != nil:
 		log.Printf("[deadline] task %s 최종 상태 저장 실패: %v", t.ID, err)
@@ -224,6 +215,18 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 	default:
 		log.Printf("[deadline] task %s 마무리 시 이미 최종 상태이므로 기존 상태 유지", t.ID)
 	}
+}
+
+func (e *Engine) finishTimedTask(ctx context.Context, t *Task, met bool) (string, bool, error) {
+	if met {
+		won, err := e.m.CompleteReviewedTask(ctx, t.ID, func() { e.cancelExec(t.ID, agent.AbortGoalMet) })
+		if err != nil || won {
+			return "done", won, err
+		}
+	}
+	// 새 작업이 남아도 이미 지난 시간 한도를 연장하거나 달성으로 표시하지 않는다.
+	won, err := e.m.SetTaskStatusGuarded(t.ID, "timeout")
+	return "timeout", won, err
 }
 
 // runFinalPlannerRound drives exactly ONE terminal planner round with the

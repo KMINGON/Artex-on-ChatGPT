@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // DiscardOpenIntent compensates a follow-up creation when task admission fails.
 // The task execution gate must still be held by the caller, so the intent cannot
@@ -12,6 +15,9 @@ func (s *ExplorationStore) DiscardOpenIntent(id int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockGraphTaskTx(context.Background(), tx, s.expID); err != nil {
+		return err
+	}
 
 	if _, err := tx.Exec(`DELETE FROM activity WHERE exploration_id=$1 AND node_id=$2`, s.expID, id); err != nil {
 		return err

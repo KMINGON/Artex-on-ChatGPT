@@ -30,7 +30,7 @@ target AS (
        (ts.kind='company'     AND a.company_id = ts.company_id)
     OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
     OR (ts.kind='subdomain'   AND a.domain = ts.domain)
-    OR (ts.kind IN ('ip','cidr') AND ts.net >>= try_inet(a.ip))
+    OR (ts.kind IN ('ip','cidr') AND (ts.net >>= try_inet(a.ip) OR ts.net >>= try_inet(a.domain)))
     OR (ts.kind='icp' AND (
          lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
          OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
@@ -48,7 +48,7 @@ target AS (
 tested AS (
   SELECT DISTINCT ea.asset_id
   FROM exploration_anchors ea
-  JOIN exploration_nodes en ON en.id=ea.node_id AND en.kind='fact'
+  JOIN exploration_nodes en ON en.id=ea.node_id AND en.kind IN ('fact','finding') AND en.state NOT IN ('dismissed','origin')
   JOIN context_tasks ctx ON ctx.exploration_id=en.exploration_id
 )`
 
@@ -119,7 +119,7 @@ ORDER BY CASE WHEN ts.task_id=$1 THEN 0 ELSE 1 END, ts.id`, taskID)
 
 // TaskCoverageWithSources computes one coverage view over the union of the
 // current task and its direct sources: source scopes and anchored assets extend
-// the denominator, while fact anchors count as tested. No row is copied.
+// the denominator, while non-dismissed fact/finding anchors count as observed. No row is copied.
 func (s *AssetStore) TaskCoverageWithSources(taskID int64) (*Coverage, error) {
 	cov := &Coverage{ByType: []CoverageByType{}}
 	_ = s.db.QueryRow(`WITH `+directTaskContextCTE+`
@@ -152,7 +152,7 @@ FROM target GROUP BY target.type ORDER BY target.type`, taskID)
 }
 
 // ListUntestedAssetsWithSources is the direct-source-aware backlog query used
-// by inherited tasks. Source fact anchors remove assets from the backlog.
+// by inherited tasks. Source fact/finding anchors remove assets from the backlog.
 func (s *AssetStore) ListUntestedAssetsWithSources(taskID int64, typ string, limit, offset int) ([]CoverageAsset, int, error) {
 	if limit <= 0 {
 		limit = 10

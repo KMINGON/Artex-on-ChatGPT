@@ -72,6 +72,13 @@ func (s *Server) startTaskEngine(t *Task) {
 	if ctx.Err() != nil || s.engine.IsDeleting(t.ID) {
 		return
 	}
+	if len(goals) == 0 && strings.TrimSpace(t.Goal) != "" {
+		s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "error", Summary: "목표를 저장하지 못해 작업을 시작하지 않았습니다. 저장소 상태를 확인한 뒤 다시 시작하세요."})
+		if err := s.m.SetTaskStatus(t.ID, "failed"); err != nil {
+			log.Printf("[goals] task %s: 목표 저장 실패 상태 기록 오류: %v", t.ID, err)
+		}
+		return
+	}
 	for _, g := range goals {
 		summary := g.Text
 		if g.VulnClass != "" {
@@ -128,14 +135,20 @@ func (s *Server) admitPausedTask(t *Task) (queued bool, err error) {
 }
 
 func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued bool, err error) {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
+	return s.admitTaskLocked(t, mode, requirePaused)
+}
+
+// admitTaskLocked lets intent resume preserve a concurrent user pause/queue
+// decision under the same scheduler lock as the intent state transition.
+func (s *Server) admitTaskLocked(t *Task, mode string, requirePaused bool) (queued bool, err error) {
 	if t == nil {
 		return false, fmt.Errorf("task not found")
 	}
 	if mode != "bootstrap" {
 		mode = "resume"
 	}
-	s.concMu.Lock()
-	defer s.concMu.Unlock()
 	// Delete installs its barrier under concMu as well. Re-resolve after acquiring
 	// the lock so a request that captured a task pointer before successful deletion
 	// cannot revive that stale handle after StopTask clears its Engine maps.
@@ -147,7 +160,11 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 		return false, fmt.Errorf("task is being deleted")
 	}
 	defer s.engine.decInflight(t.ID)
+	// A terminal DB commit and live-handle refresh are one Manager operation.
+	// Goal edits/resume must not capture the stale pre-commit running state.
+	s.m.taskStateMu.Lock()
 	lifecycle := t.lifecycleSnapshot()
+	s.m.taskStateMu.Unlock()
 	if requirePaused {
 		if isTerminalStatus(lifecycle.Status) {
 			return false, fmt.Errorf(errGoalResumeTerminal)
@@ -418,10 +435,9 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 		// only path that writes here — decomposed goals are already persisted by the tool.
 		if g := strings.TrimSpace(t.Goal); g != "" {
 			log.Printf("[goals] task %s: LLM 목표 분해 결과가 없어 원래 목표를 단일 목표로 사용합니다", t.ID)
-			origin, _ := t.Store.OriginFactID()
-			id, _ := t.Store.AddNode(db.KindGoal, map[string]any{"text": g}, 0, "open", "system", nil)
-			if origin > 0 && id > 0 {
-				_ = t.Store.Link(origin, db.RelSpawns, id) // goal descends from the task root (origin fact)
+			if _, err := t.Store.AddGoalWithOrigin(ctx, map[string]any{"text": g}, "system"); err != nil {
+				log.Printf("[goals] task %s: 원래 목표 저장 실패: %v", t.ID, err)
+				return nil
 			}
 			specs = []goalSpec{{Text: g}}
 		}

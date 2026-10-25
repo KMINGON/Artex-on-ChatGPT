@@ -226,6 +226,12 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		if err := pg.SeedTool(s.Key, s.Desc, schema, agents); err != nil {
 			log.Printf("[tools] %s 기본값 저장 실패: %v", s.Key, err)
 		}
+		switch s.Key {
+		case "record_fact", "add_intent", "prove_goal":
+			if err := pg.SyncBuiltinToolSchema(s.Key, s.Schema); err != nil {
+				log.Printf("[tools] %s 매개변수 규약 갱신 실패: %v", s.Key, err)
+			}
+		}
 	}
 	// Seed the traffic host tools so they're bindable per-agent like built-ins.
 	// Default binding = worker (preserves prior behavior). Their runtime availability

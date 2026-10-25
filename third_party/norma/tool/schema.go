@@ -3,6 +3,7 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -82,6 +83,9 @@ func validateValue(schema map[string]any, v any, path string) error {
 }
 
 func toStrings(v any) []string {
+	if values, ok := v.([]string); ok {
+		return values
+	}
 	arr, ok := v.([]any)
 	if !ok {
 		return nil
@@ -93,6 +97,29 @@ func toStrings(v any) []string {
 		}
 	}
 	return out
+}
+
+// InputError reports the current required fields without echoing supplied
+// arguments or defaults, which may contain credentials. It never invents values.
+func InputError(name string, schema map[string]any, err error) string {
+	fields := append([]string(nil), toStrings(schema["required"])...)
+	sort.Strings(fields)
+	props, _ := schema["properties"].(map[string]any)
+	if len(fields) > 20 {
+		fields = fields[:20]
+	}
+	for i, name := range fields {
+		if field, ok := props[name].(map[string]any); ok {
+			if typ, ok := field["type"].(string); ok {
+				fields[i] = name + ":" + typ
+			}
+		}
+	}
+	message := "도구 " + name + "의 입력이 올바르지 않습니다: " + err.Error()
+	if len(fields) > 0 {
+		message += ". 필수 필드: " + strings.Join(fields, ", ")
+	}
+	return message + ". 현재 도구 스키마를 확인하고 실제 값으로 다시 호출하세요."
 }
 
 func join(path, key string) string {
