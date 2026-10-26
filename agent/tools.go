@@ -1173,11 +1173,11 @@ func (t *ToolSet) registerOneIntentContext(ctx context.Context, it intentItem) (
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 의도는 고정된 유형이 아닌 열린 탐색 방향입니다. summary 한 문장으로 무엇을 탐색/검증/활용할지 자유롭게 설명하세요.\n"+
+	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 각 의도에는 동일한 전제와 판단 기준을 공유하는 검증 질문 또는 사용자가 요구한 독립 산출물 하나를 맡기세요. summary에 대상·질문·필요한 근거·종료 조건을 간결하게 쓰고, 서로 독립적인 질문을 한 항목에 합치지 마세요. 같은 질문의 대조·변형은 한 의도에서 깊게 검증합니다.\n"+
 		"★일괄 제출 우선: 한 회차에서 선별한 여러 새 방향을 intents 배열로 한 번에 제출하세요(개별 호출보다 왕복 횟수 절약). 반환 ids 배열은 intents와 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 intents를 생략하고 최상위 summary를 전달하세요.",
 		withBatchSchema(obj(map[string]any{
-			"intents":    map[string]any{"type": "array", "description": "【우선 사용】추가할 탐색 방향 배열이며 순서대로 처리합니다. 각 요소의 필드는 아래 최상위 필드(summary/asset_ids/parent_ids/priority)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
-			"summary":    str("[단일] 이 탐색 방향을 한 문장으로 설명: 할 일+이유. 방향이 명확하면 되며 자산 id에 의존하지 않습니다."),
+			"intents":    map[string]any{"type": "array", "description": "【우선 사용】추가할 독립 의도의 배열이며 각 요소를 별도 의도로 순서대로 처리합니다. 필드는 아래 최상위 필드(summary/asset_ids/parent_ids/priority)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
+			"summary":    str("[단일] 대상 또는 관련 자산 묶음 + 검증 질문 하나(또는 사용자가 요구한 독립 산출물) + 필요한 근거와 종료 조건. 같은 질문의 정상 대조·입력 변형은 함께 다루고 독립적인 주제를 나열하지 마세요."),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "이 방향에서 테스트/공격할 【대상 자산 id】(**가능하면 전달**, 0/1/여러 개. list_assets의 자산 id이며 탐색 노드 id가 아님). 대상 자산(사이트/인터페이스/인자/호스트 등)을 지정합니다. 구체적인 자산을 다루면 반드시 전달하세요. 탐색 대상을 구조화하여 중복 확인과 의도·자산 연결에 사용합니다. 구체적인 대상 자산이 없는 순수한 전역 정찰에만 비워 두세요."},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "상위 근거 id(선택 사항, 0/1/여러 개): 이 방향을 종합하여 도출한 【확인된 사실(fact)/발견(finding)】. **기존 fact/finding 노드 id만 지정하며 의도/목표/힌트는 금지**합니다. 의도는 확인된 지식과 발견에 근거해야 하며 근거 없이 계획해서는 안 됩니다. 여러 사실이 함께 새 의도를 만들면 모두 전달하고 최상위 새 정찰 방향이면 비워 두세요(작업 시작점 origin fact에 자동 연결)."},
 			"priority":   intp("우선순위 0-10, 기본 5"),

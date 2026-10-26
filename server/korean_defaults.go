@@ -132,7 +132,7 @@ func (s *Server) localizeStoredDefaults() error {
 			}
 		}
 	}
-	if err := localizeStoredPrompts(tx, baseline.Prompts); err != nil {
+	if err := refreshStoredPrompts(tx, baseline.Prompts, "기본 프롬프트 한국어화"); err != nil {
 		return err
 	}
 	rows, err := tx.Query(`SELECT id,tool_call_message FROM agent_triggers WHERE agent_key='reporter' AND on_tool_call FOR UPDATE`)
@@ -174,7 +174,7 @@ func (s *Server) localizeStoredDefaults() error {
 	return tx.Commit()
 }
 
-func localizeStoredPrompts(tx *sql.Tx, hashes map[string]string) error {
+func refreshStoredPrompts(tx *sql.Tx, hashes map[string]string, note string) error {
 	defaults := agent.BuiltinPromptSeeds()
 	defaults["reporter"] = agent.ReporterDefaultPrompt
 	defaults[db.FindingRetestAgentKey] = agent.RetesterDefaultPrompt
@@ -214,7 +214,7 @@ func localizeStoredPrompts(tx *sql.Tx, hashes map[string]string) error {
 	for _, item := range replacements {
 		var pid int64
 		err := tx.QueryRow(`INSERT INTO agent_prompts(agent_id,version,template_text,note,updated_by)
-			SELECT $1,COALESCE(MAX(version),0)+1,$2,'기본 프롬프트 한국어화','system' FROM agent_prompts WHERE agent_id=$1 RETURNING id`, item.id, item.text).Scan(&pid)
+			SELECT $1,COALESCE(MAX(version),0)+1,$2,$3,'system' FROM agent_prompts WHERE agent_id=$1 RETURNING id`, item.id, item.text, note).Scan(&pid)
 		if err != nil {
 			return err
 		}

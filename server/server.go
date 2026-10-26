@@ -362,6 +362,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		if err := s.localizeStoredDefaults(); err != nil {
 			log.Printf("[locale] 저장된 기본값 한국어화 실패(다음 시작 시 재시도): %v", err)
 		}
+		if err := s.refreshExplorationDefaults(); err != nil {
+			log.Printf("[prompts] 탐색 배정·결과 인계 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
+		}
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
