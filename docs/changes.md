@@ -1,6 +1,6 @@
 # 원본 대비 변경점
 
-비교 기준은 [artex-global `fdfb7a1`](https://github.com/jiwoochris/artex-global/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)입니다. 해당 원본과 **현재 `dev-origin` 코드의 차이**를 설명합니다. 설치는 [README](../README.md#빠른-시작)를 참고하세요.
+비교 기준은 [artex-global `fdfb7a1`](https://github.com/jiwoochris/artex-global/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)입니다. 해당 원본과 **현재 코드의 차이**를 설명합니다. 설치는 [README](../README.md#빠른-시작)를 참고하세요.
 
 작업의 기본 흐름은 원본과 같습니다. Goals가 목표를 나누고, Planner가 탐색 방향을 배정하며, 여러 Worker가 도구를 실행해 사실·발견을 기록합니다. Planner는 결과를 읽어 다음 방향과 목표 달성을 판단합니다. 의도 분할·우선순위·재검증·사실 기록·반환 방식은 원본 지침의 한국어 번역을 사용합니다.
 
@@ -8,8 +8,8 @@
 
 | 구분 | 원본 대비 현재 차이 |
 | --- | --- |
-| [연결·기능](changes/features.md) | OpenAI 전용 구성, ChatGPT 구독, 브라우저 실행·인증·이미지 전달 |
-| [작업 방식과 설정](changes/behavior.md) | 원본과 같은 탐색 흐름, 한국어 기본 지침, 명시적 모델·자원 설정 |
+| [연결·기능](changes/features.md) | OpenAI 전용 구성, ChatGPT 구독, 브라우저 실행·인증·이미지 전달, 간결한 기본 작업 템플릿 4종 |
+| [작업 방식과 설정](changes/behavior.md) | 원본과 같은 탐색 흐름, 한국어 기본 지침, 명시적 모델 선택·개별 자원 설정 |
 | [오류·상태 보존](changes/fixes.md) | 도구 인자·취약점 등록, 원자적 그래프 저장, Todo·실행 결과·대화 복구 |
 | [OpenAI 처리](changes/openai.md) | Responses 상태·완료 판정, API와 구독의 요청 차이, 계정·모델 선택 |
 | [설치·운영](changes/operations.md) | Compose, 로컬 Norma, 기존 데이터와 기본값 이관 |

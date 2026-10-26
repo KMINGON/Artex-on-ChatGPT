@@ -18,15 +18,12 @@ import { api } from "@/lib/api";
 import { type ChatSendMode, setChatSendMode, useChatSendMode, useChatSendModeOptions } from "@/lib/chat-send-mode";
 import type { Settings } from "@/lib/types";
 
-import { ResourcePresets } from "./_components/resource-presets";
 import { UpdateCard } from "./_components/update-card";
 
 export default function SystemSettingsPage() {
   const tf = useTranslations("forkUI");
   const t = useTranslations("settingsPage");
   const tp = useTranslations("presets");
-  const [presetPending, setPresetPending] = React.useState(false);
-  const [settings, setSettings] = React.useState<Settings | null>(null);
   const [browserLimit, setBrowserLimit] = React.useState("4");
   const richTags = {
     b: (chunks: React.ReactNode) => <b>{chunks}</b>,
@@ -63,29 +60,21 @@ export default function SystemSettingsPage() {
   const activeLocale = useActiveLocale();
 
   const settingsBusy = saving || savingWorkers || savingKey || savingTavilyKey || savingProxy || savingGlobalProxy;
-  const applyPreset = React.useCallback((s: Settings) => {
-    setSettings(s);
+  const apply = React.useCallback((s: Settings) => {
     setBrowserLimit(String(s.browser_concurrency_limit ?? 4));
     setWorkers(String(s.workers ?? 3));
     setTrafficCapture(!!s.traffic_capture);
     setAgentTrafficBinding(!!s.agent_traffic_binding);
+    setWebSearch(!!s.web_search_enabled);
+    setBackend(s.web_search_backend || "ddgs");
+    setBraveKeySet(!!s.brave_key_set);
+    setTavilyKeySet(!!s.tavily_key_set);
+    setProxyInput(s.web_search_proxy ?? "");
+    setGlobalProxyInput(s.global_proxy ?? "");
+    setPyInterp(s.python_interpreter ?? "");
+    setInjectPlanner(s.constraints_inject_planner !== false);
+    setInjectWorker(s.constraints_inject_worker !== false);
   }, []);
-
-  const apply = React.useCallback(
-    (s: Settings) => {
-      applyPreset(s);
-      setWebSearch(!!s.web_search_enabled);
-      setBackend(s.web_search_backend || "ddgs");
-      setBraveKeySet(!!s.brave_key_set);
-      setTavilyKeySet(!!s.tavily_key_set);
-      setProxyInput(s.web_search_proxy ?? "");
-      setGlobalProxyInput(s.global_proxy ?? "");
-      setPyInterp(s.python_interpreter ?? "");
-      setInjectPlanner(s.constraints_inject_planner !== false);
-      setInjectWorker(s.constraints_inject_worker !== false);
-    },
-    [applyPreset],
-  );
 
   const saveWorkers = () => {
     const n = Number(workers);
@@ -293,13 +282,7 @@ export default function SystemSettingsPage() {
           的 key 输入是条件渲染）。grid 会按最高的一张撑满整行、在旁边留下大片空白，
           多列则自动按内容高度平衡填充。卡片间距靠 mb 而非 gap——多列布局下
           column-gap 只管列间距，行间距要由子元素自己给。 */}
-      <ResourcePresets
-        settings={settings}
-        onApplied={applyPreset}
-        disabled={settingsBusy}
-        onPendingChange={setPresetPending}
-      />
-      <fieldset className="min-w-0 columns-1 gap-4 md:gap-6 lg:columns-2" disabled={presetPending || settingsBusy}>
+      <fieldset className="min-w-0 columns-1 gap-4 md:gap-6 lg:columns-2" disabled={settingsBusy}>
         <UpdateCard />
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>

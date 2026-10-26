@@ -9,6 +9,90 @@ import (
 
 const forkTaskTemplatesRemovedFlag = "fork_task_templates_removed_v1"
 
+// Reuse the original seed marker so defaults deleted in earlier releases stay deleted.
+const defaultTaskTemplatesSeededFlag = "default_task_templates_v1"
+
+var defaultTaskTemplates = []struct {
+	Name, Category, Description, Goal string
+}{
+	{
+		Name: "실습 · 전체 검증", Category: "실습",
+		Description: `대상: [실습 URL·허용 범위]
+계정·자료: [제공 계정과 참고 자료]
+지정된 실습 환경의 기능과 공격 표면을 폭넓게 살펴보세요.
+발견한 단서는 취약점의 재현과 영향 확인까지 이어가세요.
+실습 대상 안에서는 데이터 변경·업로드·명령 실행을 포함해 검증할 수 있습니다.
+재현 근거와 실제 영향, 아직 확인하지 못한 사항을 구분해 남기세요.`,
+		Goal: "실습 대상의 취약점을 최대한 찾아 재현 가능한 증거와 실제 영향을 정리하세요.",
+	},
+	{
+		Name: "운영 · 관찰", Category: "운영",
+		Description: `대상: [운영 URL·허용 범위]
+계정·자료: [제공 계정과 참고 자료]
+일반 조회로 노출 정보와 보안 설정을 확인하세요.
+제공 계정에서 보이는 화면·API·권한 경계를 살펴보세요.
+데이터 변경, 공격 입력, 대량 요청, 서버 명령 실행은 하지 마세요.
+직접 확인한 문제와 추가 검증이 필요한 의심 사항을 구분하세요.`,
+		Goal: "운영 데이터를 변경하지 않는 관찰 범위에서 보안 문제와 추가 검증 대상을 정리하세요.",
+	},
+	{
+		Name: "운영 · 일반 검증", Category: "운영",
+		Description: `대상: [운영 URL·허용 범위]
+계정·자료: [제공 계정과 참고 자료]
+기능·API·인증·권한 경계를 살펴보고 의심 지점을 실제로 검증하세요.
+상태 변경이 필요하면 제공된 시험 계정과 시험 데이터를 사용하세요.
+서비스 중단, 실제 사용자 데이터 훼손, 되돌릴 수 없는 변경은 피하세요.
+재현 근거와 영향을 남기고, 만든 시험 데이터의 정리 여부를 기록하세요.`,
+		Goal: "허용된 일반 검증 범위에서 취약점을 찾아 재현 근거와 영향을 정리하세요.",
+	},
+	{
+		Name: "운영 · 확장 검증", Category: "운영",
+		Description: `대상: [운영 URL·허용 범위]
+계정·자료: [제공 계정과 참고 자료]
+기능과 공격 경로를 폭넓게 살펴보고 발견한 단서를 끝까지 검증하세요.
+허용 범위 안에서 권한 상승·업로드·서버 명령 실행과 취약점 연계를 검증하세요.
+서비스 중단과 되돌릴 수 없는 변경은 피하고, 변경한 시험 자원을 정리하세요.
+재현 근거·확인한 영향·정리 여부와 미확인 사항을 구분해 남기세요.`,
+		Goal: "허용된 확장 검증 범위에서 취약점과 연결 가능한 공격 경로의 실제 영향을 확인하세요.",
+	},
+}
+
+// Seed editable task inputs once. Execution options stay unset so applying a
+// template preserves the options already selected in the task form.
+func (d *DB) seedDefaultTaskTemplates() error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`INSERT INTO settings(key,value) VALUES ($1,'done') ON CONFLICT(key) DO NOTHING`, defaultTaskTemplatesSeededFlag)
+	if err != nil {
+		return err
+	}
+	added, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if added == 0 {
+		return nil
+	}
+	for _, entry := range defaultTaskTemplates {
+		if _, err := tx.Exec(`INSERT INTO task_categories(name,nkey) VALUES($1,$2) ON CONFLICT(nkey) DO NOTHING`, entry.Category, taskTemplateNKey(entry.Category)); err != nil {
+			return err
+		}
+		var categoryID int64
+		if err := tx.QueryRow(`SELECT id FROM task_categories WHERE nkey=$1`, taskTemplateNKey(entry.Category)).Scan(&categoryID); err != nil {
+			return err
+		}
+		if _, err := insertTaskTemplate(tx, TaskTemplateInput{
+			Name: entry.Name, Description: entry.Description, Goal: entry.Goal, CategoryID: &categoryID,
+		}); err != nil && !errors.Is(err, ErrTaskTemplateNameConflict) {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // Fingerprints of unchanged automatic seeds shipped before the original-based branch.
 // The template CRUD API and user-edited rows remain available.
 var forkTaskTemplateBaselines = []struct {

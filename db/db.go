@@ -170,6 +170,9 @@ func Open(dsn string) (*DB, error) {
 		if err := d.removeUneditedForkTaskTemplates(); err != nil {
 			return fmt.Errorf("remove unedited fork task templates: %w", err)
 		}
+		if err := d.seedDefaultTaskTemplates(); err != nil {
+			return fmt.Errorf("seed default task templates: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}

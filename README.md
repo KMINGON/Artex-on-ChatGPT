@@ -19,7 +19,7 @@ API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. Chat
 | 실행·저장 | 취소된 도구 실행 방지, 부분 저장·대화 재개·Todo·Worker 결과 유실 보완 |
 | 그래프·도구 | 사실·자산·근거 연결의 원자적 저장, 취약점 등록 인자 처리와 최신 결과 조회 보완 |
 | 브라우저 | Chromium·Playwright 실행 환경 통일, 같은 세션에서 수동 인증, 스크린샷의 실제 이미지 전달 |
-| 설정·화면 | 한국어·영어, 작업 템플릿의 이름·고급값 저장, 자원 수 프리셋, 그래프 페이지 조회 |
+| 설정·화면 | 한국어·영어, 작업 템플릿의 이름·고급값 저장, 그래프 페이지 조회 |
 | 설치 | 현재 소스로 앱·웹을 빌드하는 Docker Compose와 PostgreSQL 구성 |
 
 의도 분할·우선순위·재검증·사실 기록·목표 판단은 원본 지침의 한국어 번역을 사용합니다. 별도의 검증 단계나 완료 심사 절차를 추가하지 않습니다. 실행 안정성 보완이 발견 수나 진단 속도의 우위를 뜻하지는 않습니다.
@@ -31,7 +31,7 @@ API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. Chat
 Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
 
 ```sh
-git clone --branch dev-origin https://github.com/KMINGON/Artex-on-ChatGPT.git
+git clone https://github.com/KMINGON/Artex-on-ChatGPT.git
 cd Artex-on-ChatGPT
 docker compose up -d
 ```

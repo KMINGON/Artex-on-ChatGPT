@@ -39,25 +39,9 @@ func insertForkTemplateFixture(t *testing.T, d *DB, entry forkTemplateFixture) *
 	}
 	return row
 }
-func TestFreshDatabaseDoesNotSeedTaskInstructions(t *testing.T) {
-	d, dsn := templateFixtureDB(t)
-	for i := 0; i < 2; i++ {
-		list, err := d.ListTaskTemplates()
-		if err != nil || len(list) != 0 {
-			t.Fatalf("fork templates seeded: %d %v", len(list), err)
-		}
-		if i == 0 {
-			next, err := Open(dsn)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer next.Close()
-			d = next
-		}
-	}
-}
 func TestRemoveUneditedForkTemplatesKeepsExistingTaskAndCategory(t *testing.T) {
 	d, _ := templateFixtureDB(t)
+	resetDefaultTaskTemplateSeed(t, d)
 	for _, entry := range forkTemplateFixtures(t) {
 		t.Run(entry.Revision+"/"+entry.Name, func(t *testing.T) {
 			if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, forkTaskTemplatesRemovedFlag); err != nil {
@@ -97,6 +81,7 @@ func TestRemoveUneditedForkTemplatesKeepsExistingTaskAndCategory(t *testing.T) {
 }
 func TestForkTemplateRemovalPreservesEveryUserEditedField(t *testing.T) {
 	d, _ := templateFixtureDB(t)
+	resetDefaultTaskTemplateSeed(t, d)
 	entry := forkTemplateFixtures(t)[0]
 	for _, edit := range []string{
 		"description=description||' edited'", "goal=goal||' edited'", "name='renamed',nkey='renamed'", "task_name='edited'", "task_name=NULL", "timeout_seconds=10", "timeout_seconds=NULL", "plan_heartbeat_seconds=1200", "seed_first_intent=true", "coverage_enabled=false", "category_id=NULL", "intercept_rules='[{\"pattern\":\"edited\"}]'::jsonb", "test_preset='legacy-user-preset'",
@@ -127,6 +112,7 @@ func TestForkTemplateRemovalPreservesEveryUserEditedField(t *testing.T) {
 }
 func TestForkTemplateRemovalRollsBackFailureAndNeedsSeedMarker(t *testing.T) {
 	d, _ := templateFixtureDB(t)
+	resetDefaultTaskTemplateSeed(t, d)
 	entries := forkTemplateFixtures(t)
 	first := insertForkTemplateFixture(t, d, entries[0])
 	second := insertForkTemplateFixture(t, d, entries[1])
