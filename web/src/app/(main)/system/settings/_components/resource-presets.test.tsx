@@ -20,10 +20,7 @@ const catalog: PresetCatalog = {
     { id: "medium", tier: 2, version: 1, workers: 5, tasks: 3, browsers: 4 },
     { id: "high", tier: 3, version: 1, workers: 10, tasks: 5, browsers: 8 },
   ],
-  tools: [
-    { kind: "mcp", key: "browser", min_tier: 1 },
-    { kind: "setting", key: "traffic_capture", min_tier: 2 },
-  ],
+  tools: [],
 };
 const settings = { resource_preset: "custom", workers: 3, browser_concurrency_limit: 4 } as Settings;
 it("applies the chosen server preset once and waits for the saved result", async () => {

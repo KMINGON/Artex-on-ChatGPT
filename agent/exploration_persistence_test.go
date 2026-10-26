@@ -29,29 +29,26 @@ func TestPlannerTriggerPreservesUnfinishedQuestionAtEndOfWorkerResult(t *testing
 	}
 }
 
-func TestRenderedExplorationDefaultsDoNotReintroducePrematureStopPolicies(t *testing.T) {
+func TestRenderedExplorationDefaultsFollowOriginalWorkflow(t *testing.T) {
 	previous := PromptOverride
 	PromptOverride = nil
 	t.Cleanup(func() { PromptOverride = previous })
 	planner := plannerSystem("남은 질문을 검증한다", "/data", "/data/tasks/1")
 	worker := workerSystem("http://proxy", "ca", "/data", "/data/tasks/1", "/data/tasks/1/i2")
-	for _, stale := range []string{
+	for _, original := range []string{
 		"같은 부정적 방향의 재검증은 최대 한 번",
-		"확장 영향은 별도 의도로 검증하세요",
 		"기본적으로 하나만 쓰고 detail에 합칠",
 		"같은 URL을 curl로 반복 요청하지 마세요",
-		"전제가 없어 막혔다면 같은 검증·상태 정리 의도를",
+		"done(정상 완료)",
+		"직렬 익스플로잇 체인은 단계별 배정",
 	} {
-		if strings.Contains(planner+worker, stale) {
-			t.Fatalf("rendered default retains a conflicting stop policy: %s", stale)
+		if !strings.Contains(planner+worker, original) {
+			t.Fatalf("rendered default lost original exploration guidance: %s", original)
 		}
 	}
-	if !strings.Contains(planner, "사전 삭제 보장") || !strings.Contains(worker, "정상 대조·재현성·입력·계정·상태 변화·오류 복구") {
-		t.Fatal("effective prompts lost user-permitted preparation or repeat validation guidance")
-	}
-	for role, prompt := range map[string]string{"planner": planner, "worker": worker} {
-		if !strings.Contains(prompt, "실제 활성 도구 목록") || !strings.Contains(prompt, "명시적") {
-			t.Fatalf("%s lost the existing tool and explicit-scope contract", role)
+	for _, removed := range []string{"새로 답할 질문의 가치로 우선순위", "같은 전제와 판단 기준을 공유하는 질문 하나", "DOM 실행·사용자 동작·브라우저 세션이 필요한 부분은 실제 브라우저로 검증", "브라우저 응답 관찰", "결과와 미검증 질문 확인 → 필요한 후속 의도 배정 → 목표 판단"} {
+		if strings.Contains(planner+worker, removed) {
+			t.Fatalf("rendered default retained additional exploration guidance: %s", removed)
 		}
 	}
 }

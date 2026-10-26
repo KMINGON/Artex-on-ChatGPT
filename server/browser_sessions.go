@@ -51,9 +51,6 @@ type browserSession struct {
 	bridge               *browserBridge
 	manager              *browserSessionManager
 	hasSlot              bool
-	observationEpoch     string // observation cursor fields are serialized by op
-	observationCursor    int64
-	observationDropped   int
 }
 
 type browserHumanWait struct {
@@ -290,7 +287,7 @@ func (m *browserSessionManager) acquire(ctx context.Context, key string, config 
 		s.release()
 		return nil, err
 	}
-	return &managedBrowserClient{client: client, session: s, ctx: ctx}, nil
+	return &managedBrowserClient{client: client, session: s}, nil
 }
 
 func browserScript(name string) string {
@@ -532,21 +529,13 @@ func (s *browserSession) view(ctx context.Context) browserSessionView {
 type managedBrowserClient struct {
 	client  *mcp.Client
 	session *browserSession
-	ctx     context.Context
 	once    sync.Once
 }
 
 func (c *managedBrowserClient) Close() error {
 	c.once.Do(func() {
 		_ = c.client.Close()
-		if c.ctx != nil {
-			c.session.op.Lock()
-			summary := c.session.collectObservations(c.ctx, 20)
-			c.session.op.Unlock()
-			if summary != nil {
-				agent.ReportHTTPObservationFlush(c.ctx, *summary)
-			}
-		}
+
 		c.session.release()
 	})
 	return nil
@@ -588,98 +577,10 @@ func (t *managedBrowserTool) Call(ctx context.Context, input json.RawMessage, tc
 		if err := t.session.ensure(ctx); err != nil {
 			return actool.Errorf(trMsg(err.Error())), nil
 		}
-		result, err := t.CoreTool.Call(ctx, input, tc)
-		if observation := t.session.collectObservations(ctx, 4); observation != nil {
-			if raw, encodeErr := json.Marshal(map[string]any{"browser_observations": observation}); encodeErr == nil {
-				result.Content = append(result.Content, actool.Text(string(raw)).Content...)
-			}
-		}
-		return result, err
+		return t.CoreTool.Call(ctx, input, tc)
 	}
 }
 
-type browserObservationSummary = agent.HTTPObservationSummary
-
-// collectObservations runs under op. A failed DB batch keeps its cursor so the
-// next tool retries the same source IDs, without repeating the browser action.
-func (s *browserSession) collectObservations(runCtx context.Context, maxPages int) *browserObservationSummary {
-	ctx := runCtx
-	if ctx.Err() != nil {
-		return nil
-	}
-	s.mu.Lock()
-	b := s.bridge
-	deleted := s.deleted
-	s.mu.Unlock()
-	if b == nil || deleted {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	var summary browserObservationSummary
-	for range maxPages {
-		var batch struct {
-			Epoch string `json:"epoch"`
-			Items []struct {
-				agent.HTTPObservation
-				Sequence int64 `json:"sequence"`
-			} `json:"items"`
-			Cursor  int64 `json:"cursor"`
-			HasMore bool  `json:"has_more"`
-			Dropped int   `json:"dropped"`
-		}
-		if err := b.call(ctx, map[string]any{"action": "observations", "after": s.observationCursor, "epoch": s.observationEpoch, "limit": 100}, &batch); err != nil {
-			if runCtx.Err() != nil {
-				return nil
-			}
-			summary.ReadFailed = true
-			break
-		}
-		if batch.Epoch == "" {
-			return nil
-		} // Older/custom bridges do not expose observations.
-		if batch.Epoch != s.observationEpoch {
-			s.observationEpoch = batch.Epoch
-			s.observationCursor = 0
-			s.observationDropped = 0
-		}
-		summary.Dropped += max(0, batch.Dropped-s.observationDropped)
-		s.observationDropped = batch.Dropped
-		summary.HasMore = batch.HasMore
-		observations := make([]agent.HTTPObservation, len(batch.Items))
-		for i, item := range batch.Items {
-			observations[i] = item.HTTPObservation
-			observations[i].SourceID = fmt.Sprintf("browser:%s:%s:%d", s.id, batch.Epoch, item.Sequence)
-		}
-		if len(observations) > 0 {
-			result := agent.ObserveHTTP(ctx, observations)
-			summary.Registered += result.Registered
-			summary.Skipped += result.Skipped
-			summary.Failed += result.Failed
-			summary.Limited = summary.Limited || result.Limited
-			if result.FactID > 0 {
-				summary.FactID = result.FactID
-			}
-			for _, id := range result.AssetIDs {
-				if len(summary.AssetIDs) < 20 {
-					summary.AssetIDs = append(summary.AssetIDs, id)
-				}
-			}
-			if result.Failed > 0 || ctx.Err() != nil {
-				summary.HasMore = true
-				break
-			}
-		}
-		s.observationCursor = batch.Cursor
-		if !batch.HasMore {
-			break
-		}
-	}
-	if summary.Registered+summary.Skipped+summary.Failed+summary.Dropped == 0 && !summary.HasMore && !summary.ReadFailed {
-		return nil
-	}
-	return &summary
-}
 func (s *browserSession) handoffTool() actool.CoreTool {
 	return actool.Build(actool.Spec{
 		Name:        "mcp__browser__browser_request_user",

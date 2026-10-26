@@ -53,7 +53,7 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 		note := ""
 		switch tool.Name() {
 		case "report_finding":
-			note = "\n기본적으로 보고서 에이전트가 보고서를 쓰기 전에 트래픽을 확인하고 연결합니다. 보고자는 evidence에 검증 명령, 핵심 출력, 이미 확보한 실제 트래픽 ID와 용도를 보존하여 보고서 에이전트가 실행 기록과 대조할 수 있게 하세요. 보고 연결만을 위해 새 패킷을 만들 필요는 없습니다. 검증 담당은 필요한 재현·대조 요청을 허용 범위에서 수행하고 그 증거를 인계하세요. 명시적인 즉시 연결도 지원합니다. traffic_refs 또는 evidence_hint_id로 검증한 참조를 제출할 수 있으며, 후자는 이 작업의 지정된 hint에서 구조화된 참조를 읽습니다. 하나라도 유효하지 않으면 이번 보고 전체가 실패합니다. TCP/패킷 없음의 경우 이 선택 인자들은 필요하지 않습니다. 반환된 finding_id와 finding_node_id는 각각 독립 레코드와 탐색 노드를 뜻합니다."
+			note = "\n기본적으로 보고서 에이전트가 보고서를 쓰기 전에 트래픽을 확인하고 연결합니다. 보고자는 evidence에 검증 명령, 핵심 출력, 이미 확보한 실제 트래픽 ID와 용도를 보존하여 보고서 에이전트가 실행 기록과 대조할 수 있게 하세요. 연결을 위해 패킷을 추가 조회할 필요는 없습니다. 명시적인 즉시 연결도 지원합니다. traffic_refs 또는 evidence_hint_id로 검증한 참조를 제출할 수 있으며, 후자는 이 작업의 지정된 hint에서 구조화된 참조를 읽습니다. 하나라도 유효하지 않으면 이번 보고 전체가 실패합니다. TCP/패킷 없음의 경우 이 선택 인자들은 필요하지 않습니다. 반환된 finding_id와 finding_node_id는 각각 독립 레코드와 탐색 노드를 뜻합니다."
 		case "add_hint", "add_task_hint":
 			note = "\n확인된 취약점을 인계할 때 해당 힌트의 traffic_refs에 검증한 트래픽의 ID, 용도, 설명, 순서를 보존하세요(단일 항목은 최상위, 일괄 항목은 해당 hints 요소에 지정). text에는 어떤 취약점을 증명하는지 설명하세요. 호출자는 기존 트래픽 참조를 버리고 텍스트만 인계해서는 안 됩니다. 검증하지 않은 후보는 증거로 전달할 수 없습니다."
 		case "get_finding_traffic", "bind_finding_traffic", "list_findings", "list_task_findings", "node_detail", "get_task_node_detail", "update_finding_report":
@@ -65,7 +65,7 @@ func findingWorkflowTools(agentKey string, tools []actool.CoreTool) ([]actool.Co
 	}
 	guidance := ""
 	if has["report_finding"] || has["add_task_hint"] || has["add_hint"] {
-		guidance = "\n\n**트래픽 증거 인계(선택 사항)**: 기본 자동 연결은 취약점 저장 후 보고서 작성 전에 보고서 에이전트가 수행합니다. 보고자는 evidence에 검증 명령, 핵심 출력, 이미 확보한 실제 트래픽 ID와 용도를 보존하고, 작업에서는 intent_id도 전달하여 보고서 에이전트가 추적할 수 있게 하세요. 보고 연결만을 위해 새 패킷을 만들 필요는 없습니다. 검증 담당은 필요한 재현·대조 요청을 허용 범위에서 수행하고 그 증거를 인계하세요. Auto / Planner가 대신 보고할 때도 실행자가 확보한 참조를 버리지 마세요. add_hint / add_task_hint의 traffic_refs로 인계할 수 있으며 report_finding의 traffic_refs / evidence_hint_id를 통한 명시적인 즉시 연결도 계속 지원합니다. TCP 또는 패킷이 없는 경우에도 정상 등록하며, ID를 추측하지 마세요. 기존 증거를 재사용하되 검증에 필요한 증거가 부족하면 허용 범위의 조회·재요청으로 보완하세요."
+		guidance = "\n\n**트래픽 증거 인계(선택 사항)**: 기본 자동 연결은 취약점 저장 후 보고서 작성 전에 보고서 에이전트가 수행합니다. 보고자는 evidence에 검증 명령, 핵심 출력, 이미 확보한 실제 트래픽 ID와 용도를 보존하고, 작업에서는 intent_id도 전달하여 보고서 에이전트가 추적할 수 있게 하세요. 연결을 위해 패킷을 추가 조회할 필요는 없습니다. Auto / Planner가 대신 보고할 때도 실행자가 확보한 참조를 버리지 마세요. add_hint / add_task_hint의 traffic_refs로 인계할 수 있으며 report_finding의 traffic_refs / evidence_hint_id를 통한 명시적인 즉시 연결도 계속 지원합니다. TCP 또는 패킷이 없는 경우에도 정상 등록하며, ID를 추측하거나 패킷 보충만을 위해 재탐색해서는 안 됩니다."
 		if has["add_task_hint"] && !has["add_hint"] {
 			guidance += "\n플랫폼 대화에 작업 컨텍스트가 없으면 report_finding을 직접 호출하지 마세요. add_task_hint로 해당 기존 작업에 인계하여 작업 에이전트가 등록하게 하고, list_task_findings로 결과를 확인하세요."
 		}

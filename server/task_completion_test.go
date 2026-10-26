@@ -4,16 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/norma/llm"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/norma/llm"
 )
 
 func TestReviewedCompletionDoesNotCancelANewGoal(t *testing.T) {
@@ -40,14 +39,14 @@ func TestReviewedCompletionDoesNotCancelANewGoal(t *testing.T) {
 	}
 	e := NewEngine(m)
 	run := e.execContextFor(t.Context(), task.ID)
-	won, err := m.CompleteReviewedTask(t.Context(), task.ID, func() { e.cancelExec(task.ID, agent.AbortGoalMet) })
+	won, err := m.CompleteTaskIfGoalsSettled(t.Context(), task.ID, false, func() { e.cancelExec(task.ID, agent.AbortGoalMet) })
 	if err != nil || won || run.Err() != nil || task.lifecycleSnapshot().Status == "done" {
 		t.Fatalf("new goal lost: won=%v err=%v cancelled=%v", won, err, run.Err())
 	}
 	if _, _, err := task.Store.ProveGoal(t.Context(), next, root, "fixture finished"); err != nil {
 		t.Fatal(err)
 	}
-	won, err = m.CompleteReviewedTask(t.Context(), task.ID, func() { e.cancelExec(task.ID, agent.AbortGoalMet) })
+	won, err = m.CompleteTaskIfGoalsSettled(t.Context(), task.ID, false, func() { e.cancelExec(task.ID, agent.AbortGoalMet) })
 	if err != nil || !won || run.Err() == nil || task.lifecycleSnapshot().Status != "done" {
 		t.Fatalf("completion not applied: won=%v err=%v", won, err)
 	}
@@ -92,330 +91,206 @@ func TestTimedCompletionRechecksNewWork(t *testing.T) {
 	}
 }
 
-func TestGoallessPendingTodoReachesPlanner(t *testing.T) {
+func TestOriginalPlannerCompletionPublishesGraphWithoutExtraReview(t *testing.T) {
 	m := stateGraphManager(t)
-	task, err := m.CreateTask("pending work", "", nil, 0, 0)
+	task, err := m.CreateTask("test input preserved", "verify observed result", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer m.DeleteTask(task.ID, DeleteTaskOptions{})
-	if _, err := task.Store.SavePlannerTodos(t.Context(), []db.PlannerTodo{{Content: "review remaining evidence", Status: "pending"}}, 0); err != nil {
-		t.Fatal(err)
-	}
-	called := make(chan struct{}, 1)
-	provider := &browserObservationProvider{step: func(req llm.CompletionRequest) []llm.StreamEvent {
-		select {
-		case called <- struct{}{}:
-		default:
-		}
-		return []llm.StreamEvent{{Type: llm.SETextDelta, Text: "fixture review"}, {Type: llm.SEMessageDelta, StopReason: "end_turn"}}
-	}}
-	planner := agent.NewPlanner(provider, "fixture", m.dir, nil, 0, 1)
-	e := NewEngine(m)
-	e.debounce = time.Millisecond
-	e.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return planner, nil })
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan struct{})
-	go func() { defer close(done); e.plannerLoop(ctx, task) }()
-	task.Notify()
-	select {
-	case <-called:
-	case <-time.After(5 * time.Second):
-		t.Error("pending Todo was silently left behind without a Planner review")
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("planner loop did not stop")
-	}
-	if task.lifecycleSnapshot().Status == "done" {
-		t.Fatal("pending work was marked complete")
-	}
-}
-
-func TestPlannerCompletionWaitsForActiveWorkerAndPublishesFinalState(t *testing.T) {
-	m := stateGraphManager(t)
-	task, err := m.CreateTask("completion keeps validation", "finish remaining validation", nil, 0, 0)
+	goal, err := task.Store.AddGoal(map[string]any{"text": "observed result"}, "goals")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.DeleteTask(task.ID, DeleteTaskOptions{})
-	goal, err := task.Store.AddGoal(map[string]any{"text": "validated objective"}, "human")
+	intent, err := task.Store.AddIntentWithParents(t.Context(), map[string]any{"summary": "independent validation"}, 5, nil, nil, "planner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent, err := task.Store.AddIntent(map[string]any{"summary": "negative control remains"}, 5, nil, "planner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := task.Store.SetIntentState(intent, "running"); err != nil {
-		t.Fatal(err)
-	}
-	root, _ := task.Store.OriginFactID()
-	var evidence, calls atomic.Int64
-	evidence.Store(root)
-	waiting := make(chan struct{}, 1)
-	provider := &browserObservationProvider{step: func(req llm.CompletionRequest) []llm.StreamEvent {
-		call := calls.Add(1)
-		if call == 1 || call == 3 {
-			input := fmt.Sprintf(`{"goal_id":%d,"evidence_id":%d,"reason":"verified evidence","completion_review":"remaining worker is outside this bounded goal"}`, goal, evidence.Load())
-			return []llm.StreamEvent{{Type: llm.SEToolUseStart, ToolID: fmt.Sprint(call), ToolName: "prove_goal"}, {Type: llm.SEToolInputJSON, Text: input}, {Type: llm.SEMessageDelta, StopReason: "tool_use"}}
-		}
-		if call == 2 {
-			select {
-			case waiting <- struct{}{}:
-			default:
-			}
-		}
-		return []llm.StreamEvent{{Type: llm.SETextDelta, Text: "현재 검증 결과를 반영합니다."}, {Type: llm.SEMessageDelta, StopReason: "end_turn"}}
-	}}
-	oldAugment, oldResolve := agent.ToolAugment, agent.ToolResolve
-	agent.ToolAugment, agent.ToolResolve = nil, nil
-	t.Cleanup(func() { agent.ToolAugment, agent.ToolResolve = oldAugment, oldResolve })
-	planner := agent.NewPlanner(provider, "fixture", m.dir, nil, 0, 4)
-	e := NewEngine(m)
-	e.debounce = time.Millisecond
-	e.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return planner, nil })
-	ctx, cancel := context.WithCancel(t.Context())
-	run := e.execContextFor(ctx, task.ID)
-	done := make(chan struct{})
-	go func() { defer close(done); e.plannerLoop(ctx, task) }()
-	defer func() {
-		cancel()
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("planner did not stop")
-		}
-	}()
-	task.Notify()
-	select {
-	case <-waiting:
-	case <-time.After(5 * time.Second):
-		t.Fatal("planner did not attempt the early proof")
-	}
-	s := &Server{m: m, engine: e}
-	assertAPI := func(finished bool, workState string) {
-		t.Helper()
-		list := httptest.NewRecorder()
-		s.listTasks(list, httptest.NewRequest(http.MethodGet, "/api/tasks", nil))
-		var body struct {
-			Tasks []TaskDTO `json:"tasks"`
-		}
-		if list.Code != http.StatusOK || json.Unmarshal(list.Body.Bytes(), &body) != nil {
-			t.Fatalf("task list failed: status=%d body=%s", list.Code, list.Body.String())
-		}
-		found := false
-		for _, dto := range body.Tasks {
-			if dto.ID != task.ID {
-				continue
-			}
-			found = true
-			wantMet, wantInFlight := 0, 1
-			if finished {
-				wantMet, wantInFlight = 1, 0
-			}
-			if (dto.Status == "done") != finished || dto.GoalsTotal != 1 || dto.GoalsMet != wantMet || dto.InFlight != wantInFlight {
-				t.Fatalf("published task state incorrect: %+v", dto)
-			}
-		}
-		if !found {
-			t.Fatal("task missing from list")
-		}
-		graph := httptest.NewRecorder()
-		s.explorationGraph(graph, httptest.NewRequest(http.MethodGet, "/api/exploration/graph?task="+task.ID, nil))
-		var graphBody struct {
-			Nodes []TaskNodeDTO `json:"nodes"`
-		}
-		if graph.Code != http.StatusOK || json.Unmarshal(graph.Body.Bytes(), &graphBody) != nil {
-			t.Fatalf("graph response failed: %s", graph.Body.String())
-		}
-		states := map[string]string{}
-		for _, node := range graphBody.Nodes {
-			states[node.ID] = node.State
-		}
-		wantGoal := "open"
-		if finished {
-			wantGoal = "met"
-		}
-		if states[strconv.FormatInt(goal, 10)] != wantGoal || states[strconv.FormatInt(intent, 10)] != workState {
-			t.Fatalf("published graph state incorrect: %+v", states)
-		}
-	}
-	if run.Err() != nil {
-		t.Fatal("early goal proof cancelled Worker execution")
-	}
-	assertAPI(false, "running")
-	fact, err := task.Store.AddFactWithIntent(t.Context(), map[string]any{"summary": "negative control completed"}, nil, "worker", intent)
+	fact, err := task.Store.AddFactWithIntent(t.Context(), map[string]any{"summary": "observed response", "detail": "fixture evidence"}, nil, "worker", intent)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := task.Store.SetIntentState(intent, "done"); err != nil {
 		t.Fatal(err)
 	}
-	evidence.Store(fact)
-	task.NotifyDone(intent)
+	if _, err := task.Store.SavePlannerTodos(t.Context(), []db.PlannerTodo{{Content: "unrelated saved note", Status: "pending"}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	oldAugment, oldResolve := agent.ToolAugment, agent.ToolResolve
+	agent.ToolAugment, agent.ToolResolve = nil, nil
+	t.Cleanup(func() { agent.ToolAugment, agent.ToolResolve = oldAugment, oldResolve })
+	calls := 0
+	provider := &browserObservationProvider{step: func(llm.CompletionRequest) []llm.StreamEvent {
+		calls++
+		if calls == 1 {
+			return []llm.StreamEvent{{Type: llm.SEToolUseStart, ToolID: "proof", ToolName: "prove_goal"}, {Type: llm.SEToolInputJSON, Text: fmt.Sprintf(`{"goal_id":%d,"evidence_id":%d,"reason":"verified evidence"}`, goal, fact)}, {Type: llm.SEMessageDelta, StopReason: "tool_use"}}
+		}
+		return []llm.StreamEvent{{Type: llm.SETextDelta, Text: "목표를 확인했습니다."}, {Type: llm.SEMessageDelta, StopReason: "end_turn"}}
+	}}
+	planner := agent.NewPlanner(provider, "fixture", m.dir, nil, 0, 4)
+	e := NewEngine(m)
+	e.debounce = time.Millisecond
+	e.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return planner, nil })
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	run := e.execContextFor(ctx, task.ID)
+	loopDone := make(chan struct{})
+	go func() { defer close(loopDone); e.plannerLoop(ctx, task) }()
+	defer func() {
+		cancel()
+		select {
+		case <-loopDone:
+		case <-time.After(5 * time.Second):
+			t.Error("planner did not stop")
+		}
+	}()
+	task.Notify()
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(time.Millisecond)
 	defer tick.Stop()
 	for task.lifecycleSnapshot().Status != "done" || run.Err() == nil {
 		select {
 		case <-deadline:
-			t.Fatalf("Worker result did not drive final completion; calls=%d", calls.Load())
+			t.Fatalf("completion blocked: status=%s", task.lifecycleSnapshot().Status)
 		case <-tick.C:
 		}
 	}
-	assertAPI(true, "done")
-}
-
-func TestGoallessPausedIntentDoesNotTriggerAutomaticPlanner(t *testing.T) {
-	m := stateGraphManager(t)
-	task, err := m.CreateTask("paused direct intent", "", nil, 0, 0)
+	// A result already in flight may arrive after completion; it remains readable.
+	late, err := task.Store.AddFactWithIntent(context.Background(), map[string]any{"summary": "late saved evidence"}, nil, "worker", intent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.DeleteTask(task.ID, DeleteTaskOptions{})
-	intent, err := task.Store.AddIntent(map[string]any{"summary": "wait for human resume"}, 5, nil, "human")
-	if err != nil {
-		t.Fatal(err)
+	s := &Server{m: m, engine: e}
+	recorder := httptest.NewRecorder()
+	s.listTasks(recorder, httptest.NewRequest(http.MethodGet, "/api/tasks", nil))
+	var listing struct {
+		Tasks []TaskDTO `json:"tasks"`
 	}
-	if err := task.Store.SetIntentState(intent, "paused"); err != nil {
-		t.Fatal(err)
+	if recorder.Code != http.StatusOK || json.Unmarshal(recorder.Body.Bytes(), &listing) != nil {
+		t.Fatalf("task API failed: %s", recorder.Body.String())
 	}
-	var calls atomic.Int64
-	provider := &browserObservationProvider{step: func(llm.CompletionRequest) []llm.StreamEvent {
-		calls.Add(1)
-		return []llm.StreamEvent{{Type: llm.SETextDelta, Text: "must not run"}, {Type: llm.SEMessageDelta, StopReason: "end_turn"}}
-	}}
-	planner := agent.NewPlanner(provider, "fixture", m.dir, nil, 0, 1)
-	e := NewEngine(m)
-	e.debounce = time.Millisecond
-	checked := make(chan struct{}, 1)
-	e.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) {
-		select {
-		case checked <- struct{}{}:
-		default:
+	found := false
+	for _, row := range listing.Tasks {
+		if row.ID == task.ID {
+			found = true
+			if row.Status != "done" || row.GoalsMet != 1 {
+				t.Fatalf("wrong completion DTO: %+v", row)
+			}
 		}
-		return planner, nil
-	})
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() { defer close(done); e.plannerLoop(ctx, task) }()
-	task.Notify()
-	select {
-	case <-checked:
-	case <-time.After(5 * time.Second):
-		t.Error("planner wake was not inspected")
 	}
-	// The next wake can only reach the resolver after this one has returned.
-	// This avoids cancelling early enough to hide an unwanted model call.
-	task.Notify()
-	select {
-	case <-checked:
-	case <-time.After(5 * time.Second):
-		t.Error("planner did not finish inspecting the paused work")
+	if !found {
+		t.Fatal("completed task absent from API")
 	}
-	if won, err := m.CompleteReviewedTask(t.Context(), task.ID, nil); err != nil || won {
-		t.Errorf("paused intent completed: won=%v err=%v", won, err)
+	graph := httptest.NewRecorder()
+	s.explorationGraph(graph, httptest.NewRequest(http.MethodGet, "/api/exploration/graph?task="+task.ID, nil))
+	var body struct {
+		Nodes []TaskNodeDTO `json:"nodes"`
 	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("planner loop did not stop")
+	if graph.Code != http.StatusOK || json.Unmarshal(graph.Body.Bytes(), &body) != nil {
+		t.Fatal("graph API failed")
 	}
-	node, err := task.Store.GetNode(intent)
-	if err != nil || node.State != "paused" || task.lifecycleSnapshot().Status == "done" || calls.Load() != 0 {
-		t.Fatalf("explicit pause was not preserved: node=%+v calls=%d err=%v", node, calls.Load(), err)
+	states := map[string]string{}
+	for _, node := range body.Nodes {
+		states[node.ID] = node.State
+	}
+	if states[strconv.FormatInt(goal, 10)] != "met" || states[strconv.FormatInt(late, 10)] != "confirmed" {
+		t.Fatalf("graph lost goal/late result: %+v", states)
+	}
+	description, goalText, err := task.Store.Root()
+	if err != nil || description != "test input preserved" || goalText != "verify observed result" {
+		t.Fatal("task input rewritten")
 	}
 }
 
-func TestLegacyMetGoalReopensBeforePlannerWithActiveWork(t *testing.T) {
+func TestTimedCompletionPreservesAbsoluteDeadlineWhilePausedOrQueued(t *testing.T) {
 	m := stateGraphManager(t)
-	for _, state := range []string{"running", "paused"} {
-		t.Run(state, func(t *testing.T) {
-			task, err := m.CreateTask("legacy completion", "review unfinished validation", nil, 0, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer m.DeleteTask(task.ID, DeleteTaskOptions{})
-			goal, err := task.Store.AddGoal(map[string]any{"text": "previously declared complete"}, "human")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := task.Store.SetNodeState(goal, "met"); err != nil {
-				t.Fatal(err)
-			}
-			intent, err := task.Store.AddIntent(map[string]any{"summary": "unfinished branch"}, 5, nil, "planner")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := task.Store.SetIntentState(intent, state); err != nil {
-				t.Fatal(err)
-			}
-			called := make(chan struct{}, 1)
-			provider := &browserObservationProvider{step: func(llm.CompletionRequest) []llm.StreamEvent {
-				select {
-				case called <- struct{}{}:
-				default:
+	for _, state := range []string{"paused", "queued"} {
+		for _, newGoal := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/new_goal=%v", state, newGoal), func(t *testing.T) {
+				task, err := m.CreateTask("absolute deadline", "verify completion", nil, 1, 0)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return []llm.StreamEvent{{Type: llm.SETextDelta, Text: "남은 결과를 기다립니다."}, {Type: llm.SEMessageDelta, StopReason: "end_turn"}}
-			}}
-			planner := agent.NewPlanner(provider, "fixture", m.dir, nil, 0, 1)
-			e := NewEngine(m)
-			e.debounce = time.Millisecond
-			e.SetAuthoritativeAgentResolver(func(*Task) (*agent.Planner, *agent.Worker) { return planner, nil })
-			ctx, cancel := context.WithCancel(t.Context())
-			run := e.execContextFor(ctx, task.ID)
-			done := make(chan struct{})
-			go func() { defer close(done); e.plannerLoop(ctx, task) }()
-			defer func() {
-				cancel()
-				select {
-				case <-done:
-				case <-time.After(5 * time.Second):
-					t.Error("planner loop did not stop")
+				defer m.DeleteTask(task.ID, DeleteTaskOptions{})
+				root, _ := task.Store.OriginFactID()
+				goal, err := task.Store.AddGoal(map[string]any{"text": "observed result"}, "human")
+				if err != nil {
+					t.Fatal(err)
 				}
-			}()
-			task.Notify()
-			select {
-			case <-called:
-			case <-time.After(5 * time.Second):
-				t.Fatal("legacy goal was left waiting for heartbeat instead of reviewed on this wake")
-			}
-			goalNode, err := task.Store.GetNode(goal)
-			if err != nil || goalNode.State != "open" {
-				t.Fatalf("Planner received a stale met goal: %+v err=%v", goalNode, err)
-			}
-			intentNode, err := task.Store.GetNode(intent)
-			if err != nil || intentNode.State != state || run.Err() != nil || task.lifecycleSnapshot().Status == "done" {
-				t.Fatalf("legacy review stopped/resumed work: %+v err=%v cancellation=%v", intentNode, err, run.Err())
-			}
-		})
+				if _, _, err := task.Store.ProveGoal(t.Context(), goal, root, "verified evidence"); err != nil {
+					t.Fatal(err)
+				}
+				if state == "paused" {
+					if _, err := m.pg.Exec(`UPDATE tasks SET paused=true WHERE id=$1`, task.ID); err != nil {
+						t.Fatal(err)
+					}
+					task.updateLifecycle(func(s *taskLifecycleState) { s.Paused = true })
+				} else {
+					if _, err := m.pg.Exec(`UPDATE tasks SET queued=true WHERE id=$1`, task.ID); err != nil {
+						t.Fatal(err)
+					}
+					task.updateLifecycle(func(s *taskLifecycleState) { s.Queued = true })
+				}
+				if won, err := m.CompleteTaskIfGoalsSettled(t.Context(), task.ID, false, nil); err != nil || won {
+					t.Fatalf("normal completion overwrote %s: %v %v", state, won, err)
+				}
+				expected := "done"
+				if newGoal {
+					if _, err := task.Store.AddGoal(map[string]any{"text": "new objective"}, "human"); err != nil {
+						t.Fatal(err)
+					}
+					expected = "timeout"
+				}
+				got, won, err := NewEngine(m).finishTimedTask(t.Context(), task, true)
+				if err != nil || !won || got != expected || task.lifecycleSnapshot().Status != expected {
+					t.Fatalf("absolute deadline: state=%s met=true got=%s want=%s won=%v err=%v", state, got, expected, won, err)
+				}
+			})
+		}
 	}
 }
 
-func TestDeadlineWithActiveIntentRemainsTimeout(t *testing.T) {
+func TestTimedFinalizationDoesNotOverwriteDeletionArchiveOrTerminalState(t *testing.T) {
 	m := stateGraphManager(t)
-	task, err := m.CreateTask("deadline with work", "unfinished verification", nil, 0, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer m.DeleteTask(task.ID, DeleteTaskOptions{})
-	goal, err := task.Store.AddGoal(map[string]any{"text": "legacy met goal"}, "human")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := task.Store.SetNodeState(goal, "met"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := task.Store.AddIntent(map[string]any{"summary": "still needs verification"}, 5, nil, "planner"); err != nil {
-		t.Fatal(err)
-	}
-	status, won, err := NewEngine(m).finishTimedTask(t.Context(), task, true)
-	if err != nil || !won || status != "timeout" || task.lifecycleSnapshot().Status != "timeout" {
-		t.Fatalf("deadline incorrectly extended or called done: status=%s won=%v err=%v", status, won, err)
+	for _, state := range []string{"deleted", "archiving", "terminal"} {
+		for _, met := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/met=%v", state, met), func(t *testing.T) {
+				task, err := m.CreateTask("deadline race", "verify result", nil, 1, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					_, _ = m.pg.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID)
+					_, _ = m.pg.Exec(`UPDATE tasks SET deleted_at=NULL WHERE id=$1`, task.ID)
+					_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
+				}()
+				root, _ := task.Store.OriginFactID()
+				goal, err := task.Store.AddGoal(map[string]any{"text": "observed result"}, "human")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := task.Store.ProveGoal(t.Context(), goal, root, "verified evidence"); err != nil {
+					t.Fatal(err)
+				}
+				switch state {
+				case "deleted":
+					_, err = m.pg.Exec(`UPDATE tasks SET deleted_at=now() WHERE id=$1`, task.ID)
+				case "archiving":
+					_, err = m.pg.Exec(`INSERT INTO task_archives(task_id,state) VALUES($1,'archiving')`, task.ID)
+				case "terminal":
+					err = m.SetTaskStatus(task.ID, "failed")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				e := NewEngine(m)
+				run := e.execContextFor(t.Context(), task.ID)
+				before := m.TaskStatus(task.ID)
+				_, won, err := e.finishTimedTask(t.Context(), task, met)
+				if err != nil || won || m.TaskStatus(task.ID) != before || run.Err() != nil {
+					t.Fatalf("deadline overwrote %s: won=%v err=%v status=%s", state, won, err, m.TaskStatus(task.ID))
+				}
+			})
+		}
 	}
 }

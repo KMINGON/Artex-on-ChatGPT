@@ -149,6 +149,9 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 					body = previous.Prompts[key]
 					wantPrompts[key], updates = body, 0
 				}
+				if body == wantPrompts[key] {
+					updates = 0
+				}
 				version, err := pg.SavePrompt(a.ID, body, "fixture", "test")
 				if err != nil {
 					t.Fatal(err)
@@ -192,7 +195,7 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 					description = baseline.Description
 				}
 				for path, value := range baseline.SchemaDescriptions {
-					if mode != "current" {
+					if mode != "current" && explorationDescriptionField(schema, path) != nil {
 						explorationDescriptionField(schema, path)["description"] = value
 					}
 				}
@@ -217,6 +220,9 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 				if mode == "custom" {
 					description += " 사용자 도구 설명"
 					for path := range baseline.SchemaDescriptions {
+						if explorationDescriptionField(schema, path) == nil {
+							continue
+						}
 						explorationDescriptionField(schema, path)["description"] = "사용자 필드 설명"
 					}
 				}
@@ -236,6 +242,9 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 				if mode != "custom" {
 					wantDescriptions[key] = defaults[key].Desc
 					for path := range baseline.SchemaDescriptions {
+						if explorationDescriptionField(defaults[key].Schema, path) == nil {
+							continue
+						}
 						explorationDescriptionField(schema, path)["description"] = explorationDescriptionField(defaults[key].Schema, path)["description"]
 					}
 					if key == "report_finding" {

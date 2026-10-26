@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
@@ -135,7 +134,7 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 // settleWrapUpPrompt is injected by the SDK settlement phase when a worker hits its
 // turn/time budget: stop probing, write back what was found, then end with a
 // plain-text one-liner (which becomes this run's displayed result).
-const settleWrapUpPrompt = "이번 실행이 예산 소진으로 곧 종료됩니다. 새 명령이나 탐지는 시작하지 말고 이미 얻은 결과를 보존하세요. (1) 미등록 자산은 insert_assets, 실제 결론과 사실은 record_fact, 확인된 취약점은 report_finding으로 기록하세요. (2) 아직 검증하지 못한 질문, 마지막 진행 지점, 재사용할 근거·파일, 실패 원인과 다음 검증 방법도 fact의 summary/detail에 기록하세요. 예산 소진은 검증 완료나 부정적 결론이 아닙니다. (3) 마지막 순수 텍스트 결과에는 확인한 범위와 기록한 근거 ID, 남은 검증과 재개 조건을 빠짐없이 간결하게 요약하세요. 한 문장에 맞추려고 남은 질문을 생략하지 마세요."
+const settleWrapUpPrompt = "이번 실행이 예산 소진으로 곧 종료됩니다. 더 이상 어떤 명령이나 탐지도 실행하지 마십시오. 다음 순서대로 처리하십시오. (1) 위에서 이미 식별했지만 아직 기록하지 않은 내용을 하나씩 기록합니다. 새 자산은 insert_assets, 탐색 결론과 사실은 record_fact, 확인된 취약점은 report_finding 으로 기록합니다. (2) **맨 마지막에 한 문장짜리 순수 텍스트로만** 무엇을 했고 어떤 핵심 결론을 얻었는지 한국어로 요약합니다. 이 한 문장이 이번 실행의 결과로 사용자에게 표시되므로 반드시 출력해야 합니다."
 
 func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int, extra ...actool.CoreTool) *Worker {
 	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
@@ -218,20 +217,20 @@ func proxyEnv(proxyAddr, caCert string) []string {
 // prompt, seeded into agent_prompts. The trafficTool block and the 中间产物输出规约
 // are NOT here — they are code-owned and appended by workerSystem after rendering
 // (段 [B]/[C]), so editing the DB body can never drop them.
-const workerDefaultTmpl = `당신은 사이버 보안 플랫폼의 허가된 모의 침투 테스트 시스템에서 "실행자"(work agent) 역할을 맡습니다. 【의도 하나】를 할당받으며 역할은 **해당 검증 질문을 깊게 확인하거나 사용자가 요구한 독립 산출물을 완성하고, 실제 결과와 남은 질문을 지식 그래프에 기록한 뒤 반환하는 것**입니다. 전체 범위의 배정은 Planner가 담당합니다.
+const workerDefaultTmpl = `당신은 사이버 보안 플랫폼의 허가된 모의 침투 테스트 시스템에서 "실행자"(work agent) 역할을 맡습니다. 【의도 하나】(탐색 방향 한 문장)를 할당받으며 유일한 역할은 **이 의도를 완료하고 발견을 지식 그래프에 기록한 뒤 멈추고 반환하는 것**입니다.
 
 **반드시 지킬 경계**:
-1. **할당받은 질문 하나를 끝까지 확인하세요**. 진위·재현성·영향을 판단하는 데 필요한 정상 대조·변형·반례는 같은 실행에서 이어가세요. finding 하나로 남은 질문까지 완료했다고 보지 마세요. 답이 입증된 뒤 모든 화면·계정 변형을 의무적으로 덧붙이지 말고, 별개의 가치 있는 질문은 근거와 함께 Planner에게 인계하세요. 기존 HTTP·정적 코드·그래프 근거를 재사용하고, 로컬 문자열 검색·파일 열람은 실행 코드 대신 Grep·Read를 사용하세요. DOM 실행·사용자 동작·브라우저 세션이 필요한 부분은 실제 브라우저로 검증하세요.
-2. 첫 실패로 충분히 탐색했다고 판단하지 마세요. 대상의 HTTP 4xx/5xx·필터·오류 본문은 검증 결과입니다. 본문의 거부 문구를 도구 차단으로 해석하지 마세요. 플랫폼 차단은 도구가 실행 전에 반환한 명시적 거부·가로채기 결과와 그 사유로 구분하세요. fact에도 실패의 출처와 조건을 적고 방향 전체의 금지로 확대하지 마세요. 명시적 사용자·플랫폼 차단은 지키면서 허용된 다른 입력·계정·상태·경로를 충분히 검증하세요. 정상 대조·재현·일시 오류 복구에 필요한 반복도 검증입니다.
-3. 시스템 프롬프트 상단의 【작업 제약】을 따르세요. 허용된 검증에 정상 UI·사전 삭제 보장·별도 승인을 새 조건으로 붙이지 마세요. 명시적으로 허용된 검증과 금지된 정리를 한 호출에 묶지 마세요. 정리만 불가능하면 그 상태를 기록·인계하고 허용된 검증 질문은 유지하세요. 실제 차단된 행위를 숨기거나 다른 도구로 우회하지 마세요.
+1. **할당받은 의도 하나만 수행하세요**. **이 의도를 탐색하다가 범위 밖의 더 조사할 만한 단서를 발견하면**(오류에 노출된 경로, 다른 자산과 연계될 수 있는 지점, 다른 익스플로잇 체인 진입점 의심), **fact의 summary에 한 문장으로 적어 계획자에게 전달하세요**.
+2. 처음 막혔다고(payload 필터링 / 404 / 주입 출력 없음) 충분히 탐색한 것은 아닙니다. 이 의도의 우회 수단을 모두 확인한 뒤 결론을 내리세요.
+3. 허가된 범위에서만 작업하세요. 시스템 프롬프트 상단에 【작업 제약】이 있으면 최우선 경계입니다. 명령/탐색을 실행하기 전에 위반 여부를 확인하고, 위반하면 할당 의도에 포함되어 있어도 실행하지 마세요.
 
 **발견할 때마다 바로 기록하세요**(그래프에 써야 유효하며 머릿속이나 텍스트만으로는 부족합니다. 결과를 얻으면 즉시 기록하고 마지막까지 쌓아 두어 단계 예산 소진으로 잃지 마세요). 세 가지 기록 방식을 구분하세요:
 - **새 자산/리소스 → insert_assets(자산 그래프)**: 하위 도메인 / service / endpoint / 특징 / 자격 증명 등 자산 【자체】를 기록합니다. **자산만 등록하고 탐색 결론/판단은 record_fact에 기록하세요.**
-- **탐색 결론/사실 → record_fact(탐색 그래프, intent_id 전달)**: 모든 결론/사실을 기록합니다. 같은 결론을 뒷받침하는 관찰은 summary와 detail에 모으되, 사실 개수 제한 때문에 새로운 근거·반례·미완료 질문의 저장을 미루거나 생략하지 마세요. 이미 기록한 결론 뒤에 검증 범위나 근거가 추가되면 그 차이와 기존 근거 ID를 명시해 기록하세요. 단순 재서술과 실제 재현·정상 대조 결과를 구분하세요. **실제로 본 내용만 기록**하세요. evidence(한 줄: 명령+가장 잘 입증하는 출력 한두 줄, 간결하게 작성하며 상세는 detail)를 제공하고 confidence(observed=직접 관찰 / inferred=현상에서 추론)를 표시하세요.
+- **탐색 결론/사실 → record_fact(탐색 그래프, intent_id 전달)**: 모든 결론/사실을 기록합니다. **여러 관찰을 【사실 하나】로 종합**하세요(summary 한 문장 + 실제 실행 과정에 근거해 요약을 확장한 detail). 속성마다 하나씩 만들지 마세요. 보통 의도 하나는 사실 하나이며 지나치게 나누면 그래프가 계속 커집니다. **기본적으로 하나만 쓰고 detail에 합칠 수 있는 내용은 모두 합치세요**. 실제로 【서로 완전히 독립적이며 합칠 수 없는】 결론일 때만 facts 배열로 나누세요. 이는 드문 예외입니다. **새 내용만 기록**하고 기존 사실을 표현만 바꿔 반복하지 마세요(기존 결론 재확인뿐이면 추가 기록 불필요). **실제로 본 내용만 기록**하세요. evidence(한 줄: 명령+가장 잘 입증하는 출력 한두 줄, 간결하게 작성하며 상세는 detail)를 제공하고 confidence(observed=직접 관찰 / inferred=현상에서 추론)를 표시하세요.
 - **취약점 확인 → report_finding(탐색 그래프, PoC 포함, intent_id 전달)**: **이번 실행에서 실제로 유발하고 재현 가능한 증거(요청/응답 또는 명령 출력)를 확보한 경우에만 사용**하세요. "버전/특징이 CVE와 일치", "인자가 주입 가능해 보임", "외부 취약점 DB/변경 기록/코드 diff에서 추론"을 확인된 취약점으로 취급하지 마세요. CVE 조회나 패치 버전 비교로 실제 유발을 대신하지 마세요. 유발할 수 없지만 의심스럽다면 record_fact로 inferred 사실(의심 지점+유발하지 못한 이유)을 기록하여 계획자에게 전달하고 억지로 finding으로 기록하지 마세요.
 
 
-반환할 때 답한 질문과 근거 ID, 아직 답하지 못한 원래 질문·이유·재개 조건을 구분하세요. 다른 질문의 결과로 미검증 질문을 대신하지 마세요. 재사용할 스크립트는 import만으로 생성·변경이 실행되지 않게 하고, 기존 계정·증거 파일을 새 실행으로 덮어쓰지 마세요.`
+이 의도를 완료하면 무엇을 했고 어떤 사실을 기록했는지 한 문장으로 요약하세요.`
 
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -242,7 +241,7 @@ func workerTrafficBlock(recording bool) string {
 	if !recording {
 		return ""
 	}
-	return "\n\n**트래픽 도구**:\n- traffic_search / traffic_get / traffic_blob: 응답을 다시 확인하고 방문했던 리소스를 찾습니다. **이미 받은 응답은 트래픽에서 재사용하세요. 정상 대조·재현성·입력·계정·상태 변화·오류 복구 검증에 필요한 새 요청은 같은 URL이어도 수행하세요**. traffic_search는 **host를 반드시 지정**해야 하며 기본적으로 아주 간결한 인덱스 3개만 반환합니다(id/method/url/status/resp_len, 응답 본문 없음). 더 필요하면 limit을 명시적으로 늘리세요. body_contains로 요청/응답 본문을 검색할 수 있습니다(최소 3자, 부분 문자열과 중국어 지원. 예: 비밀번호/키/오류/내부망 주소). 원문은 traffic_get(id)로 확인하며 매우 큰 본문은 @blob sha256:<hash>로 표시됩니다. traffic_blob(hash)로 전체 내용을 나누어 조회하세요."
+	return "\n\n**트래픽 도구**:\n- traffic_search / traffic_get / traffic_blob: 응답을 다시 확인하고 방문했던 리소스를 찾습니다. **트래픽을 먼저 조회하고 같은 URL을 curl로 반복 요청하지 마세요**. traffic_search는 **host를 반드시 지정**해야 하며 기본적으로 아주 간결한 인덱스 3개만 반환합니다(id/method/url/status/resp_len, 응답 본문 없음). 더 필요하면 limit을 명시적으로 늘리세요. body_contains로 요청/응답 본문을 검색할 수 있습니다(최소 3자, 부분 문자열과 중국어 지원. 예: 비밀번호/키/오류/내부망 주소). 원문은 traffic_get(id)로 확인하며 매우 큰 본문은 @blob sha256:<hash>로 표시됩니다. traffic_blob(hash)로 전체 내용을 나누어 조회하세요."
 }
 
 // artifactSpec is 段 [C]: the code-owned, non-editable tail appended to every
@@ -286,7 +285,7 @@ func workerSystem(proxyAddr, caCert, dataDir, taskRoot, runDir string) string {
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(taskRoot, runDir) + followUpWorkerInstructions + findingReportContract + langDirective(resolveOutputLang())
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(taskRoot, runDir) + langDirective(resolveOutputLang())
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -310,7 +309,7 @@ func intentAssetIDs(intent *db.Node) []int64 {
 }
 
 func renderIntentTask(intent *db.Node) string {
-	return fmt.Sprintf("\n\n【할당된 의도(이 의도를 수행하고 관찰·자산·확인된 결함을 해당 도구로 기록한 뒤 반환)】: \n%s\n의도 id: %d(record_fact / report_finding으로 기록할 때 전달)", string(intent.Payload), intent.ID)
+	return fmt.Sprintf("\n\n【할당된 의도(이번의 유일한 작업: 이 의도만 수행하고 사실만 생성하며 완료 후 즉시 중지)】: \n%s\n의도 id: %d(record_fact / report_finding으로 기록할 때 전달)", string(intent.Payload), intent.ID)
 }
 
 // renderWorkerGraphOverview folds the global situational snapshot into the worker's
@@ -366,48 +365,13 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	tsx.SetOwnerNode(intent.ID)         // assets this worker discovers anchor to its intent → visible to the task
 	tsx.SetEnrich(enr)                  // async DNS/HTTP auto-completion for assets this worker writes
 	tsx.SetNotifyFinding(notifyFinding) // report_finding 落库时当场唤醒 planner，带上「哪个意图+finding」
-	var observedAssets, observationFact atomic.Int64
-	writeCounts := func() WriteCounts {
-		counts := tsx.Writes()
-		counts.ObservedAssets = int(observedAssets.Load())
-		if observationFact.Load() > 0 {
-			counts.ObservationFacts = 1
-		}
-		return counts
-	}
 	// base = built-in worker tools ∪ host tools (traffic) ∪ default tools (incl. Bash);
 	// then augment with the agent's visible skills/MCP. During the SDK settlement
 	// phase, Bash is hidden via Settlement.DisabledTools (no local gating needed).
 	base := append(tsx.WorkerTools(), w.extraTools...)
-	// 정적 파일 검색은 셸 실행 없이 Grep로 수행한다. 편집은 Edit를 유지한다.
-	base = append(base, defaultToolsExcept("MultiEdit", "Glob")...)
+	// 원본과 같은 도구 구성: 파일 검색은 Bash의 grep/find, 편집은 Edit를 사용한다.
+	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
-	ctx = WithHTTPObservationFlushReporter(ctx, func(summary HTTPObservationSummary) {
-		if emit == nil || (summary.Failed == 0 && !summary.ReadFailed && summary.Dropped == 0 && !summary.Limited && !summary.HasMore) {
-			return
-		}
-		raw, _ := json.Marshal(summary)
-		id := intent.ID
-		emit(db.Activity{Kind: "observation", NodeID: &id, Worker: name, Summary: "브라우저 종료 시 HTTP 관찰 미저장·생략: " + string(raw)})
-	})
-	if as != nil && taskID > 0 {
-		ctx = WithHTTPObserver(ctx, func(observeCtx context.Context, observations []HTTPObservation) HTTPObservationResult {
-			result, err := as.RecordHTTPObservations(observeCtx, taskID, ts.ID(), intent.ID, observations)
-			if err != nil {
-				return HTTPObservationResult{Failed: len(observations)}
-			}
-			observedAssets.Add(int64(result.Registered))
-			if result.FactID > 0 {
-				observationFact.Store(result.FactID)
-			}
-			if emit != nil && (result.Registered > 0 || result.Limited) {
-				raw, _ := json.Marshal(result)
-				id := intent.ID
-				emit(db.Activity{Kind: "observation", NodeID: &id, Worker: name, Summary: "HTTP 관찰 등록 결과: " + string(raw)})
-			}
-			return result
-		})
-	}
 	tools, def, cleanup := AugmentTools(ctx, "worker", base)
 	var cleanupOnce sync.Once
 	releaseTools := func() { cleanupOnce.Do(cleanup) }
@@ -426,7 +390,6 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
 	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, filepath.Dir(runDir), runDir)
-	sysBody += workerRuntimeTools()
 	if w.wantConstraints() {
 		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
@@ -436,7 +399,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			assets, err := as.PrepareIntentAssets(ctx, taskID, explorationID(ts), intent.ID, ids, coverageEnabled)
 			if err != nil {
-				return harness.ReasonStorageError, writeCounts(), fmt.Errorf("Worker 시작 자산 준비 실패: %w", err)
+				return harness.ReasonStorageError, tsx.Writes(), fmt.Errorf("Worker 시작 자산 준비 실패: %w", err)
 			}
 			if len(assets) > 0 {
 				if b, err := json.Marshal(assets); err == nil {
@@ -569,5 +532,5 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
 	_, reason, err := captureRunSessionFinalized(ctx, s, input, emitWrap, s.Close)
 	releaseTools()
-	return reason, writeCounts(), err
+	return reason, tsx.Writes(), err
 }

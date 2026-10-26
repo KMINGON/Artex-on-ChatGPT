@@ -55,7 +55,10 @@ func TestExplorationDefaultsRecognizeReviewedBaseline(t *testing.T) {
 func explorationDescriptionField(schema map[string]any, path string) map[string]any {
 	parts := strings.Split(path, "/")
 	for _, part := range parts[:len(parts)-1] {
-		schema = schema[part].(map[string]any)
+		schema, _ = schema[part].(map[string]any)
+		if schema == nil {
+			return nil
+		}
 	}
 	return schema
 }
@@ -116,6 +119,9 @@ func TestExplorationDefaultsUpgradePreservesEditsAndRollback(t *testing.T) {
 					if body == "" {
 						t.Fatal("missing pre-localization prompt")
 					}
+				}
+				if body == wantPrompts[key] {
+					updates = 0
 				}
 				version, err := pg.SavePrompt(a.ID, body, "fixture", "test")
 				if err != nil {

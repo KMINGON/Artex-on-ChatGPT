@@ -224,7 +224,6 @@ type Manager struct {
 	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 
-	resourceSkillDir   string     // initialized by Server before accepting requests
 	resourceSettingsMu sync.Mutex // serializes resource changes with task execution snapshots
 	companyMu          sync.Mutex // serializes task/company-scope commits with live handle registration
 	// taskStateMu preserves commit order between PostgreSQL lifecycle writes and

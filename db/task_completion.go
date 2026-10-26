@@ -3,17 +3,27 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 )
 
-// CompleteReviewedTask is the final compare-and-set boundary between a Planner's
-// review and stopping execution. Graph/Todo writers take the same task row lock.
-func (d *DB) CompleteReviewedTask(ctx context.Context, taskID int64) (bool, error) {
+// CompleteTaskIfGoalsSettled preserves the original goal-based completion rule.
+// The task lock prevents completion from overwriting concurrent lifecycle changes.
+// requireIdle is used by manual/goalless work, which finishes when its queue drains.
+func (d *DB) CompleteTaskIfGoalsSettled(ctx context.Context, taskID int64, requireIdle bool) (bool, error) {
+	_, won, err := d.finishTask(ctx, taskID, requireIdle, false, true)
+	return won, err
+}
+
+// FinishTimedTask keeps the original absolute deadline: pause/queue does not
+// extend it. The final goal decision and task status commit under one row lock.
+func (d *DB) FinishTimedTask(ctx context.Context, taskID int64, met bool) (string, bool, error) {
+	return d.finishTask(ctx, taskID, false, true, met)
+}
+
+func (d *DB) finishTask(ctx context.Context, taskID int64, requireIdle, deadlineReached, met bool) (string, bool, error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 	defer tx.Rollback()
 	var explorationID int64
@@ -22,118 +32,46 @@ func (d *DB) CompleteReviewedTask(ctx context.Context, taskID int64) (bool, erro
 	var deleted sql.NullTime
 	if err := tx.QueryRowContext(ctx, `SELECT exploration_id,status,paused,queued,deleted_at FROM tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&explorationID, &status, &paused, &queued, &deleted); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
+			return "", false, nil
 		}
-		return false, err
+		return "", false, err
 	}
-	if IsTerminal(status) || paused || queued || deleted.Valid {
-		return false, nil
+	if IsTerminal(status) || deleted.Valid || (!deadlineReached && (paused || queued)) {
+		return "", false, nil
 	}
 	var archiving bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_archives WHERE task_id=$1 AND state<>$2)`, taskID, ArchiveFailed).Scan(&archiving); err != nil {
-		return false, err
+		return "", false, err
 	}
 	if archiving {
-		return false, nil
+		return "", false, nil
 	}
 	var openGoals int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state<>'met'`, explorationID).Scan(&openGoals); err != nil {
-		return false, err
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state='open'`, explorationID).Scan(&openGoals); err != nil {
+		return "", false, err
 	}
-	if openGoals > 0 {
-		return false, nil
-	}
-	current, err := pendingGoalWorkTx(ctx, tx, explorationID)
-	if err != nil {
-		return false, err
-	}
-	// Parse timestamps in Go so malformed legacy payloads produce an explicit
-	// failure rather than choosing an arbitrary review via a string sort.
-	rows, err := tx.QueryContext(ctx, `SELECT id,payload->'completion_review' FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND payload ? 'completion_review'`, explorationID)
-	if err != nil {
-		return false, err
-	}
-	var reviewed GoalCompletionReview
-	var reviewGoal int64
-	for rows.Next() {
-		var id int64
-		var raw []byte
-		if err := rows.Scan(&id, &raw); err != nil {
-			rows.Close()
-			return false, err
+	targetStatus := "done"
+	if deadlineReached {
+		if !met || openGoals > 0 {
+			targetStatus = "timeout"
 		}
-		var candidate GoalCompletionReview
-		if err := json.Unmarshal(raw, &candidate); err != nil {
-			rows.Close()
-			return false, fmt.Errorf("목표 완료 결산을 읽지 못했습니다: %w", err)
+	} else if openGoals > 0 {
+		return "", false, nil
+	}
+	if requireIdle {
+		var active bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running','paused'))`, explorationID).Scan(&active); err != nil {
+			return "", false, err
 		}
-		if candidate.ReviewedAt.IsZero() {
-			rows.Close()
-			return false, errors.New("목표 완료 결산의 검토 시각이 없습니다")
-		}
-		if reviewGoal == 0 || candidate.ReviewedAt.After(reviewed.ReviewedAt) || (candidate.ReviewedAt.Equal(reviewed.ReviewedAt) && id > reviewGoal) {
-			reviewed, reviewGoal = candidate, id
+		if active {
+			return "", false, nil
 		}
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return false, err
-	}
-	// A narrative review is never permission to cancel queued/running/paused
-	// intent execution. This also protects pre-upgrade reviews that included it.
-	if len(current.ActiveIntentIDs) > 0 || (reviewGoal != 0 && completionReviewHasNewWork(reviewed, current)) {
-		if reviewGoal == 0 {
-			// Reopen one legacy met goal so the same wake can review the unfinished
-			// work. A truly goalless task keeps its direct-worker execution path.
-			err := tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state='met' ORDER BY id DESC LIMIT 1`, explorationID).Scan(&reviewGoal)
-			if errors.Is(err, sql.ErrNoRows) {
-				return false, nil
-			}
-			if err != nil {
-				return false, err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE exploration_nodes SET state='open',blocked_reason=NULL,content_version=content_version+1 WHERE id=$1 AND exploration_id=$2`, reviewGoal, explorationID); err != nil {
-			return false, err
-		}
-		if err := tx.Commit(); err != nil {
-			return false, err
-		}
-		return false, nil
-	}
-	if reviewGoal == 0 && len(current.PendingTodoIndexes) > 0 {
-		return false, nil
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status='done',completed_at=COALESCE(completed_at,now()),updated_at=now() WHERE id=$1`, taskID); err != nil {
-		return false, err
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status=$2,completed_at=COALESCE(completed_at,now()),updated_at=now() WHERE id=$1`, taskID, targetStatus); err != nil {
+		return "", false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return "", false, err
 	}
-	return true, nil
-}
-
-// Live intents are handled unconditionally before this evidence/Todo check.
-func completionReviewHasNewWork(reviewed, current GoalCompletionReview) bool {
-	if current.LatestResultNodeID != nil && *current.LatestResultNodeID > 0 {
-		if reviewed.LatestResultNodeID == nil || *current.LatestResultNodeID > *reviewed.LatestResultNodeID {
-			return true
-		}
-	}
-	if len(current.PendingTodoIndexes) > 0 {
-		if reviewed.PlannerTodoRevision != current.PlannerTodoRevision || reviewed.PlannerTodosSHA256 != current.PlannerTodosSHA256 {
-			return true
-		}
-		pending := make(map[int]bool, len(reviewed.PendingTodoIndexes))
-		for _, index := range reviewed.PendingTodoIndexes {
-			pending[index] = true
-		}
-		for _, index := range current.PendingTodoIndexes {
-			if !pending[index] {
-				return true
-			}
-		}
-	}
-	return false
+	return targetStatus, true, nil
 }

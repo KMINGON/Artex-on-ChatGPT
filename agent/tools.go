@@ -12,17 +12,17 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-// compactIntents retains scheduling metadata, direction, and lineage so the
-// planner can compare queued work without fetching every node's full payload.
-// parentsOf/yieldsOf come from the exploration edges in graph_overview and link
-// upstream evidence to the facts/findings each intent produced.
+// compactIntents distills intents to {id, summary, state, asset_ids, parents,
+// yields} so the planner sees both the direction and its LINEAGE — parents (the
+// upstream nodes it derived from: facts/intents/findings) and yields (the facts/
+// findings it produced) — without pulling full payloads. parentsOf/yieldsOf are
+// built from the exploration edges in graph_overview.
 func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[string]any {
 	out := make([]map[string]any, 0, len(ns))
 	for _, n := range ns {
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
-		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State,
-			"priority": n.Priority, "created_at": n.CreatedAt}
+		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true
@@ -141,24 +141,18 @@ type EnrichTrigger interface {
 // findings under "facts" (record_fact → Facts, insert_assets → Assets,
 // report_finding → Findings; each element of a batch counts once).
 type WriteCounts struct {
-	Facts            int
-	Assets           int
-	Findings         int
-	ObservedAssets   int
-	ObservationFacts int
+	Facts    int
+	Assets   int
+	Findings int
 }
 
-// Total counts explicit result writes. Automatically recorded HTTP observations
-// do not replace the worker's responsibility to record a conclusion/evidence.
+// Total is every node persisted this run, regardless of kind — the
+// "explored but persisted nothing" signal (Total == 0).
 func (w WriteCounts) Total() int { return w.Facts + w.Assets + w.Findings }
 
 // String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0".
 func (w WriteCounts) String() string {
-	text := fmt.Sprintf("사실 %d 자산 %d 취약점 %d", w.Facts, w.Assets, w.Findings)
-	if w.ObservedAssets > 0 || w.ObservationFacts > 0 {
-		text += fmt.Sprintf(" / 자동 HTTP 관찰: 자산 %d, 관찰 사실 %d", w.ObservedAssets, w.ObservationFacts)
-	}
-	return text
+	return fmt.Sprintf("사실 %d 자산 %d 취약점 %d", w.Facts, w.Assets, w.Findings)
 }
 
 // Writes reports what this run wrote back, split by node kind (so the engine can
@@ -1109,11 +1103,11 @@ func (t *ToolSet) registerOneIntentContext(ctx context.Context, it intentItem) (
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 각 의도에는 검증 질문 또는 사용자가 요구한 독립 산출물 하나를 맡기세요. summary에 대상·질문·확인할 근거를 쓰고, 서로 독립적인 질문을 한 항목에 합치지 마세요. 같은 질문의 대조·변형·원인·영향 확인은 한 Worker가 이어서 깊게 검증합니다. 일부 실패나 미확보 전제가 있으면 다른 접근과 전제 확보도 배정하며, 사용자가 요구하지 않은 사전 조건으로 허용된 검증을 줄이지 마세요.\n"+
+	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 의도는 고정된 유형이 아닌 열린 탐색 방향입니다. summary 한 문장으로 무엇을 탐색/검증/활용할지 자유롭게 설명하세요.\n"+
 		"★일괄 제출 우선: 한 회차에서 선별한 여러 새 방향을 intents 배열로 한 번에 제출하세요(개별 호출보다 왕복 횟수 절약). 반환 ids 배열은 intents와 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 intents를 생략하고 최상위 summary를 전달하세요.",
 		withBatchSchema(obj(map[string]any{
-			"intents":    map[string]any{"type": "array", "description": "【우선 사용】추가할 독립 의도의 배열이며 각 요소를 별도 의도로 순서대로 처리합니다. 필드는 아래 최상위 필드(summary/asset_ids/parent_ids/priority)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
-			"summary":    str("[단일] 대상 또는 관련 자산 묶음 + 검증 질문 하나(또는 사용자가 요구한 독립 산출물) + 확인할 근거. 같은 질문의 정상 대조·입력 변형·영향 검증을 함께 다루고, 전제가 부족하면 확보 방법도 확인하세요. 독립적인 주제를 나열하지 마세요."),
+			"intents":    map[string]any{"type": "array", "description": "【우선 사용】추가할 탐색 방향 배열이며 순서대로 처리합니다. 각 요소의 필드는 아래 최상위 필드(summary/asset_ids/parent_ids/priority)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
+			"summary":    str("[단일] 이 탐색 방향을 한 문장으로 설명: 할 일+이유. 방향이 명확하면 되며 자산 id에 의존하지 않습니다."),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "이 방향에서 테스트/공격할 【대상 자산 id】(**가능하면 전달**, 0/1/여러 개. list_assets의 자산 id이며 탐색 노드 id가 아님). 대상 자산(사이트/인터페이스/인자/호스트 등)을 지정합니다. 구체적인 자산을 다루면 반드시 전달하세요. 탐색 대상을 구조화하여 중복 확인과 의도·자산 연결에 사용합니다. 구체적인 대상 자산이 없는 순수한 전역 정찰에만 비워 두세요."},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "상위 근거 id(선택 사항, 0/1/여러 개): 이 방향을 종합하여 도출한 【확인된 사실(fact)/발견(finding)】. **기존 fact/finding 노드 id만 지정하며 의도/목표/힌트는 금지**합니다. 의도는 확인된 지식과 발견에 근거해야 하며 근거 없이 계획해서는 안 됩니다. 여러 사실이 함께 새 의도를 만들면 모두 전달하고 최상위 새 정찰 방향이면 비워 두세요(작업 시작점 origin fact에 자동 연결)."},
 			"priority":   intp("우선순위 0-10, 기본 5"),
@@ -1166,7 +1160,6 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			return jsonResult(out)
 		})
 }
-
 func (t *ToolSet) listGoals() actool.CoreTool {
 	return t.readExpTool("list_goals", "이 작업의 목표 노드와 상태(open/met)를 나열하여 달성 여부를 판단합니다.",
 		obj(map[string]any{}),
@@ -1177,19 +1170,17 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 }
 
 func (t *ToolSet) proveGoal() actool.CoreTool {
-	return t.writeExpTool("prove_goal", "발견/사실이 해당 목표 달성을 증명할 때 증거와 이유를 연결하여 met로 표시합니다. 마지막 목표는 대기·실행·일시정지 의도의 결과를 먼저 반영한 뒤 증명하세요. 일부 발견이나 보고서 작성만으로 남은 검증을 끝내지 마세요.",
+	return t.writeExpTool("prove_goal", "발견/사실이 해당 목표 달성을 증명할 때 증거와 이유를 연결하여 met로 표시합니다. 마지막 미완료 목표를 표시하면 전체 작업이 완료됩니다.",
 		obj(map[string]any{
-			"goal_id":           idp("목표 노드 id"),
-			"evidence_id":       idp("목표를 증명하는 발견/사실 노드 id"),
-			"reason":            str("이 증거가 목표를 충족하는 이유"),
-			"completion_review": str("마지막 목표 증명 시 미완료 Todo가 남으면 그 항목과 목표의 관계 및 종료해도 되는 근거를 적으세요. 이 설명으로 대기·실행·일시정지 의도를 취소하거나 검증 완료로 대신할 수 없습니다. 해당 결과를 먼저 반영하고, 목표에 필요한 미검증 질문이나 확보할 전제가 남으면 검증을 이어가세요."),
+			"goal_id":     idp("목표 노드 id"),
+			"evidence_id": idp("목표를 증명하는 발견/사실 노드 id"),
+			"reason":      str("이 증거가 목표를 충족하는 이유"),
 		}, "goal_id", "evidence_id", "reason"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				GoalID           json.RawMessage `json:"goal_id"`
-				EvidenceID       json.RawMessage `json:"evidence_id"`
-				Reason           string          `json:"reason"`
-				CompletionReview string          `json:"completion_review"`
+				GoalID     json.RawMessage `json:"goal_id"`
+				EvidenceID json.RawMessage `json:"evidence_id"`
+				Reason     string          `json:"reason"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("목표 증명 입력이 올바르지 않습니다: " + err.Error()), nil
@@ -1201,21 +1192,21 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			if strings.TrimSpace(a.Reason) == "" {
 				return actool.Errorf("reason에 증거가 목표를 충족하는 이유를 적으세요"), nil
 			}
-			allMet, goalCount, err := t.ts.ProveGoal(ctx, goal, ev, a.Reason, a.CompletionReview)
+			allMet, goalCount, err := t.ts.ProveGoal(ctx, goal, ev, a.Reason)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			if allMet {
 				t.GoalMet = true
 				t.Reason = fmt.Sprintf("목표 %d개가 모두 met입니다(마지막으로 goal %d에서 완료됨)", goalCount, goal)
-				return actool.Text(fmt.Sprintf("goal %d marked met; 모든 목표의 증명을 저장했습니다. 실행 종료 직전 새 목표·의도·단서·Todo를 다시 확인합니다", goal)), nil
+				return actool.Text(fmt.Sprintf("goal %d marked met; 모든 목표가 달성되어 전체 작업이 완료됩니다", goal)), nil
 			}
 			return actool.Text(fmt.Sprintf("goal %d marked met", goal)), nil
 		})
 }
 
 func (t *ToolSet) goalMet() actool.CoreTool {
-	return t.writeExpTool("goal_met", "전체 작업의 최종 완료를 요청합니다. open 목표는 먼저 prove_goal로 근거를 연결해 증명해야 하며, 이 도구로 개별 증명을 생략할 수 없습니다. 마지막 완료 검토 뒤 새 작업이 생기면 실행을 계속합니다. 이번 계획 회차 종료나 Worker 결과 대기에는 호출하지 마세요.",
+	return t.writeExpTool("goal_met", "전체 작업의 목표 달성을 선언합니다. open 목표는 prove_goal로 증명하세요. 이번 계획 회차 종료나 Worker 결과 대기에는 호출하지 마세요.",
 		obj(map[string]any{"reason": str("달성 근거(목표를 실제 달성한 증거여야 하며 \"이번 회차에 새 방향 없음\" 같은 회차 종료 이유는 안 됨)")}, "reason"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct{ Reason string }
@@ -1228,11 +1219,11 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 			if open, err := t.ts.HasOpenGoal(); err != nil {
 				return actool.Errorf(err.Error()), nil
 			} else if open {
-				return actool.Errorf("아직 open 목표가 있습니다. prove_goal로 각 목표의 실제 근거와 완료 검토를 먼저 기록하세요"), nil
+				return actool.Errorf("아직 open 목표가 있습니다. prove_goal로 각 목표의 실제 근거를 먼저 기록하세요"), nil
 			}
 			t.GoalMet = true
 			t.Reason = a.Reason
-			return actool.Text("최종 완료 검토를 요청했습니다. 실행 종료 직전 남은 작업을 다시 확인합니다"), nil
+			return actool.Text("전체 작업의 목표 달성을 기록했습니다"), nil
 		})
 }
 
@@ -1244,7 +1235,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"intent_id": idp("현재 작업의 의도 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "영향받는 자산 id"},
 		"evidence":         str("증거/PoC 텍스트"),
 		"evidence_hint_id": map[string]any{"type": []string{"integer", "null"}, "description": "선택 사항: 이 작업에서 이 취약점에 대응하는 힌트 노드 ID. 힌트가 없으면 생략, null 또는 0을 사용하세요. 양수 ID는 해당 힌트의 구조화된 traffic_refs를 가져옵니다. 상속한 힌트나 다른 취약점의 힌트를 참조할 수 없습니다"},
-		"traffic_refs": map[string]any{"type": []string{"array", "null"}, "description": "선택 사항. HTTP/HTTPS 취약점은 검색 후 요청/응답이 실제로 결론을 뒷받침하는지 각각 확인하고 재현 순서대로 실제 ID를 지정하세요. TCP 등 HTTP가 아니거나 미수집·정확한 기록 없음의 경우 생략 또는 []로 지정해도 보고할 수 있습니다. evidence에 이유와 검증 가능한 다른 증거를 제공할 수 있습니다. ID를 추측하거나 도메인/시각만으로 연관성을 단정하지 마세요. 확보한 증거를 먼저 재사용하고 검증·재현에 필요한 추가 요청은 허용 범위에서 수행하세요. 단지 보고 형식을 채우기 위한 추가 탐지는 필요하지 않습니다. 용도: baseline 정상 대조 / proof 취약점 입증 / verification 추가 검증 / supporting 보조 증거.",
+		"traffic_refs": map[string]any{"type": []string{"array", "null"}, "description": "선택 사항. HTTP/HTTPS 취약점은 검색 후 요청/응답이 실제로 결론을 뒷받침하는지 각각 확인하고 재현 순서대로 실제 ID를 지정하세요. TCP 등 HTTP가 아니거나 미수집·정확한 기록 없음의 경우 생략 또는 []로 지정해도 보고할 수 있습니다. evidence에 이유와 검증 가능한 다른 증거를 제공할 수 있습니다. ID 추측, 도메인/시각만으로 연관성 단정, 패킷 보충만을 위한 재탐색은 금지합니다. 용도: baseline 정상 대조 / proof 취약점 입증 / verification 추가 검증 / supporting 보조 증거.",
 			"items": obj(map[string]any{"traffic_id": str("traffic_search가 반환한 실제 트래픽 ID"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("이 트래픽이 취약점 결론을 뒷받침하는 방식")}, "traffic_id")},
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {

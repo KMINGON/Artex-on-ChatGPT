@@ -163,7 +163,7 @@ func TestGoalMetCannotBypassIndividualProof(t *testing.T) {
 		t.Fatalf("open goal bypassed: %v %v %s", tools.GoalMet, err, result.Flatten())
 	}
 	root, _ := tools.ts.OriginFactID()
-	if _, _, err := tools.ts.ProveGoal(t.Context(), goal, root, "fixture proof", "remaining fixture intents are independent"); err != nil {
+	if _, _, err := tools.ts.ProveGoal(t.Context(), goal, root, "fixture proof"); err != nil {
 		t.Fatal(err)
 	}
 	result, err = tools.goalMet().Call(t.Context(), json.RawMessage(`{"reason":"reviewed"}`), nil)

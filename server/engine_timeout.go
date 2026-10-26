@@ -205,7 +205,7 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 	}
 	defer e.decInflight(t.ID)
 
-	// 마지막 시간 제한 판정도 일반 완료와 같은 검토를 거친다.
+	// 마지막 시간 제한 판정도 일반 완료와 같은 원자적 상태 전이를 사용한다.
 	status, won, err := e.finishTimedTask(ctx, t, met)
 	switch {
 	case err != nil:
@@ -218,15 +218,7 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 }
 
 func (e *Engine) finishTimedTask(ctx context.Context, t *Task, met bool) (string, bool, error) {
-	if met {
-		won, err := e.m.CompleteReviewedTask(ctx, t.ID, func() { e.cancelExec(t.ID, agent.AbortGoalMet) })
-		if err != nil || won {
-			return "done", won, err
-		}
-	}
-	// 새 작업이 남아도 이미 지난 시간 한도를 연장하거나 달성으로 표시하지 않는다.
-	won, err := e.m.SetTaskStatusGuarded(t.ID, "timeout")
-	return "timeout", won, err
+	return e.m.finishTimedTask(ctx, t.ID, met, func() { e.cancelExec(t.ID, agent.AbortGoalMet) })
 }
 
 // runFinalPlannerRound drives exactly ONE terminal planner round with the

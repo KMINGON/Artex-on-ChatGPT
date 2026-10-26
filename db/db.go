@@ -167,8 +167,8 @@ func Open(dsn string) (*DB, error) {
 		if err := d.migrateLegacyTaskPolicies(); err != nil {
 			return fmt.Errorf("migrate legacy task policies: %w", err)
 		}
-		if err := d.seedDefaultTaskTemplates(); err != nil {
-			return fmt.Errorf("seed task templates: %w", err)
+		if err := d.removeUneditedForkTaskTemplates(); err != nil {
+			return fmt.Errorf("remove unedited fork task templates: %w", err)
 		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
@@ -261,8 +261,8 @@ ON CONFLICT (agent_id, var_name) DO NOTHING`,
 		}
 		_ = d.SetSetting("interactive_shell_default_v1", "true")
 	}
-	// Only a newly inserted browser gets the new defaults. Existing OFF, arguments
-	// and visibility choices survive restart unchanged.
+	// Only a newly inserted browser gets the working managed runtime defaults.
+	// Existing arguments, enabled state and visibility choices survive unchanged.
 	if _, err := d.Exec(`
 WITH inserted AS (
 INSERT INTO mcp_servers(name, transport, command, args, env, enabled)

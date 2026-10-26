@@ -1181,15 +1181,6 @@ WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running'))`, s.e
 	return exists, err
 }
 
-// HasActiveOrPausedIntent preserves both executable and explicitly paused work
-// when deciding whether an otherwise goalless task may enter final completion.
-func (s *ExplorationStore) HasActiveOrPausedIntent() (bool, error) {
-	var exists bool
-	err := s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes
-WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running','paused'))`, s.expID).Scan(&exists)
-	return exists, err
-}
-
 // HasOpenGoal reports whether this exploration still has any goal in state 'open'.
 // false ⇒ 所有目标已 met/abandoned（或本任务无目标）⇒ 进入 goalless（人工直投）分支：
 // planner 停跑，任务是否结束改由 frontier 是否抽干决定。met 与 abandoned 都算"已了结"。

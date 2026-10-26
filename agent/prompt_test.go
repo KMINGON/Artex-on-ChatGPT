@@ -86,8 +86,10 @@ func TestPlannerGraphContractCorrectsLegacyPromptWithoutReplacingUserBody(t *tes
 	t.Cleanup(func() { PromptOverride = prior })
 	PromptOverride = nil
 	defaults := plannerSystem("사용자 지정 목표", "/data", "/data/tasks/7")
-	if !strings.Contains(defaults, "깊이와 경로 다양성을 함께 유지하세요") || !strings.Contains(defaults, "더 큰 체인의 성공을 기다리지 말고") {
-		t.Fatal("default prompt lost depth or individual finding guidance")
+	judgment := strings.Index(defaults, "2. **목표 판단")
+	directions := strings.Index(defaults, "4. **보완할 새 방향 결정")
+	if judgment < 0 || directions < 0 || judgment > directions {
+		t.Fatal("Planner no longer judges goals before choosing new directions")
 	}
 	for _, stale := range []string{"탐색 노드(goals/의도/facts/findings)는 이 작업만 포함합니다", "어떤 사실/의도에서 파생", "커버리지 100% 요구에 실제 coverage.pct=40%", "coverage는 하한/완료 조건"} {
 		if strings.Contains(defaults, stale) {
@@ -100,14 +102,14 @@ func TestPlannerGraphContractCorrectsLegacyPromptWithoutReplacingUserBody(t *tes
 	if !strings.HasPrefix(got, edited) {
 		t.Fatal("contract update replaced a user-edited prompt")
 	}
-	for _, contract := range []string{"parent_ids와 parents는 근거 fact/finding ID", "source_task_id/inherited=true", "연결된 scope는 읽기 전용", "자산 관찰 비율", "100%여도 목표 달성 증거", "값이 없으면 미측정", "실제 활성 도구 목록", "현재 활성 도구 계약이 아니므로", "node_detail/list_facts", "더 큰 체인의 성공을 기다리지 말고"} {
+	for _, contract := range []string{"parent_ids와 parents는 근거 fact/finding ID", "source_task_id/inherited=true", "읽기 전용 근거", "자산 관찰 비율", "값이 없으면 미측정"} {
 		if strings.Index(got, contract) < len(edited) {
 			t.Fatalf("code-owned contract missing after user body: %s", contract)
 		}
 	}
 }
 
-func TestWorkerHandoffRespectsDisabledToolsAndObservationLimits(t *testing.T) {
+func TestUserPromptDoesNotReceiveAdditionalExplorationProcedure(t *testing.T) {
 	prior := PromptOverride
 	t.Cleanup(func() { PromptOverride = prior })
 	PromptOverride = func(string) (string, bool) { return "USER WORKER BODY", true }
@@ -115,9 +117,11 @@ func TestWorkerHandoffRespectsDisabledToolsAndObservationLimits(t *testing.T) {
 	if !strings.HasPrefix(got, "USER WORKER BODY") {
 		t.Fatal("worker override lost")
 	}
-	for _, contract := range []string{"실제 활성 도구 목록", "비활성·미연결이면 호출하지", "최종 결과에 미등록 자료·미처리 이유", "이미 받은 document/xhr/fetch 응답만 읽어", "브라우저 조작 자체에는 기존 작업 제약", "failed/read_failed/dropped/limited", "미저장·생략 부분", "필요한 재요청으로 보완", "요약이 없으면 자동 등록을 가정하지"} {
-		if !strings.Contains(got, contract) {
-			t.Fatalf("worker handoff omitted capability/observation contract: %s", contract)
+	for _, prompt := range []string{got, plannerSystem("fixture", "/data", "/data/tasks/7")} {
+		for _, removed := range []string{"결과 인계", "브라우저 응답 관찰", "기존 후속 단서 호환", "finding 등록은 의도의 종료 조건이 아닙니다", "원래 질문·근거 ID·재개 조건"} {
+			if strings.Contains(prompt, removed) {
+				t.Fatalf("custom prompt received removed exploration procedure: %s", removed)
+			}
 		}
 	}
 }

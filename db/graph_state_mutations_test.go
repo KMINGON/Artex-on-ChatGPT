@@ -1,7 +1,6 @@
 package db
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -221,7 +220,7 @@ CREATE TRIGGER reject_goal_edit_fixture BEFORE UPDATE ON exploration_nodes FOR E
 	if graphCount(t, d, "SELECT count(*) FROM exploration_edges WHERE dst_id=$1 AND rel='proves'", goal) != 0 {
 		t.Fatal("old proof edge remains")
 	}
-	if won, err := d.CompleteReviewedTask(t.Context(), task.ID); err != nil || won {
+	if won, err := d.CompleteTaskIfGoalsSettled(t.Context(), task.ID, false); err != nil || won {
 		t.Fatalf("edited objective completed: %v %v", won, err)
 	}
 	if err := s.UpdateGoalPayload(root, "wrong kind", ""); err == nil {
@@ -229,66 +228,5 @@ CREATE TRIGGER reject_goal_edit_fixture BEFORE UPDATE ON exploration_nodes FOR E
 	}
 	if err := s.UpdateGoalPayload(goal+999999, "missing", ""); err == nil {
 		t.Fatal("missing goal accepted")
-	}
-}
-
-func TestCompletionReviewPreservesPreviouslyReviewedActiveIntent(t *testing.T) {
-	d, _ := templateFixtureDB(t)
-	for _, change := range []string{"none", "claim_only", "reopen", "resume", "set_state", "quota_recovery", "startup_recovery", "legacy_snapshot"} {
-		t.Run(change, func(t *testing.T) {
-			task, s := graphMutationTask(t, d)
-			intent, err := s.AddIntent(map[string]any{"summary": "approved work"}, 5, nil, "planner")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if change == "resume" {
-				if err := s.SetIntentState(intent, "paused"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if change == "startup_recovery" {
-				if _, err := s.ClaimIntent(intent, "first"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			goal, err := s.AddGoal(map[string]any{"text": "reviewed objective"}, "human")
-			if err != nil {
-				t.Fatal(err)
-			}
-			recordLegacyActiveCompletionReview(t, d, s, goal)
-			switch change {
-			case "claim_only":
-				_, err = s.ClaimIntent(intent, "normal worker")
-			case "reopen":
-				err = s.SetIntentState(intent, "stopped")
-				if err == nil {
-					_, err = s.ReopenIntent(intent)
-				}
-			case "resume":
-				_, err = s.CompareAndSetIntentState(intent, "paused", "open")
-			case "set_state":
-				err = s.SetIntentState(intent, "open")
-			case "quota_recovery":
-				err = s.SetIntentBlockedReason(intent, IntentBlockedLLMQuota)
-				if err == nil {
-					_, err = s.ReopenIntentsByBlockedReason(IntentBlockedLLMQuota)
-				}
-			case "startup_recovery":
-				_, err = s.ResetRunningIntents()
-			case "legacy_snapshot":
-				_, err = d.Exec("UPDATE exploration_nodes SET payload=payload #- '{completion_review,active_intent_versions}' WHERE id=$1", goal)
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			won, err := d.CompleteReviewedTask(context.Background(), task.ID)
-			if err != nil || won {
-				t.Fatalf("completion=%v error=%v", won, err)
-			}
-			node, _ := s.GetNode(goal)
-			if node.State != "open" {
-				t.Fatal("active work did not reopen completion review")
-			}
-		})
 	}
 }

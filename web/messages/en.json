@@ -3957,8 +3957,8 @@
   "presets": {
     "general": "General",
     "advanced": "Advanced",
-    "resourcesTitle": "Tools and resource presets",
-    "resourcesDescription": "Browser and web analysis tools are available at every level. Higher levels allow more concurrent tasks and browser sessions.",
+    "resourcesTitle": "Resource presets",
+    "resourcesDescription": "Adjust worker count and concurrent task and browser limits.",
     "custom": "Custom",
     "loading": "Loading",
     "current": "Current: {name}",
@@ -3968,7 +3968,7 @@
     "applied": "Applied",
     "apply": "Apply preset",
     "applying": "Applying…",
-    "applicationScope": "Applies the tool bundle and global concurrency limits. Worker count is saved for new tasks; existing tasks retain theirs. Running browsers are not forcibly closed. Model, authentication, Daybreak and reasoning effort remain unchanged.",
+    "applicationScope": "Applies worker count and global concurrency limits. Worker count is saved for new tasks; existing tasks retain theirs. Running browsers are not forcibly closed. Tool, traffic, model, authentication, Daybreak and reasoning settings are preserved.",
     "customAction": "Keep current values and open Advanced",
     "browserLimit": "Total concurrent browsers",
     "browserLimitHint": "Additional browsers wait for a free slot. Lowering the limit does not close running browsers.",
@@ -3979,6 +3979,6 @@
       "traffic_capture": "HTTP(S) traffic capture",
       "agent_traffic_binding": "Traffic evidence linked to findings"
     },
-    "compactSummary": "Apply tools and concurrency together, then adjust individual settings below."
+    "compactSummary": "Apply worker count and concurrency limits. Configure tools and traffic separately below."
   }
 }

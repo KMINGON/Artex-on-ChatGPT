@@ -41,7 +41,7 @@ func (s *Server) refreshExplorationDefaults() error {
 	if done == "true" {
 		return nil
 	}
-	if err := refreshStoredPrompts(tx, explorationPromptBaseline, "검증 질문별 배정과 미완료 결과 인계 지침 갱신"); err != nil {
+	if err := refreshStoredPrompts(tx, explorationPromptBaseline, "저장된 탐색 기본 지침 갱신"); err != nil {
 		return err
 	}
 	var description string

@@ -71,7 +71,7 @@ func (s *Server) refreshExplorationRestorationDefaults() error {
 		return nil
 	}
 	for _, baseline := range []map[string]string{explorationPromptBaseline, explorationRestorationPromptBaseline, explorationParityPromptBaseline, explorationGuidancePromptBaseline} {
-		if err := refreshStoredPrompts(tx, baseline, "탐색 지속성과 미완료 검증 인계 기본값 갱신"); err != nil {
+		if err := refreshStoredPrompts(tx, baseline, "저장된 탐색 기본 지침 갱신"); err != nil {
 			return err
 		}
 	}

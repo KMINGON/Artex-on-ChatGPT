@@ -240,7 +240,6 @@ type triggeredRun struct {
 }
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
-	m.resourceSkillDir = skillDir
 	key, err := loadOrCreateJWTKey(keyDir, dataDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
@@ -363,10 +362,13 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[locale] 저장된 기본값 한국어화 실패(다음 시작 시 재시도): %v", err)
 		}
 		if err := s.refreshExplorationDefaults(); err != nil {
-			log.Printf("[prompts] 탐색 배정·결과 인계 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
+			log.Printf("[prompts] 저장된 탐색 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
 		}
 		if err := s.refreshExplorationRestorationDefaults(); err != nil {
-			log.Printf("[prompts] 탐색 지속·미완료 검증 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
+			log.Printf("[prompts] 저장된 탐색 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
+		}
+		if err := s.refreshOriginalBehaviorDefaults(); err != nil {
+			log.Printf("[prompts] 원본 동작 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)

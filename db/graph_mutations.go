@@ -2,12 +2,10 @@ package db
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -233,74 +231,8 @@ func (s *ExplorationStore) AddGoalWithOrigin(ctx context.Context, payload map[st
 	return id, nil
 }
 
-// GoalCompletionReview preserves the final evidence/Todo review. Active intent
-// snapshots remain readable for legacy records; a review cannot cancel live work.
-type GoalCompletionReview struct {
-	Reason                   string           `json:"reason"`
-	ActiveIntentIDs          []int64          `json:"active_intent_ids"`
-	ActiveIntentVersions     map[int64]int    `json:"active_intent_versions"`
-	PendingFollowUps         []FollowUpRef    `json:"pending_follow_ups"`
-	PendingFollowUpRevisions map[string]int64 `json:"pending_follow_up_revisions"`
-	PendingTodoIndexes       []int            `json:"pending_todo_indexes"` // zero-based indexes in the saved Planner Todo list
-	LatestResultNodeID       *int64           `json:"latest_result_node_id,omitempty"`
-	PlannerTodoRevision      int64            `json:"planner_todo_revision"`
-	PlannerTodosSHA256       string           `json:"planner_todos_sha256"`
-	ReviewedAt               time.Time        `json:"reviewed_at"`
-}
-
-func pendingGoalWorkTx(ctx context.Context, tx *sql.Tx, explorationID int64) (GoalCompletionReview, error) {
-	review := GoalCompletionReview{ActiveIntentIDs: []int64{}, ActiveIntentVersions: map[int64]int{}, PendingFollowUps: []FollowUpRef{}, PendingFollowUpRevisions: map[string]int64{}, PendingTodoIndexes: []int{}}
-	rows, err := tx.QueryContext(ctx, `SELECT id,content_version FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state IN ('open','running','paused') ORDER BY id`, explorationID)
-	if err != nil {
-		return review, err
-	}
-	for rows.Next() {
-		var id int64
-		var version int
-		if err := rows.Scan(&id, &version); err != nil {
-			rows.Close()
-			return review, err
-		}
-		review.ActiveIntentIDs = append(review.ActiveIntentIDs, id)
-		review.ActiveIntentVersions[id] = version
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return review, err
-	}
-	var latestResult int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(id),0) FROM exploration_nodes
-		WHERE exploration_id=$1 AND kind IN ('fact','finding') AND state<>'origin'
-		AND payload->>'observation_source' IS DISTINCT FROM 'http_response'`, explorationID).Scan(&latestResult); err != nil {
-		return review, err
-	}
-	review.LatestResultNodeID = &latestResult
-	var raw []byte
-	err = tx.QueryRowContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND ((kind='fact' AND state='origin') OR kind='begin') ORDER BY CASE WHEN kind='fact' THEN 0 ELSE 1 END,id LIMIT 1`, explorationID).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return review, nil
-	}
-	if err != nil {
-		return review, err
-	}
-	todos, err := decodePlannerTodoState(raw)
-	if err != nil {
-		return review, err
-	}
-	review.PlannerTodoRevision = todos.Revision
-	encoded, _ := json.Marshal(todos.Items)
-	review.PlannerTodosSHA256 = fmt.Sprintf("%x", sha256.Sum256(encoded))
-	for index, todo := range todos.Items {
-		if todo.Status == "pending" || todo.Status == "in_progress" {
-			review.PendingTodoIndexes = append(review.PendingTodoIndexes, index)
-		}
-	}
-	return review, nil
-}
-
 // ProveGoal commits the proof, its explanation, and the goal state atomically.
-func (s *ExplorationStore) ProveGoal(ctx context.Context, goalID, evidenceID int64, reason string, completionReview ...string) (allMet bool, count int, err error) {
+func (s *ExplorationStore) ProveGoal(ctx context.Context, goalID, evidenceID int64, reason string) (allMet bool, count int, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, 0, err
@@ -331,35 +263,6 @@ func (s *ExplorationStore) ProveGoal(ctx context.Context, goalID, evidenceID int
 	}
 	if payload == nil {
 		payload = map[string]json.RawMessage{}
-	}
-	// Check the last outstanding goal before any proof/state writes. The task row
-	// lock serializes this decision with intent/fact/lead registration.
-	var remainingGoals int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND id<>$2 AND state<>'met'`, s.expID, goalID).Scan(&remainingGoals); err != nil {
-		return false, 0, err
-	}
-	if remainingGoals == 0 {
-		review, err := pendingGoalWorkTx(ctx, tx, s.expID)
-		if err != nil {
-			return false, 0, err
-		}
-		if len(completionReview) > 0 {
-			review.Reason = strings.TrimSpace(completionReview[0])
-		}
-		if len(review.ActiveIntentIDs) > 0 {
-			return false, 0, fmt.Errorf("대기·실행·일시정지 의도 %d개(%v)가 남아 있습니다. 결과를 받거나 근거를 남겨 해당 의도를 개별 중지한 뒤 마지막 목표를 증명하세요. completion_review는 의도 실행을 중단하는 근거를 대신할 수 없습니다", len(review.ActiveIntentIDs), review.ActiveIntentIDs)
-		}
-		if len(review.PendingTodoIndexes) > 0 && review.Reason == "" {
-			return false, 0, fmt.Errorf("미완료 계획 항목 %d개가 남아 있습니다. 검증을 마치거나 completion_review에 해당 항목이 이 목표 범위에 속하지 않는 근거를 기록하세요", len(review.PendingTodoIndexes))
-		}
-		if review.Reason == "" {
-			review.Reason = strings.TrimSpace(reason)
-		}
-		review.ReviewedAt = time.Now().UTC()
-		payload["completion_review"], err = json.Marshal(review)
-		if err != nil {
-			return false, 0, err
-		}
 	}
 	var proofs []GoalProof
 	if existing := payload["proofs"]; len(existing) > 0 {
