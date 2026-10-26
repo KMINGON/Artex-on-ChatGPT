@@ -57,6 +57,8 @@ func TestDeleteTaskFilesRemovesOnlyOwnedWorkspaceAndTranscripts(t *testing.T) {
 		{path: filepath.Join("transcripts", "exp12-main.jsonl")},
 		{path: filepath.Join("transcripts", "exp12-planner.jsonl")},
 		{path: filepath.Join("transcripts", "exp12-worker-i9.jsonl")},
+		{path: filepath.Join("transcripts", "exp12-main.jsonl.recovered")},
+		{path: filepath.Join("transcripts", "exp12-worker-i9.jsonl.recovered.recovered")},
 		{path: filepath.Join("transcripts", "exp12-main"), isDir: true},
 		{path: filepath.Join("transcripts", "exp12-worker-i9"), isDir: true},
 	}
@@ -66,10 +68,14 @@ func TestDeleteTaskFilesRemovesOnlyOwnedWorkspaceAndTranscripts(t *testing.T) {
 	}{
 		{path: filepath.Join("tasks", "78"), isDir: true},
 		{path: filepath.Join("transcripts", "exp123-main.jsonl")},
+		{path: filepath.Join("transcripts", "exp123-main.jsonl.recovered")},
 		{path: filepath.Join("transcripts", "exp123-main"), isDir: true},
 		{path: filepath.Join("transcripts", "exp1-main.jsonl")},
 		{path: filepath.Join("transcripts", "exp12main.jsonl")},
 		{path: filepath.Join("transcripts", "exp12-main.jsonl.bak")},
+		{path: filepath.Join("transcripts", "exp12-main.jsonl.recovered.bak")},
+		{path: filepath.Join("transcripts", "exp12-main.jsonl.bak.recovered")},
+		{path: filepath.Join("transcripts", "exp12-main.jsonl.recovery")},
 		{path: filepath.Join("transcripts", "exp12-main.txt")},
 		{path: filepath.Join("transcripts", "conv-12.jsonl")},
 		{path: filepath.Join("transcripts", "unrelated-session"), isDir: true},
@@ -91,6 +97,35 @@ func TestDeleteTaskFilesRemovesOnlyOwnedWorkspaceAndTranscripts(t *testing.T) {
 	}
 	for _, fixture := range kept {
 		assertPathExists(t, filepath.Join(dataDir, fixture.path))
+	}
+}
+
+func TestDeleteTaskFilesPreservesTranscriptSymlinks(t *testing.T) {
+	dataDir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "external.jsonl")
+	if err := os.WriteFile(target, []byte("external evidence"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, "transcripts"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var links []string
+	for _, name := range []string{"exp12-main.jsonl", "exp12-worker.jsonl.recovered"} {
+		path := filepath.Join(dataDir, "transcripts", name)
+		if err := os.Symlink(target, path); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		links = append(links, path)
+	}
+	deleted, err := deleteTaskFiles(dataDir, "77", 12)
+	if err != nil || deleted {
+		t.Fatalf("symlinks were treated as owned regular transcripts: deleted=%v err=%v", deleted, err)
+	}
+	for _, link := range links {
+		assertPathExists(t, link)
+	}
+	if contents, err := os.ReadFile(target); err != nil || string(contents) != "external evidence" {
+		t.Fatalf("symlink target changed: %q %v", contents, err)
 	}
 }
 
@@ -124,6 +159,8 @@ func TestStageTaskFilesRollbackRestoresWorkspaceAndTranscripts(t *testing.T) {
 	paths := []string{
 		filepath.Join("tasks", "77", "notes.txt"),
 		filepath.Join("transcripts", "exp12-main.jsonl"),
+		filepath.Join("transcripts", "exp12-main.jsonl.recovered"),
+		filepath.Join("transcripts", "exp12-main.jsonl.recovered.recovered"),
 		filepath.Join("transcripts", "exp12-worker-i9", "sidechain.jsonl"),
 	}
 	for _, path := range paths {

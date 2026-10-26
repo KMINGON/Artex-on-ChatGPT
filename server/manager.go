@@ -1588,7 +1588,7 @@ func stageTaskFiles(dataDir, taskID string, explorationID int64) (*taskFileDelet
 	prefix := fmt.Sprintf("exp%d-", explorationID)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && !strings.HasSuffix(name, ".jsonl")) {
+		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && (!entry.Type().IsRegular() || !isTaskTranscriptFile(name))) {
 			continue
 		}
 		targets = append(targets, filepath.Join(transcriptDir, name))

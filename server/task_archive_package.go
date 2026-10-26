@@ -101,9 +101,9 @@ func taskArchivePath(dataDir string, archiveID int64, taskID string) string {
 	return filepath.Join(taskArchiveRoot(dataDir), fmt.Sprintf("task-%s-%d.tar.zst", taskID, archiveID))
 }
 
-func isTaskArchiveTranscriptFile(name string) bool {
+func isTaskTranscriptFile(name string) bool {
 	// Norma continues in a recovery sibling, retaining every predecessor. Keep
-	// the chain together so Resume selects the same authoritative file on restore.
+	// the chain together when archiving or deleting an owned session.
 	for strings.HasSuffix(name, ".recovered") {
 		name = strings.TrimSuffix(name, ".recovered")
 	}
@@ -152,7 +152,7 @@ func stageTaskArchiveFiles(dataDir string, archiveID int64, taskID string, explo
 	prefix := fmt.Sprintf("exp%d-", explorationID)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && (!entry.Type().IsRegular() || !isTaskArchiveTranscriptFile(name))) {
+		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && (!entry.Type().IsRegular() || !isTaskTranscriptFile(name))) {
 			continue
 		}
 		targets = append(targets, archiveFileMove{
