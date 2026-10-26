@@ -53,6 +53,15 @@ func TestExplorationRestorationReviewedBaseline(t *testing.T) {
 			t.Fatalf("%s latest shipped prompt mismatch", key)
 		}
 	}
+	previous := readRestorationDefaultsFixture(t, "exploration_defaults_7f38dea.json")
+	if previous.SourceCommit != "7f38dea2329b44ba85bbd50cbc2de81ae3edc39d" {
+		t.Fatal("guidance baseline source changed")
+	}
+	for key, hash := range explorationGuidancePromptBaseline {
+		if defaultTextHash(previous.Prompts[key]) != hash || defaultTextHash(previous.Prompts[key]+" 사용자 편집") == hash {
+			t.Fatalf("%s guidance shipped prompt mismatch", key)
+		}
+	}
 	for key, baseline := range explorationRestorationToolBaseline {
 		if baseline.Description != "" && defaultTextHash(fixture.Tools[key].Description) != baseline.Description {
 			t.Fatalf("%s description mismatch", key)
@@ -82,11 +91,16 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 	s := &Server{m: &Manager{pg: pg}}
 	fixture := readRestorationDefaultsFixture(t, "exploration_defaults_ca23d12.json")
 	latest := readRestorationDefaultsFixture(t, "exploration_defaults_17e0fca.json")
+	previous := readRestorationDefaultsFixture(t, "exploration_defaults_7f38dea.json")
 	older := readExplorationDefaultsFixture(t)
 	defaults := s.koreanToolDefaults()
-	for _, mode := range []string{"ca23d12", "a1396fa", "17e0fca", "current", "custom", "custom latest", "selected history", "selected latest history", "tool deleted", "localized description", "retry after schema error"} {
+	for _, mode := range []string{"ca23d12", "a1396fa", "17e0fca", "7f38dea", "current", "custom", "custom latest", "custom 7f38dea", "selected history", "selected latest history", "selected 7f38dea history", "tool deleted", "localized description", "retry after schema error"} {
 		t.Run(mode, func(t *testing.T) {
 			preserveDefaultRefreshFlag(t, pg, explorationRestorationDefaultsFlag)
+			preserveDefaultRefreshFlag(t, pg, "exploration_persistence_defaults_v2")
+			if err := pg.SetSetting("exploration_persistence_defaults_v2", "true"); err != nil {
+				t.Fatal(err)
+			}
 			wantPrompts := agent.BuiltinPromptSeeds()
 			agentIDs, expectedVersions := map[string]int64{}, map[string]int{}
 			for _, key := range []string{"planner", "worker"} {
@@ -113,6 +127,8 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 					body = older.Prompts[key]
 				case "17e0fca":
 					body = latest.Prompts[key]
+				case "7f38dea", "retry after schema error":
+					body = previous.Prompts[key]
 				case "current":
 					body, updates = wantPrompts[key], 0
 				case "custom":
@@ -121,17 +137,23 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 				case "custom latest":
 					body = latest.Prompts[key] + "\n사용자의 추가 검증 지침"
 					wantPrompts[key], updates = body, 0
+				case "custom 7f38dea":
+					body = previous.Prompts[key] + "\n사용자의 추가 검증 지침"
+					wantPrompts[key], updates = body, 0
 				case "selected history":
 					wantPrompts[key], updates = body, 0
 				case "selected latest history":
 					body = latest.Prompts[key]
+					wantPrompts[key], updates = body, 0
+				case "selected 7f38dea history":
+					body = previous.Prompts[key]
 					wantPrompts[key], updates = body, 0
 				}
 				version, err := pg.SavePrompt(a.ID, body, "fixture", "test")
 				if err != nil {
 					t.Fatal(err)
 				}
-				if mode == "selected history" || mode == "selected latest history" {
+				if mode == "selected history" || mode == "selected latest history" || mode == "selected 7f38dea history" {
 					var selected int64
 					if err := pg.QueryRow(`SELECT current_prompt_id FROM agents WHERE id=$1`, a.ID).Scan(&selected); err != nil {
 						t.Fatal(err)
@@ -231,7 +253,7 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 					t.Fatal("invalid persisted tool schema did not fail the migration")
 				}
 				for key, id := range agentIDs {
-					if got, err := pg.CurrentPrompt(id); err != nil || got != fixture.Prompts[key] {
+					if got, err := pg.CurrentPrompt(id); err != nil || got != previous.Prompts[key] {
 						t.Fatalf("%s prompt partially migrated after failure: %v", key, err)
 					}
 					var version int

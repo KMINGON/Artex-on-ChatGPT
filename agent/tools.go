@@ -12,17 +12,17 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-// compactIntents distills intents to {id, summary, state, asset_ids, parents,
-// yields} so the planner sees both the direction and its LINEAGE — parents (the
-// upstream nodes it derived from: facts/intents/findings) and yields (the facts/
-// findings it produced) — without pulling full payloads. parentsOf/yieldsOf are
-// built from the exploration edges in graph_overview.
+// compactIntents retains scheduling metadata, direction, and lineage so the
+// planner can compare queued work without fetching every node's full payload.
+// parentsOf/yieldsOf come from the exploration edges in graph_overview and link
+// upstream evidence to the facts/findings each intent produced.
 func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[string]any {
 	out := make([]map[string]any, 0, len(ns))
 	for _, n := range ns {
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
-		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
+		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State,
+			"priority": n.Priority, "created_at": n.CreatedAt}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true

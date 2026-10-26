@@ -86,7 +86,7 @@ func TestPlannerGraphContractCorrectsLegacyPromptWithoutReplacingUserBody(t *tes
 	t.Cleanup(func() { PromptOverride = prior })
 	PromptOverride = nil
 	defaults := plannerSystem("사용자 지정 목표", "/data", "/data/tasks/7")
-	if !strings.Contains(defaults, "유망한 경로의 깊이를 우선하세요") || !strings.Contains(defaults, "더 큰 체인의 성공을 기다리지 말고") {
+	if !strings.Contains(defaults, "깊이와 경로 다양성을 함께 유지하세요") || !strings.Contains(defaults, "더 큰 체인의 성공을 기다리지 말고") {
 		t.Fatal("default prompt lost depth or individual finding guidance")
 	}
 	for _, stale := range []string{"탐색 노드(goals/의도/facts/findings)는 이 작업만 포함합니다", "어떤 사실/의도에서 파생", "커버리지 100% 요구에 실제 coverage.pct=40%", "coverage는 하한/완료 조건"} {

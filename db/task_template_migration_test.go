@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,19 @@ import (
 )
 
 func TestReviewedTemplateGuidancePreservesEditsTasksAndDeletion(t *testing.T) {
-	raw, err := os.ReadFile("testdata/task_template_defaults_17e0fca.json")
+	for _, baseline := range []struct{ revision, commit string }{
+		{"17e0fca", "17e0fca59aef7d2e8f8e31355a3665cfd606e1dc"},
+		{"7f38dea", "7f38dea2329b44ba85bbd50cbc2de81ae3edc39d"},
+	} {
+		t.Run(baseline.revision, func(t *testing.T) {
+			testReviewedTemplateGuidance(t, baseline.revision, baseline.commit)
+		})
+	}
+}
+
+func testReviewedTemplateGuidance(t *testing.T, revision, commit string) {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/task_template_defaults_" + revision + ".json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,12 +38,12 @@ func TestReviewedTemplateGuidancePreservesEditsTasksAndDeletion(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.SourceCommit != "17e0fca59aef7d2e8f8e31355a3665cfd606e1dc" || len(fixture.Templates) != 4 {
+	if fixture.SourceCommit != commit || len(fixture.Templates) != 4 {
 		t.Fatal("reviewed template baseline changed")
 	}
 	d, _ := templateFixtureDB(t)
 	for _, old := range fixture.Templates {
-		if fmt.Sprintf("%x", sha256.Sum256([]byte(old.Description))) != defaultTaskTemplateDescriptionBaseline[old.Name] {
+		if !slices.Contains(defaultTaskTemplateDescriptionBaseline[old.Name], fmt.Sprintf("%x", sha256.Sum256([]byte(old.Description)))) {
 			t.Fatalf("unreviewed description: %s", old.Name)
 		}
 		if _, err := d.Exec(`UPDATE task_templates SET description=$2,goal=$3 WHERE name=$1`, old.Name, old.Description, old.Goal); err != nil {
@@ -89,6 +102,11 @@ func TestReviewedTemplateGuidancePreservesEditsTasksAndDeletion(t *testing.T) {
 				}
 				if got.Description != want {
 					t.Fatalf("description was not safely refreshed: %s", got.Name)
+				}
+				for _, old := range fixture.Templates {
+					if got.Name == old.Name && got.Name != general.Name && got.Goal != old.Goal {
+						t.Fatalf("description refresh changed goal: %s", got.Name)
+					}
 				}
 				if got.Name == general.Name {
 					if got.Goal != "사용자 목표" || got.TimeoutSeconds == nil || *got.TimeoutSeconds != 67 {

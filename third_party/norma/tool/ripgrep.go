@@ -93,6 +93,7 @@ func npmGlobalRipgrep() string {
 type ripgrepReq struct {
 	pattern, glob, typ, mode         string
 	ignoreCase, multiline, showLines bool
+	onlyMatching                     bool
 	before, after                    int
 	root                             string
 	headLimit                        *int
@@ -120,10 +121,13 @@ func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
 		if r.showLines {
 			args = append(args, "-n")
 		}
-		if r.before > 0 {
+		if r.onlyMatching {
+			args = append(args, "-o", "--with-filename", "--sort", "path")
+		}
+		if r.before > 0 && !r.onlyMatching {
 			args = append(args, "-B", strconv.Itoa(r.before))
 		}
-		if r.after > 0 {
+		if r.after > 0 && !r.onlyMatching {
 			args = append(args, "-A", strconv.Itoa(r.after))
 		}
 	}
@@ -143,7 +147,11 @@ func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
 		dir, target = filepath.Dir(r.root), filepath.Base(r.root)
 	}
 	// `-e pattern --` keeps a pattern/path starting with '-' from being read as a flag.
-	args = append(args, "-e", r.pattern, "--", target)
+	args = append(args, "-e", r.pattern, "--")
+	// 일치 부분 모드의 디렉터리 검색은 Go와 같이 ./ 없는 상대 경로를 출력한다.
+	if target != "." || !r.onlyMatching || r.mode != "content" {
+		args = append(args, target)
+	}
 
 	cmd := exec.Command(rg, args...)
 	cmd.Dir = dir

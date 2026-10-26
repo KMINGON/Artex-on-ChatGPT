@@ -141,6 +141,12 @@ func retryable(err error) bool {
 		return false
 	}
 	if e.Stage == "stream" {
+		// An EOF/read failure before exposure can resend this request. Explicit
+		// terminal/protocol errors (including a bare [DONE]) are not transport
+		// interruptions, even if an upstream error happens to reuse this code.
+		if e.Code == "interrupted_stream" && e.ErrorClass == "local" && e.cause != nil {
+			return true
+		}
 		return (e.EventType == "response.failed" || e.EventType == "error") && knownTransient(e.Code)
 	}
 	if e.Code == "transport_error" {

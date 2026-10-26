@@ -3,6 +3,7 @@ package chatgptllm
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -270,6 +271,9 @@ func consumeObserved(resp *http.Response, names map[string]string, allowPartial 
 		return nil
 	}
 	if scanner.Err() != nil {
+		if errors.Is(scanner.Err(), bufio.ErrTooLong) {
+			return failure("response_too_large", "이벤트가 처리 한도를 초과했습니다", scanner.Err())
+		}
 		return failure("interrupted_stream", "응답 스트림이 중단되었습니다", scanner.Err())
 	}
 	if done, err := process(); done || err != nil {

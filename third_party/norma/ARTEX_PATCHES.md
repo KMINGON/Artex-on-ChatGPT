@@ -50,6 +50,13 @@ Artex uses a local module replacement for these limited runtime extensions:
 - Interactive-shell descriptions, parameter help, errors, notifications, and
   background-task completion messages use Korean. Tool identifiers, schemas,
   task status values, and existing stored output remain unchanged.
+- `Grep`의 선택 입력 `only_matching`은 `content` 모드에서 일치 부분만
+  파일·행 번호와 함께 출력합니다. 긴 한 줄 JavaScript의 중간 문맥은
+  `.{0,100}검색어.{0,100}`처럼 검색 패턴에 포함할 수 있습니다. 기본 전체 행
+  출력과 다른 출력 모드는 유지하며, 이 옵션에서는 `-A`·`-B`·`-C`의 전체
+  문맥 행을 출력하지 않습니다. Go 검색과 ripgrep의 `-o` 경로 모두 출력
+  항목에 `offset`·`head_limit`를 적용합니다. 검색 문자열은 실행하지 않으며
+  기존 도구 설명의 Bash 검색 금지 문구는 Grep 우선 사용 권고로 바꿨습니다.
 - Experimental `noa` and `noaadapter` packages and ARTEX's toggle/integration
   are removed. All ARTEX agents use built-in compaction. Generic compactor,
   context-view, and tool contracts remain tested; old user archives and

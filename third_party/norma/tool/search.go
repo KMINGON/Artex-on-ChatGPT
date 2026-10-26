@@ -126,10 +126,11 @@ func globSegments(pat, name []string) bool {
 const grepDescription = "A powerful search tool built on ripgrep\n" +
 	"\n" +
 	"Usage:\n" +
-	"- ALWAYS use Grep for search tasks. NEVER invoke `grep` or `rg` as a Bash command. The Grep tool has been optimized for correct permissions and access.\n" +
+	"- 로컬 파일의 문자열 검색에는 Grep를 우선 사용하세요. 검색 문자열을 코드나 HTTP 요청으로 실행하지 않고 파일 내용만 검색합니다.\n" +
 	"- Supports full regex syntax (e.g., \"log.*Error\", \"function\\s+\\w+\")\n" +
 	"- Filter files with glob parameter (e.g., \"*.js\", \"**/*.tsx\") or type parameter (e.g., \"js\", \"py\", \"rust\")\n" +
 	"- Output modes: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts\n" +
+	"- 긴 한 줄 파일은 output_mode: \"content\", only_matching: true로 일치 부분만 읽으세요. pattern에 .{0,100}검색어.{0,100}처럼 주변 문자를 포함할 수 있습니다.\n" +
 	"- Use Agent tool for open-ended searches requiring multiple rounds\n" +
 	"- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use `interface\\{\\}` to find `interface{}` in Go code)\n" +
 	"- Prefer `head_limit` to avoid large result sets.\n" +
@@ -143,19 +144,20 @@ func NewGrep() CoreTool {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern":     map[string]any{"type": "string", "description": "RE2 regular expression to search for."},
-				"path":        map[string]any{"type": "string", "description": "File or directory to search. Defaults to the working directory."},
-				"glob":        map[string]any{"type": "string", "description": "Only search files matching this glob, e.g. *.go or *.{ts,tsx}"},
-				"type":        map[string]any{"type": "string", "description": "Only search a file type, e.g. go, py, js, ts, rust, java. Unknown types are treated as an extension (type:foo → *.foo)."},
-				"output_mode": map[string]any{"type": "string", "description": "files_with_matches (default) | content | count"},
-				"-i":          map[string]any{"type": "boolean", "description": "Case-insensitive."},
-				"-n":          map[string]any{"type": "boolean", "description": "Show line numbers (content mode). Default true."},
-				"-A":          map[string]any{"type": "integer", "description": "Lines of context to show after each match (content mode)."},
-				"-B":          map[string]any{"type": "integer", "description": "Lines of context to show before each match (content mode)."},
-				"-C":          map[string]any{"type": "integer", "description": "Lines of context before and after each match (content mode)."},
-				"multiline":   map[string]any{"type": "boolean", "description": "Multiline mode: . matches newlines and patterns may span lines. Default false."},
-				"head_limit":  map[string]any{"type": "integer", "description": "Limit output to the first N results (lines/files/counts). Default 250; pass 0 for unlimited."},
-				"offset":      map[string]any{"type": "integer", "description": "Skip the first N results before applying head_limit (paging). Default 0."},
+				"pattern":       map[string]any{"type": "string", "description": "RE2 regular expression to search for."},
+				"path":          map[string]any{"type": "string", "description": "File or directory to search. Defaults to the working directory."},
+				"glob":          map[string]any{"type": "string", "description": "Only search files matching this glob, e.g. *.go or *.{ts,tsx}"},
+				"type":          map[string]any{"type": "string", "description": "Only search a file type, e.g. go, py, js, ts, rust, java. Unknown types are treated as an extension (type:foo → *.foo)."},
+				"output_mode":   map[string]any{"type": "string", "description": "files_with_matches (default) | content | count"},
+				"only_matching": map[string]any{"type": "boolean", "description": "content 모드에서 일치 부분만 출력합니다(기본 false). 주변 문자는 pattern에 포함하며 -A/-B/-C의 전체 문맥 행은 출력하지 않습니다."},
+				"-i":            map[string]any{"type": "boolean", "description": "Case-insensitive."},
+				"-n":            map[string]any{"type": "boolean", "description": "Show line numbers (content mode). Default true."},
+				"-A":            map[string]any{"type": "integer", "description": "Lines of context to show after each match (content mode)."},
+				"-B":            map[string]any{"type": "integer", "description": "Lines of context to show before each match (content mode)."},
+				"-C":            map[string]any{"type": "integer", "description": "Lines of context before and after each match (content mode)."},
+				"multiline":     map[string]any{"type": "boolean", "description": "Multiline mode: . matches newlines and patterns may span lines. Default false."},
+				"head_limit":    map[string]any{"type": "integer", "description": "Limit output to the first N results (lines/files/counts). Default 250; pass 0 for unlimited."},
+				"offset":        map[string]any{"type": "integer", "description": "Skip the first N results before applying head_limit (paging). Default 0."},
 			},
 			"required": []any{"pattern"},
 		},
@@ -168,19 +170,20 @@ func NewGrep() CoreTool {
 
 func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
-		Pattern    string `json:"pattern"`
-		Path       string `json:"path"`
-		Glob       string `json:"glob"`
-		Type       string `json:"type"`
-		OutputMode string `json:"output_mode"`
-		IgnoreCase bool   `json:"-i"`
-		LineNums   *bool  `json:"-n"`
-		After      int    `json:"-A"`
-		Before     int    `json:"-B"`
-		Context    int    `json:"-C"`
-		Multiline  bool   `json:"multiline"`
-		HeadLimit  *int   `json:"head_limit"`
-		Offset     int    `json:"offset"`
+		Pattern      string `json:"pattern"`
+		Path         string `json:"path"`
+		Glob         string `json:"glob"`
+		Type         string `json:"type"`
+		OutputMode   string `json:"output_mode"`
+		OnlyMatching bool   `json:"only_matching"`
+		IgnoreCase   bool   `json:"-i"`
+		LineNums     *bool  `json:"-n"`
+		After        int    `json:"-A"`
+		Before       int    `json:"-B"`
+		Context      int    `json:"-C"`
+		Multiline    bool   `json:"multiline"`
+		HeadLimit    *int   `json:"head_limit"`
+		Offset       int    `json:"offset"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return Result{}, err
@@ -225,7 +228,7 @@ func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	if rg := RipgrepPath(); rg != "" {
 		if res, ok := runWithRipgrep(rg, ripgrepReq{
 			pattern: in.Pattern, glob: in.Glob, typ: in.Type, mode: mode,
-			ignoreCase: in.IgnoreCase, multiline: in.Multiline, showLines: showLines,
+			ignoreCase: in.IgnoreCase, multiline: in.Multiline, showLines: showLines, onlyMatching: in.OnlyMatching,
 			before: before, after: after, root: root, headLimit: in.HeadLimit, offset: in.Offset,
 		}, tc); ok {
 			return res, nil
@@ -235,7 +238,7 @@ func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	typeGlobs := rgTypeGlobs(in.Type)
 	var results []grepHit
 	scan := func(p, base string) {
-		fh := scanFile(p, base, re, mode, showLines, in.Multiline, before, after)
+		fh := scanFile(p, base, re, mode, showLines, in.Multiline, in.OnlyMatching, before, after)
 		if fh != nil {
 			results = append(results, *fh)
 		}
@@ -379,7 +382,7 @@ type grepHit struct {
 	count int
 }
 
-func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, multiline bool, before, after int) *grepHit {
+func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, multiline, onlyMatching bool, before, after int) *grepHit {
 	data, err := os.ReadFile(path)
 	if err != nil || isBinary(data) {
 		return nil
@@ -391,6 +394,34 @@ func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, mult
 	lines := strings.Split(string(data), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1] // drop the empty element from a trailing newline
+	}
+	if onlyMatching && mode == "content" {
+		res := &grepHit{path: rel}
+		search := lines
+		if multiline {
+			search = []string{string(data)}
+		}
+		for i, text := range search {
+			line, previous := i+1, 0
+			for _, loc := range re.FindAllStringIndex(text, -1) {
+				line += strings.Count(text[previous:loc[0]], "\n")
+				previous = loc[0]
+				for offset, match := range strings.Split(text[loc[0]:loc[1]], "\n") {
+					if multiline && match == "" {
+						continue // 여러 행 일치에서 줄바꿈만 있는 부분은 출력하지 않는다.
+					}
+					if showLines {
+						res.lines = append(res.lines, fmt.Sprintf("%s:%d:%s", rel, line+offset, match))
+					} else {
+						res.lines = append(res.lines, rel+":"+match)
+					}
+				}
+			}
+		}
+		if len(res.lines) == 0 {
+			return nil
+		}
+		return res
 	}
 
 	var matches []int

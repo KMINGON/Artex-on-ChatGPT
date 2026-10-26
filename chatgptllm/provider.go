@@ -34,7 +34,8 @@ type Config struct {
 	OnError func(*Error)
 	// Zero uses two plan retries or three API retries; negative disables retries.
 	// One budget covers HTTP
-	// admission and known transient SSE failures before any output is exposed.
+	// admission, interrupted reads, and known transient SSE failures before any
+	// output is exposed.
 	MaxRetries    int
 	RetryInterval time.Duration
 	// Network silence only; not a total generation or tool execution deadline.

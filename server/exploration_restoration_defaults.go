@@ -7,7 +7,7 @@ import (
 	"errors"
 )
 
-const explorationRestorationDefaultsFlag = "exploration_persistence_defaults_v2"
+const explorationRestorationDefaultsFlag = "exploration_persistence_defaults_v3"
 
 const explorationTrafficRefsBaselineHash = "8f012599a7749cf54e9964e6fe337fb0103893ea966ef562d706a52dad448cf6"
 
@@ -22,6 +22,12 @@ var explorationRestorationPromptBaseline = map[string]string{
 var explorationParityPromptBaseline = map[string]string{
 	"planner": "aa4fe0d0dcdfb44a3993b9320f89b0ec39eb98fdf7cc828c24f62c487a4584ad",
 	"worker":  "6ccb26d55e78ae0e31c5e485ecf260e9a7b8b965fccf5328174eab0f13204807",
+}
+
+// Exact 7f38dea defaults; reuse the existing guards for edits and selected history.
+var explorationGuidancePromptBaseline = map[string]string{
+	"planner": "1dc35c951124410609f64c77c8bf084a7e526ed0709ac33e4e0b7b94bc96e5ef",
+	"worker":  "7b9be156b38db7679ba242550d4c499b4478d0cddf6bc0f04bf297e51d1aa1c2",
 }
 
 var explorationRestorationToolBaseline = map[string]koreanToolBaseline{
@@ -64,7 +70,7 @@ func (s *Server) refreshExplorationRestorationDefaults() error {
 	if done == "true" {
 		return nil
 	}
-	for _, baseline := range []map[string]string{explorationPromptBaseline, explorationRestorationPromptBaseline, explorationParityPromptBaseline} {
+	for _, baseline := range []map[string]string{explorationPromptBaseline, explorationRestorationPromptBaseline, explorationParityPromptBaseline, explorationGuidancePromptBaseline} {
 		if err := refreshStoredPrompts(tx, baseline, "탐색 지속성과 미완료 검증 인계 기본값 갱신"); err != nil {
 			return err
 		}

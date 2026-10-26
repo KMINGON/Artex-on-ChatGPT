@@ -5,13 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 const taskTemplateGraphHandoff = `
 
 공통 탐색·인계 기준:
 허용 범위에서 대상의 진입점·역할·상태와 적용 가능한 취약점 유형을 살피고, 확인한 사실에서 파생된 가설도 검토하세요. 실행하지 못한 항목은 근거·재개 조건을 남기고 성공으로 세지 마세요.
-실제 관찰은 자산과 fact/finding에 연결하고, 다음 검증 방향은 근거 fact/finding의 ID와 함께 인계하세요. Planner는 그 ID를 add_intent.parent_ids에 연결하고 직렬 단계만 Todo에 남기세요. 공유 파일이 필요하면 system의 task_root/shared 아래에 저장하고 절대 경로를 인계하세요. 이미 그래프에 있는 결과를 매 의도마다 대장에 다시 쓰지 마세요. 자산 관찰 비율은 취약점 검증 완료율이 아닙니다.`
+실제 관찰은 자산과 fact/finding에 연결하고, 다음 검증 방향은 근거 fact/finding의 ID와 함께 인계하세요. Planner는 그 ID를 add_intent.parent_ids에 연결하고 미배정·미완료 질문과 직렬 의존을 Todo에 남기세요. 원래 질문·근거 ID·재개 조건은 답한 근거 없이 삭제하거나 다른 질문으로 대체하지 마세요. 공유 파일은 system의 task_root/shared 아래에 저장하고 절대 경로를 인계하세요. 이미 그래프에 있는 결과를 매 의도마다 다시 쓰지 마세요. 자산 관찰 비율은 취약점 검증 완료율이 아닙니다.`
 
 const taskTemplateCompletionReview = `
 
@@ -19,12 +20,12 @@ const taskTemplateCompletionReview = `
 
 const defaultTaskTemplatesFlag = "default_task_templates_v1"
 
-// Exact descriptions shipped in 17e0fca. Custom text and existing tasks stay intact.
-var defaultTaskTemplateDescriptionBaseline = map[string]string{
-	"실습 · 전체 검증": "52b663aa19a10417b312b2e55de953e2e31d9488ae496fa2cccff8235c753bf5",
-	"운영 · 관찰":    "0b663516c7c474e447f2d335feab59a188c477f12943c94878f1d0e4dd839fa5",
-	"운영 · 일반 검증": "035d53db263c447bb2d046e936c7ba99f34915bdcf7258c8c6729fcf8ae07399",
-	"운영 · 확장 검증": "4343246df86e4afb651f8ad5c8a2353489d428f9f405adc695aa19bf23785ac9",
+// Exact descriptions shipped in 17e0fca and 7f38dea. Custom text and existing tasks stay intact.
+var defaultTaskTemplateDescriptionBaseline = map[string][]string{
+	"실습 · 전체 검증": {"52b663aa19a10417b312b2e55de953e2e31d9488ae496fa2cccff8235c753bf5", "ffb84e5d0e84b36f45cad4c21dc24f049ec6dcfdbb568bdb0e5e74ed7e59d9d5"},
+	"운영 · 관찰":    {"0b663516c7c474e447f2d335feab59a188c477f12943c94878f1d0e4dd839fa5", "fc536fd096bcb9b3ff4f92afc471aca1296d4cb342dc3827c13eededcd86b72d"},
+	"운영 · 일반 검증": {"035d53db263c447bb2d046e936c7ba99f34915bdcf7258c8c6729fcf8ae07399", "d5aec984aa530c961508f5c0c2c70302ec91e67eac8274b5048b4c75267e0910"},
+	"운영 · 확장 검증": {"4343246df86e4afb651f8ad5c8a2353489d428f9f405adc695aa19bf23785ac9", "30db39d11e0d3409a457b1218b0a48c60de8cfe9f880dc77be29dcd2ddba6bc9"},
 }
 
 type defaultTaskTemplate struct {
@@ -185,7 +186,7 @@ func (d *DB) seedDefaultTaskTemplates() error {
 			if err != nil {
 				return err
 			}
-			if fmt.Sprintf("%x", sha256.Sum256([]byte(current))) != defaultTaskTemplateDescriptionBaseline[seed.Input.Name] {
+			if !slices.Contains(defaultTaskTemplateDescriptionBaseline[seed.Input.Name], fmt.Sprintf("%x", sha256.Sum256([]byte(current)))) {
 				continue
 			}
 			if _, err := tx.Exec(`UPDATE task_templates SET description=$2,updated_at=now() WHERE name=$1 AND description=$3`, seed.Input.Name, seed.Input.Description, current); err != nil {

@@ -58,6 +58,13 @@ func TestStoredShellRulesReachGuardWithoutBlockingWorkerFiles(t *testing.T) {
 		{"Bash", `{"command":"halt"}`, true},
 		{"shell_send", `{"text":"sudo reboot\n"}`, true},
 		{"Bash", `{"command":"curl -X DELETE http://fixture.invalid/own-object"}`, true},
+		{"Bash", `{"command":"curl http://fixture.invalid/rest/user/delete"}`, true},
+		{"Bash", `{"command":"curl -X POST http://fixture.invalid/rest/user/delete"}`, true},
+		{"WebFetch", `{"url":"http://fixture.invalid/rest/user/delete"}`, true},
+		{"Grep", `{"path":"main.js","pattern":"/rest/user/delete","output_mode":"content"}`, false},
+		{"Read", `{"file_path":"main.js"}`, false},
+		// 셸 문자열의 실행 의미는 추측하지 않고 기존 규칙을 유지한다.
+		{"Bash", `{"command":"python -c \"s=open('main.js').read(); print(s.find('/rest/user/delete'))\""}`, true},
 		{"mcp__browser__browser_evaluate", `{"function":"() => \"method: 'DELETE' is a documented example\""}`, false},
 	} {
 		blocked, message, _ := g.Hooks().PreToolUse(t.Context(), tc.tool, []byte(tc.input))
@@ -79,6 +86,13 @@ func TestStoredShellRulesReachGuardWithoutBlockingWorkerFiles(t *testing.T) {
 	blocked, _, _ := g.Hooks().PreToolUse(t.Context(), "Write", []byte(`{"file_path":"probe.py","content":"print('halt')"}`))
 	if !blocked {
 		t.Fatal("custom full-input policy lost")
+	}
+	if err := ic.SetEnabledTools([]string{"Grep"}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, _, _ = g.Hooks().PreToolUse(t.Context(), "Grep", []byte(`{"path":"main.js","pattern":"/rest/user/delete"}`))
+	if !blocked {
+		t.Fatal("사용자가 명시한 Grep 가로채기 범위가 유지되지 않음")
 	}
 	// Restoring the original default must not discard an operator's explicit
 	// MCP selection, including the group for dynamically discovered tools.
