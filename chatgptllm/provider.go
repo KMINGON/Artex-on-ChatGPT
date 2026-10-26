@@ -190,8 +190,11 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 			}
 			delay := p.retryDelay(attempt)
 			if resp != nil {
-				if seconds, e := strconv.Atoi(resp.Header.Get("Retry-After")); e == nil && seconds > 0 {
-					delay = time.Duration(min(seconds, 30)) * time.Second
+				var canWait bool
+				delay, canWait = retryAfterDelay(resp.Header.Get("Retry-After"), delay)
+				if !canWait {
+					yield(llm.StreamEvent{}, e)
+					return
 				}
 			}
 			timer := time.NewTimer(delay)
@@ -206,6 +209,18 @@ func (p *provider) Stream(parent context.Context, req llm.CompletionRequest) ite
 			}
 		}
 	}
+}
+
+func retryAfterDelay(header string, fallback time.Duration) (time.Duration, bool) {
+	seconds, err := strconv.ParseUint(strings.TrimSpace(header), 10, 64)
+	// An unrepresentable server delay must not overflow or cause an early retry.
+	if errors.Is(err, strconv.ErrRange) || err == nil && seconds > uint64((1<<63-1)/time.Second) {
+		return 0, false
+	}
+	if err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second, true
+	}
+	return fallback, true
 }
 
 func (p *provider) retryDelay(attempt int) time.Duration {

@@ -65,10 +65,10 @@ func overviewProseRunes(value any) int {
 	return 0
 }
 
-func TestGraphOverviewPreservesCurrentTextAndBoundsRelatedSources(t *testing.T) {
+func TestGraphOverviewPreservesCurrentAndRelatedDigestText(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
-	long := strings.Repeat("원문🙂<&>\n", 2_000)
+	long := strings.Repeat("원문🙂<&>\n", 2_000) + "후반 미검증 질문: 인증된 계정에서 조건을 바꾸어 확인"
 	var taskIDs, sourceIDs []int64
 	defer func() {
 		for i := len(taskIDs) - 1; i >= 0; i-- {
@@ -150,11 +150,24 @@ func TestGraphOverviewPreservesCurrentTextAndBoundsRelatedSources(t *testing.T) 
 		t.Fatal("current overview was silently truncated")
 	}
 	for _, source := range overview["related_tasks"].([]map[string]any) {
-		if total := overviewProseRunes(source); total > relatedOverviewBudgetForSources(len(sourceIDs)) {
+		// The original source-summary budget does not truncate digest bodies:
+		// these may be the only visible representation of folded source facts.
+		total := overviewProseRunes(source)
+		digests := source["cold_digests"].([]map[string]any)
+		if len(digests) == 0 {
+			t.Fatal("related digest missing")
+		}
+		for _, digest := range digests {
+			if digest["body"] != long || digest["body_truncated"] != nil || digest["source_task_id"] == nil {
+				t.Fatal("related digest lost its later question or source identity")
+			}
+			total -= utf8.RuneCountInString(digest["body"].(string))
+		}
+		if total > relatedOverviewBudgetForSources(len(sourceIDs)) {
 			t.Fatalf("related prose=%d exceeds per-source budget", total)
 		}
 		if source["summary_truncated"] != true {
-			t.Fatal("source digest overflow not marked")
+			t.Fatal("other source summary overflow not marked")
 		}
 	}
 	raw, err := json.Marshal(overview)

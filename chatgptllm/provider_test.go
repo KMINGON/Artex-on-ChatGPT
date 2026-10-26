@@ -290,7 +290,7 @@ func TestRetryBoundariesAndDiagnostics(t *testing.T) {
 	for _, tc := range []struct {
 		code         string
 		status, want int
-	}{{"subscription_sharing_usage_unavailable", 503, 3}, {"subscription_sharing_usage_limit_exceeded", 429, 1}, {"subscription_sharing_invalid_user", 401, 1}} {
+	}{{"subscription_sharing_usage_unavailable", 503, 3}, {"server_is_overloaded", 503, 3}, {"subscription_sharing_usage_limit_exceeded", 429, 1}, {"subscription_sharing_invalid_user", 401, 1}} {
 		t.Run(tc.code, func(t *testing.T) {
 			var calls, releases atomic.Int32
 			client := fakeClient(t, func(w http.ResponseWriter, _ *http.Request) {
@@ -309,6 +309,66 @@ func TestRetryBoundariesAndDiagnostics(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "test-secret") || strings.Contains(err.Error(), "diagnostic") {
 				t.Fatal("unsafe printable diagnostics")
+			}
+		})
+	}
+}
+
+func TestSubscriptionOverloadRetriesSameRequest(t *testing.T) {
+	var calls atomic.Int32
+	requests := make(chan string, 2)
+	client := fakeClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		requests <- string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls.Add(1) == 1 {
+			event(w, map[string]any{"type": "error", "error": map[string]string{
+				"code": "server_is_overloaded", "type": "service_unavailable_error",
+			}})
+			return
+		}
+		completed(w, textItem("continued"))
+	})
+	var observed *Error
+	p, err := New(Config{Model: "account-model", Authorize: auth, HTTPClient: client,
+		RetryInterval: time.Millisecond, OnError: func(e *Error) { observed = e }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, _, _, err := p.Complete(t.Context(), llm.CompletionRequest{Messages: []llm.Message{llm.UserText("Continue the current verification")}})
+	if err != nil || msg.Text() != "continued" || calls.Load() != 2 {
+		t.Fatalf("overload interrupted the run: calls=%d err=%v", calls.Load(), err)
+	}
+	if first, second := <-requests, <-requests; first != second {
+		t.Fatal("retry changed the current request")
+	}
+	if observed == nil || observed.ErrorClass != "known_code" || observed.OutputEmitted || observed.EventType != "error" || !observed.NoReplay() || !observed.NoFallback() {
+		t.Fatal("overload lost its classification or replay boundary")
+	}
+}
+
+func TestRetryAfterDelayDoesNotShortenOrOverflow(t *testing.T) {
+	const fallback = 500 * time.Millisecond
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+		wait   bool
+	}{
+		{"", fallback, true},
+		{"invalid", fallback, true},
+		{"-1", fallback, true},
+		{"0", fallback, true},
+		{" 60 ", time.Minute, true},
+		{"9223372036", 9223372036 * time.Second, true},
+		{"9223372037", 0, false},
+		{"18446744073709551616", 0, false},
+	} {
+		t.Run(tc.header, func(t *testing.T) {
+			if delay, wait := retryAfterDelay(tc.header, fallback); delay != tc.want || wait != tc.wait {
+				t.Fatalf("delay=%v wait=%v; want %v/%v", delay, wait, tc.want, tc.wait)
 			}
 		})
 	}

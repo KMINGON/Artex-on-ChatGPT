@@ -1,6 +1,7 @@
 package db
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,106 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+func TestReviewedTemplateGuidancePreservesEditsTasksAndDeletion(t *testing.T) {
+	raw, err := os.ReadFile("testdata/task_template_defaults_17e0fca.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		SourceCommit string              `json:"source_commit"`
+		Templates    []TaskTemplateInput `json:"templates"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.SourceCommit != "17e0fca59aef7d2e8f8e31355a3665cfd606e1dc" || len(fixture.Templates) != 4 {
+		t.Fatal("reviewed template baseline changed")
+	}
+	d, _ := templateFixtureDB(t)
+	for _, old := range fixture.Templates {
+		if fmt.Sprintf("%x", sha256.Sum256([]byte(old.Description))) != defaultTaskTemplateDescriptionBaseline[old.Name] {
+			t.Fatalf("unreviewed description: %s", old.Name)
+		}
+		if _, err := d.Exec(`UPDATE task_templates SET description=$2,goal=$3 WHERE name=$1`, old.Name, old.Description, old.Goal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	custom := fixture.Templates[1]
+	custom.Description += "\n사용자 추가 관찰 조건"
+	if _, err := d.Exec(`UPDATE task_templates SET description=$2 WHERE name=$1`, custom.Name, custom.Description); err != nil {
+		t.Fatal(err)
+	}
+	general := fixture.Templates[2]
+	if _, err := d.Exec(`UPDATE task_templates SET goal='사용자 목표',timeout_seconds=67 WHERE name=$1`, general.Name); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM task_templates WHERE name=$1`, fixture.Templates[3].Name); err != nil {
+		t.Fatal(err)
+	}
+	existing, err := d.CreateTask(general.Description, general.Goal, nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A later row failing must roll back an earlier description replacement.
+	if _, err := d.Exec(`CREATE FUNCTION reject_template_refresh() RETURNS trigger LANGUAGE plpgsql AS $$
+	BEGIN IF NEW.name='운영 · 일반 검증' THEN RAISE EXCEPTION 'fixture refresh failure'; END IF; RETURN NEW; END $$;
+	CREATE TRIGGER reject_template_refresh BEFORE UPDATE ON task_templates FOR EACH ROW EXECUTE FUNCTION reject_template_refresh()`); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.seedDefaultTaskTemplates(); err == nil {
+		t.Fatal("failed description update was ignored")
+	}
+	var description string
+	if err := d.QueryRow(`SELECT description FROM task_templates WHERE name=$1`, fixture.Templates[0].Name).Scan(&description); err != nil || description != fixture.Templates[0].Description {
+		t.Fatal("failed refresh partially committed")
+	}
+	if _, err := d.Exec(`DROP TRIGGER reject_template_refresh ON task_templates`); err != nil {
+		t.Fatal(err)
+	}
+	var firstUpdated time.Time
+	for pass := 0; pass < 2; pass++ {
+		if err := d.seedDefaultTaskTemplates(); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := d.ListTaskTemplates()
+		if err != nil || len(rows) != 3 {
+			t.Fatalf("deleted template restored: rows=%d err=%v", len(rows), err)
+		}
+		for _, next := range defaultTaskTemplateSeeds() {
+			for _, got := range rows {
+				if got.Name != next.Input.Name {
+					continue
+				}
+				want := next.Input.Description
+				if got.Name == custom.Name {
+					want = custom.Description
+				}
+				if got.Description != want {
+					t.Fatalf("description was not safely refreshed: %s", got.Name)
+				}
+				if got.Name == general.Name {
+					if got.Goal != "사용자 목표" || got.TimeoutSeconds == nil || *got.TimeoutSeconds != 67 {
+						t.Fatal("description refresh overwrote other edited fields")
+					}
+					if pass == 0 {
+						firstUpdated = got.UpdatedAt
+					} else if !got.UpdatedAt.Equal(firstUpdated) {
+						t.Fatal("repeated startup rewrote an already refreshed template")
+					}
+				}
+			}
+		}
+	}
+	kept, err := d.GetTask(existing.ID)
+	if err != nil || kept.Description != general.Description || kept.Goal != general.Goal {
+		t.Fatal("template refresh changed an existing task")
+	}
+	description, goal, err := d.Exploration(existing.ExplorationID).Root()
+	if err != nil || description != general.Description || goal != general.Goal {
+		t.Fatal("template refresh changed an existing exploration input")
+	}
+}
 
 // These startup migrations mutate fixed seed names, so each test owns its database.
 func templateFixtureDB(t *testing.T) (*DB, string) {

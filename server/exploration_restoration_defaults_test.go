@@ -21,9 +21,9 @@ type restorationDefaultsFixture struct {
 	} `json:"tools"`
 }
 
-func readRestorationDefaultsFixture(t *testing.T) restorationDefaultsFixture {
+func readRestorationDefaultsFixture(t *testing.T, filename string) restorationDefaultsFixture {
 	t.Helper()
-	raw, err := os.ReadFile("testdata/exploration_defaults_ca23d12.json")
+	raw, err := os.ReadFile("testdata/" + filename)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,13 +35,22 @@ func readRestorationDefaultsFixture(t *testing.T) restorationDefaultsFixture {
 }
 
 func TestExplorationRestorationReviewedBaseline(t *testing.T) {
-	fixture := readRestorationDefaultsFixture(t)
+	fixture := readRestorationDefaultsFixture(t, "exploration_defaults_ca23d12.json")
 	if fixture.SourceCommit != "ca23d1234ba6276d06dd6f2656a629cfa949a551" {
 		t.Fatal("baseline source changed")
 	}
 	for key, hash := range explorationRestorationPromptBaseline {
 		if defaultTextHash(fixture.Prompts[key]) != hash {
 			t.Fatalf("%s shipped prompt mismatch", key)
+		}
+	}
+	latest := readRestorationDefaultsFixture(t, "exploration_defaults_17e0fca.json")
+	if latest.SourceCommit != "17e0fca59aef7d2e8f8e31355a3665cfd606e1dc" {
+		t.Fatal("latest baseline source changed")
+	}
+	for key, hash := range explorationParityPromptBaseline {
+		if defaultTextHash(latest.Prompts[key]) != hash {
+			t.Fatalf("%s latest shipped prompt mismatch", key)
 		}
 	}
 	for key, baseline := range explorationRestorationToolBaseline {
@@ -71,10 +80,11 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 	}
 	defer pg.Close()
 	s := &Server{m: &Manager{pg: pg}}
-	fixture := readRestorationDefaultsFixture(t)
+	fixture := readRestorationDefaultsFixture(t, "exploration_defaults_ca23d12.json")
+	latest := readRestorationDefaultsFixture(t, "exploration_defaults_17e0fca.json")
 	older := readExplorationDefaultsFixture(t)
 	defaults := s.koreanToolDefaults()
-	for _, mode := range []string{"ca23d12", "a1396fa", "current", "custom", "selected history", "tool deleted", "localized description", "retry after schema error"} {
+	for _, mode := range []string{"ca23d12", "a1396fa", "17e0fca", "current", "custom", "custom latest", "selected history", "selected latest history", "tool deleted", "localized description", "retry after schema error"} {
 		t.Run(mode, func(t *testing.T) {
 			preserveDefaultRefreshFlag(t, pg, explorationRestorationDefaultsFlag)
 			wantPrompts := agent.BuiltinPromptSeeds()
@@ -101,19 +111,27 @@ func TestExplorationRestorationUpgradePreservesCustomAndSelectedHistory(t *testi
 				switch mode {
 				case "a1396fa":
 					body = older.Prompts[key]
+				case "17e0fca":
+					body = latest.Prompts[key]
 				case "current":
 					body, updates = wantPrompts[key], 0
 				case "custom":
 					body += "\n사용자의 추가 검증 지침"
 					wantPrompts[key], updates = body, 0
+				case "custom latest":
+					body = latest.Prompts[key] + "\n사용자의 추가 검증 지침"
+					wantPrompts[key], updates = body, 0
 				case "selected history":
+					wantPrompts[key], updates = body, 0
+				case "selected latest history":
+					body = latest.Prompts[key]
 					wantPrompts[key], updates = body, 0
 				}
 				version, err := pg.SavePrompt(a.ID, body, "fixture", "test")
 				if err != nil {
 					t.Fatal(err)
 				}
-				if mode == "selected history" {
+				if mode == "selected history" || mode == "selected latest history" {
 					var selected int64
 					if err := pg.QueryRow(`SELECT current_prompt_id FROM agents WHERE id=$1`, a.ID).Scan(&selected); err != nil {
 						t.Fatal(err)

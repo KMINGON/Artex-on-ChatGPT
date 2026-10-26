@@ -138,8 +138,10 @@ func TestRetryBudgetCoversHTTPAndSSEWithoutReplayingOutput(t *testing.T) {
 		want       int32
 	}{
 		{"known transient", "server_error", false, 3},
+		{"model overloaded", "server_is_overloaded", false, 3},
 		{"unknown error", "new_unclassified_code", false, 2},
 		{"transient after output", "server_error", true, 2},
+		{"overloaded after output", "server_is_overloaded", true, 2},
 		{"quota exhausted", "insufficient_quota", false, 2},
 		{"missing code", "", false, 2},
 	} {
@@ -214,6 +216,7 @@ func TestQuotaAdmissionDoesNotRetryAndRemainsClassifiable(t *testing.T) {
 func TestErrorEnvelopesAndSafeShape(t *testing.T) {
 	for _, tc := range []struct{ body, code, typ, class string }{
 		{`{"error":{"code":"server_error","type":"server_error"}}`, "server_error", "server_error", "known_code"},
+		{`{"error":{"code":"server_is_overloaded","type":"service_unavailable_error"}}`, "server_is_overloaded", "service_unavailable_error", "known_code"},
 		{`{"type":"error","code":"server_error"}`, "server_error", "", "known_code"},
 		{`{"type":"error"}`, "", "", "missing_code"},
 		{`{"error":{"code":"future_failure"}}`, "future_failure", "", "unknown_code"},

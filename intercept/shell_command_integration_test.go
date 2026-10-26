@@ -58,6 +58,7 @@ func TestStoredShellRulesReachGuardWithoutBlockingWorkerFiles(t *testing.T) {
 		{"Bash", `{"command":"halt"}`, true},
 		{"shell_send", `{"text":"sudo reboot\n"}`, true},
 		{"Bash", `{"command":"curl -X DELETE http://fixture.invalid/own-object"}`, true},
+		{"mcp__browser__browser_evaluate", `{"function":"() => \"method: 'DELETE' is a documented example\""}`, false},
 	} {
 		blocked, message, _ := g.Hooks().PreToolUse(t.Context(), tc.tool, []byte(tc.input))
 		if blocked != tc.blocked {
@@ -78,5 +79,14 @@ func TestStoredShellRulesReachGuardWithoutBlockingWorkerFiles(t *testing.T) {
 	blocked, _, _ := g.Hooks().PreToolUse(t.Context(), "Write", []byte(`{"file_path":"probe.py","content":"print('halt')"}`))
 	if !blocked {
 		t.Fatal("custom full-input policy lost")
+	}
+	// Restoring the original default must not discard an operator's explicit
+	// MCP selection, including the group for dynamically discovered tools.
+	if err := ic.SetEnabledTools([]string{"mcp__*"}); err != nil {
+		t.Fatal(err)
+	}
+	blocked, _, _ = g.Hooks().PreToolUse(t.Context(), "mcp__browser__browser_evaluate", []byte(`{"function":"() => \"method: 'DELETE' is a documented example\""}`))
+	if !blocked {
+		t.Fatal("explicit MCP interception selection lost")
 	}
 }

@@ -40,7 +40,7 @@ func TestPreToolUsePassthrough(t *testing.T) {
 // Both model-facing tool results and audit records must identify platform policy.
 func TestSystemBlockMessageKorean(t *testing.T) {
 	got := systemBlockMessage("사용자 거부")
-	want := "[ARTEX 플랫폼 정책 · 대상 시스템의 방어가 아님] 플랫폼이 이 호출을 차단했습니다. 이유: 사용자 거부. 이 작업은 금지되어 있습니다."
+	want := "[ARTEX 플랫폼 정책 · 대상 시스템의 방어가 아님] 이 도구 호출은 실행 전에 차단되어 실행되지 않았습니다. 이유: 사용자 거부. 차단 범위는 적용된 규칙에 한정됩니다."
 	if got != want {
 		t.Fatalf("platform policy framing lost: %q", got)
 	}
@@ -53,7 +53,7 @@ func TestSystemBlockMessageLocalizesOnlyLeadingModelMarker(t *testing.T) {
 		{"[모델] 금지된 작업", "[모델] 금지된 작업"},
 		{"사용자가 입력한 [模型] 표기", "사용자가 입력한 [模型] 표기"},
 	} {
-		if got := systemBlockMessage(tc.reason); !strings.Contains(got, "이유: "+tc.want+". 이 작업은 금지되어 있습니다.") {
+		if got := systemBlockMessage(tc.reason); !strings.Contains(got, "이유: "+tc.want+". 차단 범위는 적용된 규칙에 한정됩니다.") {
 			t.Errorf("reason %q: unexpected display %q", tc.reason, got)
 		}
 	}

@@ -10,7 +10,6 @@ package guard
 import (
 	"context"
 	"encoding/json"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -125,42 +124,27 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	return hook.Result{}
 }
 
-// systemBlockMessage frames an intercept block as an ARTEX platform-governance
-// decision so the agent does not mistake it for a target-side defense.
-//
-// Bare reasons ("도구 실행 금지" / "사용자 거부") can read like a WAF/403 on
-// the target, so a pentest agent's instinct is to bypass them — rewrite the
-// command, swap the payload, re-encode, retry. That is both futile (the platform
-// blocks the class of action, not one string) and wrong (it's a policy decision,
-// not an obstacle to defeat). This prefix states plainly that the block comes
-// from the platform, is not the target's protection, and that the operation is
-// forbidden — so the agent pivots to another approach instead of evading it.
-// Interception history keeps the raw reason (see Interceptor.Log); the
-// model-facing tool_result and guard audit rows carry this framing.
+// systemBlockMessage identifies an unexecuted call without broadening the
+// configured rule into a prohibition on the entire task or exploration path.
+// Interception history keeps the raw reason (see Interceptor.Log).
 func systemBlockMessage(reason string) string {
 	// The stored marker remains compatible with old approval records; only the
 	// tool result and guard audit presentation use a Korean label.
 	if rest, ok := strings.CutPrefix(reason, "[模型]"); ok {
 		reason = "[모델]" + rest
 	}
-	return "[ARTEX 플랫폼 정책 · 대상 시스템의 방어가 아님] 플랫폼이 이 호출을 차단했습니다. " +
-		"이유: " + reason + ". 이 작업은 금지되어 있습니다."
+	return "[ARTEX 플랫폼 정책 · 대상 시스템의 방어가 아님] 이 도구 호출은 실행 전에 차단되어 실행되지 않았습니다. " +
+		"이유: " + reason + ". 차단 범위는 적용된 규칙에 한정됩니다."
 }
 
-var reBlocked = regexp.MustCompile(`(?i)\b(403|forbidden|waf|blocked|rate.?limit|429|captcha|denied)\b`)
-
-// postToolUse is the Observer failure-attribution hook (G5): it classifies tool
-// results into blocked / error / ok so the planner can change strategy instead
-// of giving up at a WAF.
+// PostToolUse only observes calls that ran. A target's HTTP error or a quoted
+// "blocked" string cannot establish that ARTEX prevented execution.
 func (g *Guard) postToolUse(_ context.Context, ev hook.Event) hook.Result {
 	if ev.ToolName != "Bash" {
 		return hook.Result{}
 	}
 	class := "ok"
-	switch {
-	case reBlocked.Match(ev.Result):
-		class = "blocked"
-	case ev.IsError:
+	if ev.IsError {
 		class = "error"
 	}
 	g.mu.Lock()
@@ -182,6 +166,9 @@ func (g *Guard) Attributions() map[string]int {
 
 func (g *Guard) block(tool, reason, cmd string) hook.Result {
 	g.record(tool, "block", reason, cmd)
+	g.mu.Lock()
+	g.attrib["blocked"]++
+	g.mu.Unlock()
 	return hook.Result{Decision: "block", Message: reason}
 }
 

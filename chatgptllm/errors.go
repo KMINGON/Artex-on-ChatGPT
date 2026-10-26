@@ -127,7 +127,7 @@ func safeToken(s string) string {
 
 func knownTransient(code string) bool {
 	switch code {
-	case "server_error", "internal_error", "internal_server_error", "service_unavailable",
+	case "server_error", "internal_error", "internal_server_error", "service_unavailable", "server_is_overloaded",
 		"rate_limit_exceeded", "subscription_sharing_usage_unavailable", "subscription_sharing_user_unavailable":
 		return true
 	default:

@@ -824,7 +824,6 @@ func (t *ToolSet) relatedTaskOverviews() []map[string]any {
 		// resolvable via expand_digest(id)/node_detail(id), which search source tasks.
 		if cds, more := coldDigestsRecent(ts, relatedOverviewMaxDigestsPerSource); len(cds) > 0 {
 			for _, cd := range cds {
-				budget.takeField(cd, "body", 800)
 				cd["inherited"] = true
 				cd["source_task_id"] = source.Task.TaskID
 			}
