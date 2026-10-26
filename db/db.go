@@ -294,7 +294,10 @@ ON CONFLICT DO NOTHING`,
 	if err := d.seedDefaultAssetInterceptRules(); err != nil {
 		return fmt.Errorf("seed asset intercept rules: %w", err)
 	}
-	return d.localizeBuiltinDefaults()
+	if err := d.localizeBuiltinDefaults(); err != nil {
+		return err
+	}
+	return d.migrateShellInterceptDefaults()
 }
 
 // seedDefaultAssetInterceptRules inserts the built-in asset blocklist (fuzzy
@@ -354,27 +357,23 @@ ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
 	return nil
 }
 
-// seedDefaultInterceptRules inserts built-in safety intercept rules once on
-// first startup. The seed is gated by a settings flag so user edits (disable,
-// delete, re-order) are never overwritten on subsequent restarts.
-func (d *DB) seedDefaultInterceptRules() error {
-	if v, _, _ := d.GetSetting("intercept_default_rules_v1"); v == "done" {
-		return nil
-	}
-	type rule struct {
-		name     string
-		target   string // tool_name | tool_input
-		typ      string // string | regex
-		pattern  string
-		action   string
-		message  string
-		priority int
-	}
-	rules := []rule{
+type interceptRuleDefault struct {
+	name     string
+	target   string // tool_name | tool_input | shell_command
+	typ      string // string | regex
+	pattern  string
+	action   string
+	message  string
+	priority int
+	enabled  bool
+}
+
+func defaultInterceptRules() []interceptRuleDefault {
+	rules := []interceptRuleDefault{
 		// ── 系统破坏性命令 (priority 100) ──────────────────────────────────
 		{
 			name:     "[내장] 재귀 강제 삭제 rm -rf",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `(?i)\brm\b.{0,80}(?:-[a-z]*r[a-z]*f[a-z]*|-[a-z]*f[a-z]*r[a-z]*|--recursive|--no-preserve-root)`,
 			action:   "deny",
@@ -383,7 +382,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 시스템 핵심 디렉터리 삭제",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\brm\b[^"'\n]{0,60}["'\s](/|/etc|/bin|/usr|/boot|/var|/lib|/sys|/proc|/dev|/sbin|/root)`,
 			action:   "deny",
@@ -392,7 +391,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 디스크 포맷 mkfs",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\bmkfs\b`,
 			action:   "deny",
@@ -401,7 +400,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 디스크 장치 덮어쓰기 dd",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\bdd\b[^|\n]{0,100}\bof=\s*/dev/[a-zA-Z]`,
 			action:   "deny",
@@ -410,7 +409,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] Fork 폭탄",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `:\(\)\s*\{[^}]*:\|:`,
 			action:   "deny",
@@ -419,7 +418,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 종료 / 재시작",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\b(?:shutdown|reboot|halt|poweroff|init\s+[06])\b`,
 			action:   "deny",
@@ -428,7 +427,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 모든 프로세스 강제 종료",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\bkill\s+-9\s+-1\b|\bkillall\s+-9\b`,
 			action:   "deny",
@@ -437,7 +436,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 디스크 삭제 shred / wipe",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\b(?:shred|wipe)\b[^|\n]{0,80}/dev/[a-zA-Z]`,
 			action:   "deny",
@@ -446,7 +445,7 @@ func (d *DB) seedDefaultInterceptRules() error {
 		},
 		{
 			name:     "[내장] 방화벽 규칙 초기화",
-			target:   "tool_input",
+			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\biptables\s+(?:-F|--flush)\b|\bnft\s+flush\s+ruleset\b`,
 			action:   "deny",
@@ -532,7 +531,20 @@ func (d *DB) seedDefaultInterceptRules() error {
 			priority: 80,
 		},
 	}
-	for _, r := range rules {
+	for idx := range rules {
+		rules[idx].enabled = true
+	}
+	return rules
+}
+
+// seedDefaultInterceptRules inserts built-in safety intercept rules once on
+// first startup. The seed is gated by a settings flag so user edits (disable,
+// delete, re-order) are never overwritten on subsequent restarts.
+func (d *DB) seedDefaultInterceptRules() error {
+	if v, _, _ := d.GetSetting("intercept_default_rules_v1"); v == "done" {
+		return nil
+	}
+	for _, r := range defaultInterceptRules() {
 		if _, err := d.Exec(`
 INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
 VALUES ($1, true, $2, $3, $4, $5, $6, $7, false, 60, 'deny')
@@ -552,20 +564,12 @@ ON CONFLICT DO NOTHING`,
 // disable or delete them. The exfil rule ships DISABLED by default (its
 // curl/wget/nc pipe pattern mis-fires on legitimate CTF/pentest reverse-shell and
 // data-transfer pipes); enable it manually when exfil gating is actually wanted.
-func (d *DB) seedDefaultInterceptRulesV2() error {
-	if v, _, _ := d.GetSetting("intercept_default_rules_v2"); v == "done" {
-		return nil
-	}
-	rules := []struct {
-		name     string
-		pattern  string
-		action   string
-		message  string
-		enabled  bool
-		priority int
-	}{
+func defaultInterceptRulesV2() []interceptRuleDefault {
+	return []interceptRuleDefault{
 		{
 			name:     "[내장] 파괴적 시스템 명령",
+			target:   "shell_command",
+			typ:      "regex",
 			pattern:  `(?i)\b(rm\s+-rf\s+/|mkfs|dd\s+if=|:\(\)\s*\{|shutdown|reboot|>\s*/dev/sd)`,
 			action:   "deny",
 			message:  "파괴적 명령을 거부했습니다(rm -rf / / mkfs / dd / fork 폭탄 / 종료·재시작 / 디스크 장치 덮어쓰기)",
@@ -574,6 +578,8 @@ func (d *DB) seedDefaultInterceptRulesV2() error {
 		},
 		{
 			name:     "[내장] 데이터 유출 파이프",
+			target:   "tool_input",
+			typ:      "regex",
 			pattern:  `(?i)(curl|wget|nc|ncat)\b[^|]*\b(\|\s*(curl|wget|nc))`,
 			action:   "deny",
 			message:  "데이터 유출이 의심되는 파이프를 거부했습니다(명령 출력을 curl/wget/nc로 외부 전송)",
@@ -581,12 +587,18 @@ func (d *DB) seedDefaultInterceptRulesV2() error {
 			priority: 80,
 		},
 	}
-	for _, r := range rules {
+}
+
+func (d *DB) seedDefaultInterceptRulesV2() error {
+	if v, _, _ := d.GetSetting("intercept_default_rules_v2"); v == "done" {
+		return nil
+	}
+	for _, r := range defaultInterceptRulesV2() {
 		if _, err := d.Exec(`
 INSERT INTO intercept_rules(name, enabled, priority, match_target, match_type, pattern, action, message, timeout_enabled, timeout_seconds, timeout_action)
-VALUES ($1, $2, $3, 'tool_input', 'regex', $4, $5, $6, false, 60, 'deny')
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false, 60, 'deny')
 ON CONFLICT DO NOTHING`,
-			r.name, r.enabled, r.priority, r.pattern, r.action, r.message,
+			r.name, r.enabled, r.priority, r.target, r.typ, r.pattern, r.action, r.message,
 		); err != nil {
 			return fmt.Errorf("rule %q: %w", r.name, err)
 		}

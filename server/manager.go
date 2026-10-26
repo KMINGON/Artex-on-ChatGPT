@@ -1847,3 +1847,17 @@ func (t *Task) drainTriggers() []agent.TriggerEvent {
 	t.pendingTriggers = nil
 	return ev
 }
+
+// A failed planning round did not reliably consume its handoff. Keep the old
+// events before arrivals during that round; the next normal wake will retry the
+// planning decision against the saved graph, without replaying Worker tools.
+func (t *Task) restoreTriggers(events []agent.TriggerEvent) {
+	if len(events) == 0 {
+		return
+	}
+	t.trigMu.Lock()
+	defer t.trigMu.Unlock()
+	restored := make([]agent.TriggerEvent, 0, len(events)+len(t.pendingTriggers))
+	restored = append(restored, events...)
+	t.pendingTriggers = append(restored, t.pendingTriggers...)
+}

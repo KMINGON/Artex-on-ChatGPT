@@ -84,9 +84,8 @@ type QueryInput struct {
 	Compactor Compactor
 	// Recorder, when non-nil, is notified as the conversation grows so a host can
 	// persist a transcript. It fires for genuinely new messages (births) in
-	// order, and for compaction boundaries; it is never called for compaction's
-	// ephemeral working-set edits (MicroCompact tool-result clearing), so the
-	// recorded transcript is the raw, full-fidelity history.
+	// order, and for compaction boundaries, retaining the raw history separately
+	// from the committed summary view.
 	Recorder Recorder
 
 	// TokenBudget, when > 0, enables budget-driven continuation: after a turn
@@ -414,7 +413,7 @@ func (l *loop) run() {
 			return
 		}
 
-		// Non-destructive proactive compaction (MicroCompact → AutoCompact).
+		// Proactive compaction preserves source history until a summary succeeds.
 		if l.in.Compactor != nil {
 			if c, ok := l.in.Compactor.(interface{ SetInputOverhead(int) }); ok {
 				schemaJSON, _ := json.Marshal(schemas)
@@ -734,8 +733,9 @@ func (l *loop) todoTurnsBetween() int {
 // maybeInjectTodoReminder appends a todo <system-reminder> user message to the
 // history when the model has gone long enough without touching TodoWrite and
 // without a recent reminder. Throttle turns are derived from the API-visible
-// window (post-boundary) so a reminder re-appears after compaction drops the
-// prior one. No-op when todos are disabled or the list is empty.
+// window (post-boundary). A restored plan that is missing from this window is
+// surfaced immediately; visible plans retain the normal reminder interval.
+// No-op when todos are disabled or the list is empty.
 func (l *loop) maybeInjectTodoReminder() {
 	if l.in.Todos == nil {
 		return
@@ -744,17 +744,33 @@ func (l *loop) maybeInjectTodoReminder() {
 	if len(todos) == 0 {
 		return
 	}
-	sinceWrite, sinceReminder := todoReminderTurnCounts(llm.MessagesForAPI(l.messages))
-	if sinceWrite < l.todoTurnsSinceWrite() || sinceReminder < l.todoTurnsBetween() {
-		return
-	}
 	body := tool.RenderTodoReminder(todos)
 	if body == "" {
 		return
 	}
 	msg := llm.TodoReminderMessage(body)
+	visible := llm.MessagesForAPI(l.messages)
+	if todoListVisible(visible, msg, body) {
+		sinceWrite, sinceReminder := todoReminderTurnCounts(visible)
+		if sinceWrite < l.todoTurnsSinceWrite() || sinceReminder < l.todoTurnsBetween() {
+			return
+		}
+	}
 	l.messages = append(l.messages, msg)
 	l.record(msg, llm.Usage{})
+}
+
+func todoListVisible(messages []llm.Message, reminder llm.Message, body string) bool {
+	for _, message := range messages {
+		if llm.IsTodoReminder(message) && message.Text() == reminder.Text() {
+			return true
+		}
+	}
+	// Reuse the successful-call pairing rules: failed or interrupted writes and
+	// wrapper parameter aliases must not give a false indication of visibility.
+	visible := tool.NewTodoStore()
+	visible.RestoreFromHistory(messages)
+	return tool.RenderTodoReminder(visible.List()) == body
 }
 
 // todoReminderTurnCounts scans messages (most-recent first) and returns the

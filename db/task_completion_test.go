@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func reviewedCompletionFixture(t *testing.T, d *DB) (*Task, *ExplorationStore, int64) {
@@ -24,6 +25,100 @@ func reviewedCompletionFixture(t *testing.T, d *DB) (*Task, *ExplorationStore, i
 		t.Fatal("empty-work completion review was not stored")
 	}
 	return task, s, goal
+}
+
+// Recreate the pre-upgrade contract: a narrative review could mark the last
+// goal met while these exact intents were still running/queued/paused.
+func recordLegacyActiveCompletionReview(t *testing.T, d *DB, s *ExplorationStore, goal int64) {
+	t.Helper()
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	review, err := pendingGoalWorkTx(t.Context(), tx, s.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.Reason = "legacy review covered the existing worker"
+	review.ReviewedAt = time.Now().UTC()
+	raw, err := json.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE exploration_nodes SET state='met',payload=jsonb_set(payload,'{completion_review}',$2::jsonb) WHERE id=$1`, goal, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReviewedCompletionPreservesLegacyActiveIntents(t *testing.T) {
+	d, _ := templateFixtureDB(t)
+	for _, legacy := range []string{"reviewed", "unreviewed", "goalless"} {
+		for _, state := range []string{"open", "running", "paused"} {
+			t.Run(legacy+"_"+state, func(t *testing.T) {
+				task, s := graphMutationTask(t, d)
+				intent, err := s.AddIntent(map[string]any{"summary": "unfinished validation"}, 5, nil, "planner")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.SetIntentState(intent, state); err != nil {
+					t.Fatal(err)
+				}
+				var goal int64
+				if legacy != "goalless" {
+					goal, err = s.AddGoal(map[string]any{"text": "legacy goal", "custom": "preserve"}, "human")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if legacy == "reviewed" {
+						recordLegacyActiveCompletionReview(t, d, s, goal)
+					} else if err := s.SetNodeState(goal, "met"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if active, err := s.HasActiveOrPausedIntent(); err != nil || !active {
+					t.Fatalf("live intent not visible: active=%v err=%v", active, err)
+				}
+				if won, err := d.CompleteReviewedTask(t.Context(), task.ID); err != nil || won {
+					t.Fatalf("legacy review cancelled active work: won=%v err=%v", won, err)
+				}
+				work, err := s.GetNode(intent)
+				if err != nil || work.State != state {
+					t.Fatalf("intent changed: %+v err=%v", work, err)
+				}
+				stored, err := d.GetTask(task.ID)
+				if err != nil || IsTerminal(stored.Status) || stored.CompletedAt != nil {
+					t.Fatalf("task changed to terminal state: %+v err=%v", stored, err)
+				}
+				if goal != 0 {
+					node, err := s.GetNode(goal)
+					if err != nil || node.State != "open" || !strings.Contains(string(node.Payload), `"custom": "preserve"`) {
+						t.Fatalf("goal not reopened with user payload: %+v err=%v", node, err)
+					}
+				}
+				// An explicit per-intent stop is respected; completion does not
+				// implicitly stop the work on the Planner's behalf.
+				if err := s.SetIntentState(intent, "stopped"); err != nil {
+					t.Fatal(err)
+				}
+				if active, err := s.HasActiveOrPausedIntent(); err != nil || active {
+					t.Fatalf("stopped intent still active: active=%v err=%v", active, err)
+				}
+				if goal != 0 {
+					proof, _ := s.OriginFactID()
+					if all, _, err := s.ProveGoal(t.Context(), goal, proof, "remaining work explicitly stopped"); err != nil || !all {
+						t.Fatalf("settled proof rejected: all=%v err=%v", all, err)
+					}
+				}
+				if won, err := d.CompleteReviewedTask(t.Context(), task.ID); err != nil || !won {
+					t.Fatalf("settled completion rejected: won=%v err=%v", won, err)
+				}
+			})
+		}
+	}
 }
 
 func TestReviewedTaskCompletionRejectsWorkAddedAfterProof(t *testing.T) {
@@ -64,16 +159,14 @@ func TestReviewedTaskCompletionRejectsWorkAddedAfterProof(t *testing.T) {
 	}
 }
 
-func TestReviewedTaskCompletionAcceptsCoveredWorkAndDetectsTodoReuse(t *testing.T) {
+func TestReviewedTaskCompletionAcceptsReviewedTodosAndDetectsTodoReuse(t *testing.T) {
 	d, _ := templateFixtureDB(t)
 	ctx := context.Background()
 	for _, change := range []string{"none", "todo_revision", "todo_content_without_revision", "todo_completed"} {
 		t.Run(change, func(t *testing.T) {
 			task, s := graphMutationTask(t, d)
-			_, err := s.AddIntentWithParents(ctx, map[string]any{"summary": "approved independent worker"}, 5, nil, nil, "planner")
-			if err != nil {
-				t.Fatal(err)
-			}
+			// A review may explain a planning note outside this bounded goal,
+			// but cannot cancel a queued/running/paused intent.
 			followUpFact(t, s, "approved independent lead")
 			revision, err := s.SavePlannerTodos(ctx, []PlannerTodo{{Content: "approved independent todo", Status: "pending"}}, 0)
 			if err != nil {
@@ -286,5 +379,30 @@ func TestReviewedCompletionReopensForLateAnalysisResultButNotHTTPObservation(t *
 				t.Fatal("late analytical result did not reopen goal")
 			}
 		})
+	}
+}
+
+func TestLegacyCompletionReviewWithoutResultBoundaryRequiresOneReview(t *testing.T) {
+	d, _ := templateFixtureDB(t)
+	task, s, goal := reviewedCompletionFixture(t, d)
+	fact, err := s.AddFactWithIntent(t.Context(), map[string]any{"summary": "analysis result outside legacy review boundary"}, nil, "worker", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE exploration_nodes SET payload=payload #- '{completion_review,latest_result_node_id}' WHERE id=$1`, goal); err != nil {
+		t.Fatal(err)
+	}
+	if won, err := d.CompleteReviewedTask(t.Context(), task.ID); err != nil || won {
+		t.Fatalf("unbounded legacy snapshot silently completed: won=%v err=%v", won, err)
+	}
+	node, err := s.GetNode(goal)
+	if err != nil || node.State != "open" {
+		t.Fatalf("legacy review was not reopened: %+v err=%v", node, err)
+	}
+	if _, _, err := s.ProveGoal(t.Context(), goal, fact, "current evidence reviewed"); err != nil {
+		t.Fatal(err)
+	}
+	if won, err := d.CompleteReviewedTask(t.Context(), task.ID); err != nil || !won {
+		t.Fatalf("fresh review did not settle legacy completion: won=%v err=%v", won, err)
 	}
 }

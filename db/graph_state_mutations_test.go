@@ -232,9 +232,9 @@ CREATE TRIGGER reject_goal_edit_fixture BEFORE UPDATE ON exploration_nodes FOR E
 	}
 }
 
-func TestCompletionReviewDetectsSameIntentRerun(t *testing.T) {
+func TestCompletionReviewPreservesPreviouslyReviewedActiveIntent(t *testing.T) {
 	d, _ := templateFixtureDB(t)
-	for _, change := range []string{"claim_only", "reopen", "resume", "set_state", "quota_recovery", "startup_recovery", "legacy_snapshot"} {
+	for _, change := range []string{"none", "claim_only", "reopen", "resume", "set_state", "quota_recovery", "startup_recovery", "legacy_snapshot"} {
 		t.Run(change, func(t *testing.T) {
 			task, s := graphMutationTask(t, d)
 			intent, err := s.AddIntent(map[string]any{"summary": "approved work"}, 5, nil, "planner")
@@ -255,10 +255,7 @@ func TestCompletionReviewDetectsSameIntentRerun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			root, _ := s.OriginFactID()
-			if _, _, err := s.ProveGoal(t.Context(), goal, root, "verified", "remaining execution is independent"); err != nil {
-				t.Fatal(err)
-			}
+			recordLegacyActiveCompletionReview(t, d, s, goal)
 			switch change {
 			case "claim_only":
 				_, err = s.ClaimIntent(intent, "normal worker")
@@ -284,16 +281,13 @@ func TestCompletionReviewDetectsSameIntentRerun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := change == "claim_only"
 			won, err := d.CompleteReviewedTask(context.Background(), task.ID)
-			if err != nil || won != want {
-				t.Fatalf("completion=%v want=%v error=%v", won, want, err)
+			if err != nil || won {
+				t.Fatalf("completion=%v error=%v", won, err)
 			}
-			if !want {
-				node, _ := s.GetNode(goal)
-				if node.State != "open" {
-					t.Fatal("rerun did not reopen completion review")
-				}
+			node, _ := s.GetNode(goal)
+			if node.State != "open" {
+				t.Fatal("active work did not reopen completion review")
 			}
 		})
 	}

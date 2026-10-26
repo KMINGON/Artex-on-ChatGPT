@@ -557,6 +557,12 @@ func ruleMatches(r compiledRule, toolName string, input []byte) bool {
 		subject = toolName
 	case "tool_input":
 		subject = string(input)
+	case "shell_command":
+		var ok bool
+		subject, ok = shellCommandInput(toolName, input)
+		if !ok {
+			return false
+		}
 	default:
 		return false
 	}
@@ -564,6 +570,30 @@ func ruleMatches(r compiledRule, toolName string, input []byte) bool {
 		return r.re != nil && r.re.MatchString(subject)
 	}
 	return strings.Contains(subject, r.Pattern)
+}
+
+// shellCommandInput selects the argument that is actually submitted to a shell.
+// It does not parse shell syntax or inspect referenced scripts. In particular,
+// Write/Edit contents and a tool's description are not command execution.
+func shellCommandInput(toolName string, input []byte) (string, bool) {
+	field := ""
+	switch toolName {
+	case "Bash", "shell_open":
+		field = "command"
+	case "shell_send":
+		field = "text"
+	default:
+		return "", false
+	}
+	var args map[string]json.RawMessage
+	if err := json.Unmarshal(input, &args); err != nil {
+		return "", false
+	}
+	var command *string
+	if err := json.Unmarshal(args[field], &command); err != nil || command == nil {
+		return "", false
+	}
+	return *command, true
 }
 
 func defaultMessage(action, name string) string {

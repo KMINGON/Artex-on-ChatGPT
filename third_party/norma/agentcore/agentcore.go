@@ -374,6 +374,9 @@ func (s *Session) Resume(sessionID string) error {
 	s.resumeErr = nil
 	msgs, usage := transcript.Messages(recs)
 	s.messages = cleanResumed(msgs)
+	if s.opts.Todos != nil {
+		s.opts.Todos.RestoreFromHistory(s.messages)
+	}
 	s.usage = usage
 	s.sessionID = sessionID
 	s.writer = s.store.ResumeWriter(sessionID, transcript.LastUUID(recs))

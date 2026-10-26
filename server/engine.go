@@ -18,6 +18,7 @@ import (
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/Autumn-27/norma/transcript"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -869,9 +870,6 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 목표 없는 수동 의도는 실행 중 재판정으로 중단하지 않는다. 마지막
 		// 완료 검토 뒤 새 단서/Todo가 생겼다면 목표를 다시 열고 Planner로 넘긴다.
 		if open, err := t.Store.HasOpenGoal(); err == nil && !open {
-			if active, err := t.Store.HasActiveIntent(); err != nil || active {
-				return
-			}
 			{
 				// 작업 행 잠금 아래 최종 검토하여 새 목표나 동시 상태 전환을 보존한다.
 				if won, err := e.m.CompleteReviewedTask(ctx, t.ID, nil); err != nil {
@@ -881,6 +879,16 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 					t.drainTriggers()
 					e.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
 						Summary: goallessTaskDoneSummary})
+					return
+				}
+			}
+			// An older completion review may have left all goals met while work
+			// is still running. The DB reopens that review before we decide to
+			// wait; genuinely goalless manual work continues without replanning.
+			if open, err := t.Store.HasOpenGoal(); err != nil {
+				return
+			} else if !open {
+				if active, err := t.Store.HasActiveOrPausedIntent(); err != nil || active {
 					return
 				}
 			}
@@ -915,6 +923,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		ectx = intercept.WithTaskContext(ectx, t.ID, "planner", emit)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit)
 		e.EndLLMCall(t.ID)
+		if err != nil || ectx.Err() != nil {
+			t.restoreTriggers(triggers)
+		}
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 계획 오류: %v", t.ID, err)
@@ -1057,6 +1068,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var wrote agent.WriteCounts
 	var err error
 	runAttempt := 1
+	preparationRecordFailed := false
 	runEmit := func(activity db.Activity) {
 		progress.activity(activity)
 		if activity.Kind == "result" && activity.IsError {
@@ -1070,10 +1082,26 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		emit(activity)
 	}
-	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding, requestID, message)
-	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding)
+	attemptCtx := workCtx
+	prepareAttempt := func() bool {
+		runID := transcript.NewSessionID()
+		metadata, _ := json.Marshal(map[string]any{"worker_preparation_start": true, "worker_run_attempt": runAttempt, "run_id": runID})
+		boundary := e.emitActivity(t, db.Activity{NodeID: &iid, Worker: name, Kind: "round", Summary: "검증 실행 준비", Metadata: metadata})
+		if boundary.ID == 0 {
+			preparationRecordFailed = true
+			reason = harness.ReasonStorageError
+			err = errors.New("Worker 실행 시작을 저장하지 못해 이전 결과와 새 실행을 구분할 수 없습니다")
+			return false
+		}
+		attemptCtx = agent.WithCaptureRunID(workCtx, runID)
+		return true
+	}
+	if prepareAttempt() {
+		if hasChatMessage {
+			reason, wrote, err = worker.ExecuteWithMessage(attemptCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding, requestID, message)
+		} else {
+			reason, wrote, err = worker.Execute(attemptCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding)
+		}
 	}
 	e.EndLLMCall(t.ID)
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
@@ -1090,10 +1118,14 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		}
 		runAttempt++
 		e.BeginLLMCall(t.ID)
+		if !prepareAttempt() {
+			e.EndLLMCall(t.ID)
+			break
+		}
 		if hasChatMessage {
-			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding, requestID, message)
+			reason, wrote, err = worker.ExecuteWithMessage(attemptCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding, requestID, message)
 		} else {
-			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding)
+			reason, wrote, err = worker.Execute(attemptCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, runEmit, e.m.enrich, t.NotifyFinding)
 		}
 		e.EndLLMCall(t.ID)
 	}
@@ -1185,22 +1217,18 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// terminal分流：撞步数上限 ≠ 完成。max_turns→exhausted（规划者据此知道这个方向
 	// 试过但没真正做完、需换角度，而非当成已覆盖永久跳过）；出错→blocked；正常→done。
-	state := "done"
-	switch {
-	case reason == harness.ReasonOutputLimit:
-		state = "exhausted"
-	case err != nil:
-		state = "blocked"
-	case reason == harness.ReasonStorageError:
-		state = "blocked"
-	case reason == harness.ReasonMaxTurns:
-		state = "exhausted"
+	state := workerTerminalState(reason, err)
+	switch reason {
+	case harness.ReasonMaxTurns:
 		log.Printf("[worker %s] intent %d 단계 한도 도달(exhausted), 이번 실행은 %s 저장", name, intent.ID, wrote)
-	case reason == harness.ReasonTimeout:
-		state = "exhausted"
+	case harness.ReasonTimeout:
 		log.Printf("[worker %s] intent %d 실행 시간 초과(exhausted), 마무리 후 %s 저장", name, intent.ID, wrote)
 	}
-	if state == "blocked" && isTaskLLMChainExhausted(err) {
+	if state == "blocked" && preparationRecordFailed {
+		if stateErr := t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedActivityStorage); stateErr != nil {
+			log.Printf("[worker %s] task %s 의도 #%d 실행 기록 실패 상태 저장 실패: %v", name, t.ID, intent.ID, stateErr)
+		}
+	} else if state == "blocked" && isTaskLLMChainExhausted(err) {
 		_ = t.Store.SetIntentBlockedReason(intent.ID, db.IntentBlockedLLMQuota)
 	} else {
 		if stateErr := transitionIntentState(t.Store, intent.ID, "running", state); stateErr != nil {
@@ -1211,6 +1239,25 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	e.touch(t.ID)
 	t.NotifyDone(intent.ID) // results changed the graph -> wake the planner (with the just-finished intent id)
 	return true
+}
+
+// Only a normal model return finishes the run. Hook stops and unknown terminal
+// reasons can have no error, but must stay visible as unfinished work to Planner.
+func workerTerminalState(reason harness.TerminalReason, err error) string {
+	if reason == harness.ReasonOutputLimit {
+		return "exhausted"
+	}
+	if err != nil {
+		return "blocked"
+	}
+	switch reason {
+	case harness.ReasonCompleted:
+		return "done"
+	case harness.ReasonMaxTurns, harness.ReasonTimeout, harness.ReasonBlockingLimit, harness.ReasonPromptTooLong:
+		return "exhausted"
+	default:
+		return "blocked"
+	}
 }
 
 // runDetachedIntent runs one paused intent OUTSIDE the worker pool in its own

@@ -93,29 +93,45 @@ func TestPlannerReloadsTodosAndColdGraphKeepsOrigin(t *testing.T) {
 	}
 }
 
-func TestCompressionInputIncludesBoundedDetailEvidenceAndFollowUps(t *testing.T) {
+func TestCompressionInputKeepsCompleteDetailEvidenceAndFollowUps(t *testing.T) {
 	nodes := map[int64]*db.Node{}
 	var light []cgNode
 	var members []int64
+	detail := "START-" + strings.Repeat("가", 2000) + "-UNFINISHED-MIDDLE-" + strings.Repeat("나", 2000) + "-END"
 	for id := int64(1); id <= 40; id++ {
-		payload, _ := json.Marshal(map[string]any{"summary": "short observation", "detail": "START-" + strings.Repeat("가", 4000) + "-END", "evidence": "request evidence", "follow_ups": []map[string]any{{"id": 1, "summary": "next clue", "state": "resolved"}}})
+		payload, _ := json.Marshal(map[string]any{"summary": "short observation", "detail": detail, "evidence": "request evidence", "follow_ups": []map[string]any{{"id": 1, "summary": "next clue", "state": "resolved"}}})
 		nodes[id] = &db.Node{ID: id, Kind: db.KindFact, State: "confirmed", Payload: payload}
 		light = append(light, fact(id))
 		members = append(members, id)
 	}
-	input := buildCompressionInput(newColdGraph(light, nil), block{Members: members}, nodes)
-	if len([]rune(input)) > 35_000 {
-		t.Fatalf("bounded details overflowed: %d runes", len([]rune(input)))
-	}
-	if strings.Count(input, "START-") != 40 || strings.Count(input, "-END") != 40 {
-		t.Fatal("late nodes or detail suffix lost from bounded compression input")
-	}
-	for _, want := range []string{"evidence: request evidence", "follow_ups:", "next clue", "resolved", "node_detail(40)"} {
-		if !strings.Contains(input, want) {
-			t.Fatalf("missing %q", want)
+	graph := newColdGraph(light, nil)
+	parts := completeCompressionBlocks(graph, []block{{Members: members}}, nodes, 2)
+	seen := map[int64]bool{}
+	for _, part := range parts {
+		input := buildCompressionInput(graph, part, nodes)
+		if len([]rune(input)) > compressionInputRunes {
+			t.Fatalf("complete input overflowed: %d runes", len([]rune(input)))
+		}
+		if strings.Count(input, detail) != len(part.Members) {
+			t.Fatal("a middle verification clue was cut before summarization")
+		}
+		for _, want := range []string{"evidence: request evidence", "follow_ups:", "next clue", "resolved"} {
+			if !strings.Contains(input, want) {
+				t.Fatalf("missing %q", want)
+			}
+		}
+		for _, id := range part.Members {
+			if seen[id] {
+				t.Fatalf("node %d was duplicated across compression requests", id)
+			}
+			seen[id] = true
 		}
 	}
-	if !strings.Contains(string(nodes[40].Payload), strings.Repeat("가", 4000)) {
+	if len(seen) != len(members) || len(parts) <= 1 {
+		t.Fatalf("complete sources were lost instead of split: covered=%d parts=%d", len(seen), len(parts))
+	}
+	var original map[string]any
+	if err := json.Unmarshal(nodes[40].Payload, &original); err != nil || original["detail"] != detail {
 		t.Fatal("compression mutated original payload")
 	}
 }

@@ -400,21 +400,9 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			factFrom[e.To] = e.From
 		}
 	}
-	// cold-digest §6: members folded into an active digest are shown via cold_digests
-	// (below), not the flat recent_* lists. `covered` maps member id → its digest id.
-	// §6 render-time revival check: a covered member that has become hot again (a new
-	// intent derived from it) must reappear this round — so `hidden` folds a member out
-	// only when it is covered AND still cold.
-	covered, _ := t.ts.CoveredMembers()
-	// Render-time hot set (ancestor of a live intent / fact under a live intent).
-	// §6 revival check: a covered member that revived (now hot) must NOT stay folded
-	// — hidden() only folds a member out when it is covered AND still cold. Computed
-	// every round (cheap for real graph sizes); nil map degrades safely.
-	var hotAtRender map[int64]bool
-	if cg, _, err := loadColdGraph(t.ts); err == nil {
-		hotAtRender = cg.hotSet()
-	}
-	hidden := func(id int64) bool { _, c := covered[id]; return c && !hotAtRender[id] }
+	// A single source snapshot validates both complete digest coverage and hot
+	// revival; changed or still-active originals remain visible in the overview.
+	hidden := hiddenMembersFor(t.ts)
 	const openIntentsCap = 30
 	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
 	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
@@ -560,7 +548,6 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			}
 		}
 	}
-	limitCurrentOverviewText(out)
 	return out
 }
 
@@ -571,7 +558,6 @@ func inheritedMap(m map[string]any, sourceTaskID int64) map[string]any {
 }
 
 const (
-	currentOverviewTotalTextRunes      = 32_000
 	relatedOverviewTotalTextRunes      = 48_000
 	relatedOverviewMaxTextPerSource    = 8_000
 	relatedOverviewMaxGoalsPerSource   = 8
@@ -653,56 +639,7 @@ func (b *overviewTextBudget) takeField(entry map[string]any, field string, limit
 	}
 }
 
-func (b *overviewTextBudget) takeRows(rows []map[string]any, field string, sectionLimit, fieldLimit int) {
-	if len(rows) == 0 {
-		return
-	}
-	// Give every row a preview, even when hundreds of live intents are present.
-	limit := min(fieldLimit, sectionLimit/len(rows))
-	for _, row := range rows {
-		b.takeField(row, field, limit)
-	}
-}
-
 const overviewTruncationNote = "summary_truncated=true 또는 *_truncated=true가 표시된 개요에는 생략된 내용이 있습니다. 목표·힌트가 생략되면 계획·완료 판단 전에 해당 id를 node_detail로 조회하세요. task.id는 원래 작업 설명·목표를 담은 시작 노드이며, digest 전문도 node_detail(id) 또는 expand_digest(id)로 조회할 수 있습니다. 원문은 저장소에 그대로 보존됩니다."
-
-func limitCurrentOverviewText(out map[string]any) {
-	budget := overviewTextBudget{remaining: currentOverviewTotalTextRunes}
-	if task, ok := out["task"].(map[string]any); ok {
-		budget.takeField(task, "goal", 4_000)
-		budget.takeField(task, "description", 1_000)
-	}
-	for _, section := range []struct {
-		key, field        string
-		total, fieldLimit int
-	}{
-		{"goals", "text", 6_000, 1_000},
-		{"hints", "text", 6_000, 1_200},
-		{"recent_facts", "summary", 4_000, 1_000},
-		{"open_intents", "summary", 4_000, 800},
-		{"running_intents", "summary", 4_000, 800},
-		{"finding_list", "summary", 1_500, 800},
-		{"recent_done_intents", "summary", 1_500, 800},
-		{"cold_digests", "body", 1_500, 1_000},
-	} {
-		rows, _ := out[section.key].([]map[string]any)
-		budget.takeRows(rows, section.field, section.total, section.fieldLimit)
-	}
-	// Keep evidence IDs and roles intact; free-form reference notes share the budget.
-	hints, _ := out["hints"].([]map[string]any)
-	for _, hint := range hints {
-		refs, _ := hint["traffic_refs"].([]any)
-		for _, ref := range refs {
-			if entry, ok := ref.(map[string]any); ok {
-				budget.takeField(entry, "note", 200)
-			}
-		}
-	}
-	if budget.truncated {
-		out["summary_truncated"] = true
-		out["summary_note"] = overviewTruncationNote
-	}
-}
 
 func recentTerminalIntents(store *db.ExplorationStore, limit int) []*db.Node {
 	if limit <= 0 {
@@ -1173,11 +1110,11 @@ func (t *ToolSet) registerOneIntentContext(ctx context.Context, it intentItem) (
 }
 
 func (t *ToolSet) addIntent() actool.CoreTool {
-	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 각 의도에는 동일한 전제와 판단 기준을 공유하는 검증 질문 또는 사용자가 요구한 독립 산출물 하나를 맡기세요. summary에 대상·질문·필요한 근거·종료 조건을 간결하게 쓰고, 서로 독립적인 질문을 한 항목에 합치지 마세요. 같은 질문의 대조·변형은 한 의도에서 깊게 검증합니다.\n"+
+	return t.writeExpTool("add_intent", "【탐색 방향】을 생성하여 frontier에 저장하고 탐색 연결 그래프에 연결합니다. 각 의도에는 검증 질문 또는 사용자가 요구한 독립 산출물 하나를 맡기세요. summary에 대상·질문·확인할 근거를 쓰고, 서로 독립적인 질문을 한 항목에 합치지 마세요. 같은 질문의 대조·변형·원인·영향 확인은 한 Worker가 이어서 깊게 검증합니다. 일부 실패나 미확보 전제가 있으면 다른 접근과 전제 확보도 배정하며, 사용자가 요구하지 않은 사전 조건으로 허용된 검증을 줄이지 마세요.\n"+
 		"★일괄 제출 우선: 한 회차에서 선별한 여러 새 방향을 intents 배열로 한 번에 제출하세요(개별 호출보다 왕복 횟수 절약). 반환 ids 배열은 intents와 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 intents를 생략하고 최상위 summary를 전달하세요.",
 		withBatchSchema(obj(map[string]any{
 			"intents":    map[string]any{"type": "array", "description": "【우선 사용】추가할 독립 의도의 배열이며 각 요소를 별도 의도로 순서대로 처리합니다. 필드는 아래 최상위 필드(summary/asset_ids/parent_ids/priority)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
-			"summary":    str("[단일] 대상 또는 관련 자산 묶음 + 검증 질문 하나(또는 사용자가 요구한 독립 산출물) + 필요한 근거와 종료 조건. 같은 질문의 정상 대조·입력 변형은 함께 다루고 독립적인 주제를 나열하지 마세요."),
+			"summary":    str("[단일] 대상 또는 관련 자산 묶음 + 검증 질문 하나(또는 사용자가 요구한 독립 산출물) + 확인할 근거. 같은 질문의 정상 대조·입력 변형·영향 검증을 함께 다루고, 전제가 부족하면 확보 방법도 확인하세요. 독립적인 주제를 나열하지 마세요."),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "이 방향에서 테스트/공격할 【대상 자산 id】(**가능하면 전달**, 0/1/여러 개. list_assets의 자산 id이며 탐색 노드 id가 아님). 대상 자산(사이트/인터페이스/인자/호스트 등)을 지정합니다. 구체적인 자산을 다루면 반드시 전달하세요. 탐색 대상을 구조화하여 중복 확인과 의도·자산 연결에 사용합니다. 구체적인 대상 자산이 없는 순수한 전역 정찰에만 비워 두세요."},
 			"parent_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "상위 근거 id(선택 사항, 0/1/여러 개): 이 방향을 종합하여 도출한 【확인된 사실(fact)/발견(finding)】. **기존 fact/finding 노드 id만 지정하며 의도/목표/힌트는 금지**합니다. 의도는 확인된 지식과 발견에 근거해야 하며 근거 없이 계획해서는 안 됩니다. 여러 사실이 함께 새 의도를 만들면 모두 전달하고 최상위 새 정찰 방향이면 비워 두세요(작업 시작점 origin fact에 자동 연결)."},
 			"priority":   intp("우선순위 0-10, 기본 5"),
@@ -1241,12 +1178,12 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 }
 
 func (t *ToolSet) proveGoal() actool.CoreTool {
-	return t.writeExpTool("prove_goal", "발견/사실이 목표 달성을 증명한다고 판단할 때 호출합니다. 증거 노드를 목표 노드에 연결하고 목표를 met로 표시합니다.",
+	return t.writeExpTool("prove_goal", "발견/사실이 해당 목표 달성을 증명할 때 증거와 이유를 연결하여 met로 표시합니다. 마지막 목표는 대기·실행·일시정지 의도의 결과를 먼저 반영한 뒤 증명하세요. 일부 발견이나 보고서 작성만으로 남은 검증을 끝내지 마세요.",
 		obj(map[string]any{
 			"goal_id":           idp("목표 노드 id"),
 			"evidence_id":       idp("목표를 증명하는 발견/사실 노드 id"),
 			"reason":            str("이 증거가 목표를 충족하는 이유"),
-			"completion_review": str("마지막 목표 달성 시 활성 의도·미완료 Todo가 남으면 필수. 남은 작업과 목표의 관계, 종료해도 되는 근거를 적으세요. 실행 가능한 미검증 방향이 남으면 완료 처리하지 마세요."),
+			"completion_review": str("마지막 목표 증명 시 미완료 Todo가 남으면 그 항목과 목표의 관계 및 종료해도 되는 근거를 적으세요. 이 설명으로 대기·실행·일시정지 의도를 취소하거나 검증 완료로 대신할 수 없습니다. 해당 결과를 먼저 반영하고, 목표에 필요한 미검증 질문이나 확보할 전제가 남으면 검증을 이어가세요."),
 		}, "goal_id", "evidence_id", "reason"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -1307,8 +1244,8 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		"vulnclass": str("취약점 유형"), "name": str("취약점 이름"), "severity": str("critical|high|medium|low"), "summary": str("발견 요약"),
 		"intent_id": idp("현재 작업의 의도 id"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "영향받는 자산 id"},
 		"evidence":         str("증거/PoC 텍스트"),
-		"evidence_hint_id": idp("선택 사항: 이 작업에서 이 취약점에 대응하는 힌트 노드 ID. 구조화된 traffic_refs를 자동으로 가져옵니다. 상속한 힌트나 다른 취약점의 힌트를 참조할 수 없습니다"),
-		"traffic_refs": map[string]any{"type": "array", "description": "선택 사항. HTTP/HTTPS 취약점은 검색 후 요청/응답이 실제로 결론을 뒷받침하는지 각각 확인하고 재현 순서대로 실제 ID를 지정하세요. TCP 등 HTTP가 아니거나 미수집·정확한 기록 없음의 경우 생략 또는 []로 지정해도 보고할 수 있습니다. evidence에 이유와 검증 가능한 다른 증거를 제공할 수 있습니다. ID 추측, 도메인/시각만으로 연관성 단정, 패킷 보충만을 위한 재탐색은 금지합니다. 용도: baseline 정상 대조 / proof 취약점 입증 / verification 추가 검증 / supporting 보조 증거.",
+		"evidence_hint_id": map[string]any{"type": []string{"integer", "null"}, "description": "선택 사항: 이 작업에서 이 취약점에 대응하는 힌트 노드 ID. 힌트가 없으면 생략, null 또는 0을 사용하세요. 양수 ID는 해당 힌트의 구조화된 traffic_refs를 가져옵니다. 상속한 힌트나 다른 취약점의 힌트를 참조할 수 없습니다"},
+		"traffic_refs": map[string]any{"type": []string{"array", "null"}, "description": "선택 사항. HTTP/HTTPS 취약점은 검색 후 요청/응답이 실제로 결론을 뒷받침하는지 각각 확인하고 재현 순서대로 실제 ID를 지정하세요. TCP 등 HTTP가 아니거나 미수집·정확한 기록 없음의 경우 생략 또는 []로 지정해도 보고할 수 있습니다. evidence에 이유와 검증 가능한 다른 증거를 제공할 수 있습니다. ID를 추측하거나 도메인/시각만으로 연관성을 단정하지 마세요. 확보한 증거를 먼저 재사용하고 검증·재현에 필요한 추가 요청은 허용 범위에서 수행하세요. 단지 보고 형식을 채우기 위한 추가 탐지는 필요하지 않습니다. 용도: baseline 정상 대조 / proof 취약점 입증 / verification 추가 검증 / supporting 보조 증거.",
 			"items": obj(map[string]any{"traffic_id": str("traffic_search가 반환한 실제 트래픽 ID"), "role": map[string]any{"type": "string", "enum": []string{"baseline", "proof", "verification", "supporting"}}, "note": str("이 트래픽이 취약점 결론을 뒷받침하는 방식")}, "traffic_id")},
 	}, "vulnclass", "severity", "summary"), func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 		var a struct {
@@ -1332,10 +1269,12 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if !findingTrafficBindingEnabled() {
 			a.TrafficRefs, a.EvidenceHintID = nil, nil
 		}
-		if len(a.EvidenceHintID) > 0 && pid(a.EvidenceHintID) <= 0 {
-			return actool.Errorf("evidence_hint_id는 유효한 힌트 노드 ID여야 합니다. 인계 힌트가 없으면 생략하세요"), nil
+		hintID := pid(a.EvidenceHintID)
+		rawHintID := strings.TrimSpace(string(a.EvidenceHintID))
+		if hintID < 0 || (hintID == 0 && rawHintID != "" && rawHintID != "null" && rawHintID != "0") {
+			return actool.Errorf("evidence_hint_id는 양수인 힌트 노드 ID여야 합니다. 인계 힌트가 없으면 생략, null 또는 0을 사용하세요"), nil
 		}
-		refs, err := t.findingRefsFromHint(pid(a.EvidenceHintID), a.TrafficRefs)
+		refs, err := t.findingRefsFromHint(hintID, a.TrafficRefs)
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
@@ -1855,7 +1794,7 @@ func (t *ToolSet) steerWorkTool() actool.CoreTool {
 
 // getWorkerOutput returns a work's final (or截至中止时的) conclusion text by intent id.
 func (t *ToolSet) getWorkerOutput() actool.CoreTool {
-	return t.readExpTool("get_worker_output", "이 작업 또는 직접 연결된 작업의 의도(work)에 대한 최종 결과를 조회합니다. 연결된 작업 결과는 source_task_id/inherited=true가 포함되며 읽기 전용입니다. 정상 종료 시 요약, 중지(stopped)/오류 시 중단 전 마지막 출력을 반환합니다.",
+	return t.readExpTool("get_worker_output", "이 작업 또는 직접 연결된 작업의 의도(work)에 대한 최신 실행 결과를 조회합니다. 연결된 작업 결과는 source_task_id/inherited=true가 포함되며 읽기 전용입니다. 최신 실행의 result가 없으면 해당 실행의 마지막 text를 반환하며, 재개 전의 결과를 새 결과로 대신하지 않습니다. intent_state와 output_kind를 함께 확인하세요. final_text는 기존 필드명이며 작업 전체의 검증 완료를 뜻하지 않습니다.",
 		obj(map[string]any{"intent_id": idp("의도 id(= work 식별자)")}, "intent_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -1878,12 +1817,17 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			if pick == nil {
-				if intentNode.Inherited {
-					return jsonResult(inheritedMap(map[string]any{
-						"intent_id": id, "final_text": "(이 work에는 아직 출력이 없습니다)",
-					}, intentNode.SourceTaskID))
+				result := map[string]any{"intent_id": id, "intent_state": intentNode.State, "output_kind": "none", "final_text": "(현재 실행에는 아직 출력이 없습니다)", "has_output": false}
+				if intentNode.BlockedReason != "" {
+					result["blocked_reason"] = intentNode.BlockedReason
+					if intentNode.BlockedReason == db.IntentBlockedActivityStorage {
+						result["final_text"] = "현재 실행의 활동 기록을 저장하지 못했습니다. 과거 실행 결과를 현재 결과로 사용하지 마세요. 기존 근거와 과거 출력은 node_detail/get_worker_trace로 확인할 수 있습니다."
+					}
 				}
-				return actool.Text("(이 work에는 아직 출력이 없습니다)"), nil
+				if intentNode.Inherited {
+					inheritedMap(result, intentNode.SourceTaskID)
+				}
+				return jsonResult(result)
 			}
 			detail := pick.Detail
 			if detail == "" {
@@ -1892,6 +1836,17 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			result := map[string]any{
 				"intent_id": id, "final_text": detail,
 				"summary": pick.Summary, "is_error": pick.IsError,
+				"intent_state": intentNode.State, "output_kind": pick.Kind,
+				"activity_id": pick.ID, "created_at": pick.CreatedAt, "has_output": true,
+			}
+			if intentNode.BlockedReason != "" {
+				result["blocked_reason"] = intentNode.BlockedReason
+			}
+			var metadata map[string]any
+			_ = json.Unmarshal(pick.Metadata, &metadata)
+			result["run_boundary_known"] = metadata["run_start_activity_id"] != nil
+			if runID, ok := metadata["run_id"].(string); ok && runID != "" {
+				result["run_id"] = runID
 			}
 			if intentNode.Inherited {
 				inheritedMap(result, intentNode.SourceTaskID)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/norma/llm"
@@ -40,7 +41,7 @@ func TestSummaryReplayPreservesOnlyUnmodifiedProviderData(t *testing.T) {
 		t.Fatalf("unchanged replay lost metadata: %#v", got)
 	}
 	got = pairForReplay([]llm.Message{message})
-	if len(got) != 1 || got[0].Text() != "keep" || len(got[0].ProviderData) != 0 {
+	if len(got) != 1 || !strings.Contains(got[0].Text(), "keep") || len(got[0].ToolUses()) != 0 || len(got[0].ProviderData) != 0 {
 		t.Fatalf("orphaned tool can return via metadata: %#v", got)
 	}
 	if len(message.ProviderData) == 0 || len(message.Content) != 2 {

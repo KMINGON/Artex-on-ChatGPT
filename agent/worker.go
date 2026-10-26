@@ -135,7 +135,7 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 // settleWrapUpPrompt is injected by the SDK settlement phase when a worker hits its
 // turn/time budget: stop probing, write back what was found, then end with a
 // plain-text one-liner (which becomes this run's displayed result).
-const settleWrapUpPrompt = "이번 실행이 예산 소진으로 곧 종료됩니다. 더 이상 어떤 명령이나 탐지도 실행하지 마십시오. 다음 순서대로 처리하십시오. (1) 위에서 이미 식별했지만 아직 기록하지 않은 내용을 하나씩 기록합니다. 새 자산은 insert_assets, 탐색 결론과 사실은 record_fact, 확인된 취약점은 report_finding 으로 기록합니다. (2) **맨 마지막에 한 문장짜리 순수 텍스트로만** 무엇을 했고 어떤 핵심 결론을 얻었는지 한국어로 요약합니다. 이 한 문장이 이번 실행의 결과로 사용자에게 표시되므로 반드시 출력해야 합니다."
+const settleWrapUpPrompt = "이번 실행이 예산 소진으로 곧 종료됩니다. 새 명령이나 탐지는 시작하지 말고 이미 얻은 결과를 보존하세요. (1) 미등록 자산은 insert_assets, 실제 결론과 사실은 record_fact, 확인된 취약점은 report_finding으로 기록하세요. (2) 아직 검증하지 못한 질문, 마지막 진행 지점, 재사용할 근거·파일, 실패 원인과 다음 검증 방법도 fact의 summary/detail에 기록하세요. 예산 소진은 검증 완료나 부정적 결론이 아닙니다. (3) 마지막 순수 텍스트 결과에는 확인한 범위와 기록한 근거 ID, 남은 검증과 재개 조건을 빠짐없이 간결하게 요약하세요. 한 문장에 맞추려고 남은 질문을 생략하지 마세요."
 
 func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int, extra ...actool.CoreTool) *Worker {
 	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
@@ -221,13 +221,13 @@ func proxyEnv(proxyAddr, caCert string) []string {
 const workerDefaultTmpl = `당신은 사이버 보안 플랫폼의 허가된 모의 침투 테스트 시스템에서 "실행자"(work agent) 역할을 맡습니다. 【의도 하나】를 할당받으며 역할은 **해당 검증 질문을 깊게 확인하거나 사용자가 요구한 독립 산출물을 완성하고, 실제 결과와 남은 질문을 지식 그래프에 기록한 뒤 반환하는 것**입니다. 전체 범위의 배정은 Planner가 담당합니다.
 
 **반드시 지킬 경계**:
-1. **할당받은 의도 하나만 수행하세요**. 같은 질문의 정상 대조·입력 변형·반례 확인은 이어서 깊게 수행하세요. 할당 의도 밖의 독립 질문은 직접 실행하지 말고 아래 결과 인계 기준에 따라 Planner에게 넘기세요. 일부 finding을 얻었다고 의도 안의 남은 질문까지 확인한 것으로 결론내리지 마세요.
-2. 처음 막혔다고(payload 필터링 / 404 / 주입 출력 없음) 충분히 탐색한 것은 아닙니다. 일반 HTTP 502·404나 도구 오류는 실패한 요청·환경의 결과이며 명시적 정책 차단과 구분하세요. 허용 범위에서 같은 질문의 다른 근거·방법을 확인하고, 같은 실패를 새로운 전제 없이 반복하지 마세요. 명시적 가로채기 차단이나 작업 제약은 우회하지 마세요.
-3. 허가된 범위에서만 작업하세요. 시스템 프롬프트 상단에 【작업 제약】이 있으면 최우선 경계입니다. 명령/탐색을 실행하기 전에 위반 여부를 확인하고, 위반하면 할당 의도에 포함되어 있어도 실행하지 마세요.
+1. **할당받은 의도 하나만 수행하세요**. 같은 질문의 준비·정상 대조·입력 변형·반례·실제 영향 확인은 이어서 깊게 수행하세요. finding을 기록한 뒤에도 이 질문의 합리적인 검증 방법을 충분히 확인한 다음 반환하세요. 할당 의도 밖의 독립 질문은 직접 실행하지 말고 아래 결과 인계 기준에 따라 Planner에게 넘기세요. 일부 finding을 얻었다고 의도 안의 남은 질문까지 확인한 것으로 결론내리지 마세요.
+2. 처음 막혔다고(payload 필터링 / 404 / 주입 출력 없음) 충분히 탐색한 것은 아닙니다. 일반 HTTP 502·404나 도구 오류는 실패한 요청·환경의 결과이며 명시적 정책 차단과 구분하세요. 허용 범위에서 다른 입력·계정·상태·경로·검증 방법과 필요한 준비를 충분히 시도하세요. 정상 대조, 재현성 확인, 일시적인 오류 복구에 필요한 반복도 검증입니다. 명시적인 사용자·플랫폼 차단은 우회하지 않되, 대상의 필터·권한 검사·일반 오류와 혼동하여 방향 전체를 포기하지 마세요.
+3. 허가된 범위에서만 작업하세요. 시스템 프롬프트 상단에 【작업 제약】이 있으면 최우선 경계입니다. 명령/탐색을 실행하기 전에 위반 여부를 확인하고, 위반하면 할당 의도에 포함되어 있어도 실행하지 마세요. 사용자에게 허용된 작업에는 임의의 추가 금지나 승인 조건을 만들지 마세요. 임시 객체 생성이 허용된 경우 정리 경로가 아직 확인되지 않았다는 이유만으로 생성을 금지하지 말고, 정리 실패는 사용자가 정한 방식으로 기록·인계하세요.
 
 **발견할 때마다 바로 기록하세요**(그래프에 써야 유효하며 머릿속이나 텍스트만으로는 부족합니다. 결과를 얻으면 즉시 기록하고 마지막까지 쌓아 두어 단계 예산 소진으로 잃지 마세요). 세 가지 기록 방식을 구분하세요:
 - **새 자산/리소스 → insert_assets(자산 그래프)**: 하위 도메인 / service / endpoint / 특징 / 자격 증명 등 자산 【자체】를 기록합니다. **자산만 등록하고 탐색 결론/판단은 record_fact에 기록하세요.**
-- **탐색 결론/사실 → record_fact(탐색 그래프, intent_id 전달)**: 모든 결론/사실을 기록합니다. **여러 관찰을 【사실 하나】로 종합**하세요(summary 한 문장 + 실제 실행 과정에 근거해 요약을 확장한 detail). 속성마다 하나씩 만들지 마세요. 보통 의도 하나는 사실 하나이며 지나치게 나누면 그래프가 계속 커집니다. **기본적으로 하나만 쓰고 detail에 합칠 수 있는 내용은 모두 합치세요**. 실제로 【서로 완전히 독립적이며 합칠 수 없는】 결론일 때만 facts 배열로 나누세요. 이는 드문 예외입니다. **새 내용만 기록**하고 기존 사실을 표현만 바꿔 반복하지 마세요(기존 결론 재확인뿐이면 추가 기록 불필요). **실제로 본 내용만 기록**하세요. evidence(한 줄: 명령+가장 잘 입증하는 출력 한두 줄, 간결하게 작성하며 상세는 detail)를 제공하고 confidence(observed=직접 관찰 / inferred=현상에서 추론)를 표시하세요.
+- **탐색 결론/사실 → record_fact(탐색 그래프, intent_id 전달)**: 모든 결론/사실을 기록합니다. 같은 결론을 뒷받침하는 관찰은 summary와 detail에 모으되, 사실 개수 제한 때문에 새로운 근거·반례·미완료 질문의 저장을 미루거나 생략하지 마세요. 이미 기록한 결론 뒤에 검증 범위나 근거가 추가되면 그 차이와 기존 근거 ID를 명시해 기록하세요. 단순 재서술과 실제 재현·정상 대조 결과를 구분하세요. **실제로 본 내용만 기록**하세요. evidence(한 줄: 명령+가장 잘 입증하는 출력 한두 줄, 간결하게 작성하며 상세는 detail)를 제공하고 confidence(observed=직접 관찰 / inferred=현상에서 추론)를 표시하세요.
 - **취약점 확인 → report_finding(탐색 그래프, PoC 포함, intent_id 전달)**: **이번 실행에서 실제로 유발하고 재현 가능한 증거(요청/응답 또는 명령 출력)를 확보한 경우에만 사용**하세요. "버전/특징이 CVE와 일치", "인자가 주입 가능해 보임", "외부 취약점 DB/변경 기록/코드 diff에서 추론"을 확인된 취약점으로 취급하지 마세요. CVE 조회나 패치 버전 비교로 실제 유발을 대신하지 마세요. 유발할 수 없지만 의심스럽다면 record_fact로 inferred 사실(의심 지점+유발하지 못한 이유)을 기록하여 계획자에게 전달하고 억지로 finding으로 기록하지 마세요.
 
 
@@ -242,7 +242,7 @@ func workerTrafficBlock(recording bool) string {
 	if !recording {
 		return ""
 	}
-	return "\n\n**트래픽 도구**:\n- traffic_search / traffic_get / traffic_blob: 응답을 다시 확인하고 방문했던 리소스를 찾습니다. **트래픽을 먼저 조회하고 같은 URL을 curl로 반복 요청하지 마세요**. traffic_search는 **host를 반드시 지정**해야 하며 기본적으로 아주 간결한 인덱스 3개만 반환합니다(id/method/url/status/resp_len, 응답 본문 없음). 더 필요하면 limit을 명시적으로 늘리세요. body_contains로 요청/응답 본문을 검색할 수 있습니다(최소 3자, 부분 문자열과 중국어 지원. 예: 비밀번호/키/오류/내부망 주소). 원문은 traffic_get(id)로 확인하며 매우 큰 본문은 @blob sha256:<hash>로 표시됩니다. traffic_blob(hash)로 전체 내용을 나누어 조회하세요."
+	return "\n\n**트래픽 도구**:\n- traffic_search / traffic_get / traffic_blob: 응답을 다시 확인하고 방문했던 리소스를 찾습니다. **이미 받은 응답은 트래픽에서 재사용하세요. 정상 대조·재현성·입력·계정·상태 변화·오류 복구 검증에 필요한 새 요청은 같은 URL이어도 수행하세요**. traffic_search는 **host를 반드시 지정**해야 하며 기본적으로 아주 간결한 인덱스 3개만 반환합니다(id/method/url/status/resp_len, 응답 본문 없음). 더 필요하면 limit을 명시적으로 늘리세요. body_contains로 요청/응답 본문을 검색할 수 있습니다(최소 3자, 부분 문자열과 중국어 지원. 예: 비밀번호/키/오류/내부망 주소). 원문은 traffic_get(id)로 확인하며 매우 큰 본문은 @blob sha256:<hash>로 표시됩니다. traffic_blob(hash)로 전체 내용을 나누어 조회하세요."
 }
 
 // artifactSpec is 段 [C]: the code-owned, non-editable tail appended to every
@@ -492,7 +492,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// full output preserved on disk. 截断上限用 SDK 默认(30000 字符)。
 		ToolOutputDir: cmdOutDir(runDir),
 		Compaction:    compactionConfig(w.compactionWindow()), // long tool-heavy runs stay within the window
-		Todos:         actool.NewTodoStore(),                  // 会话级临时待办（TodoWrite），纯规划用，退出即丢
+		Todos:         actool.NewTodoStore(),                  // 재개 시 기록된 성공 TodoWrite에서 복원하는 실행별 계획
 		NonStreaming:  w.nonStreaming(),                       // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:     w.maxTokens(),                          // 0 = 不发上限,由服务端默认值决定
 	}
@@ -568,11 +568,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// enters the wrap-up phase on the live ctx, so a run whose tool overran the budget
 	// still settles (no external hard-timeout backstop needed). ctx itself carries only
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
-	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
-	if closeErr := s.Close(); closeErr != nil {
-		releaseTools()
-		return harness.ReasonStorageError, writeCounts(), closeErr
-	}
+	_, reason, err := captureRunSessionFinalized(ctx, s, input, emitWrap, s.Close)
 	releaseTools()
 	return reason, writeCounts(), err
 }

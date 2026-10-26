@@ -101,6 +101,15 @@ func taskArchivePath(dataDir string, archiveID int64, taskID string) string {
 	return filepath.Join(taskArchiveRoot(dataDir), fmt.Sprintf("task-%s-%d.tar.zst", taskID, archiveID))
 }
 
+func isTaskArchiveTranscriptFile(name string) bool {
+	// Norma continues in a recovery sibling, retaining every predecessor. Keep
+	// the chain together so Resume selects the same authoritative file on restore.
+	for strings.HasSuffix(name, ".recovered") {
+		name = strings.TrimSuffix(name, ".recovered")
+	}
+	return strings.HasSuffix(name, ".jsonl")
+}
+
 func stageTaskArchiveFiles(dataDir string, archiveID int64, taskID string, explorationID int64) (*taskArchiveFileStage, error) {
 	root := filepath.Join(taskArchiveRoot(dataDir), ".staging", strconv.FormatInt(archiveID, 10))
 	stage := &taskArchiveFileStage{root: root, payload: filepath.Join(root, "payload")}
@@ -143,7 +152,7 @@ func stageTaskArchiveFiles(dataDir string, archiveID int64, taskID string, explo
 	prefix := fmt.Sprintf("exp%d-", explorationID)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && !strings.HasSuffix(name, ".jsonl")) {
+		if !strings.HasPrefix(name, prefix) || (!entry.IsDir() && (!entry.Type().IsRegular() || !isTaskArchiveTranscriptFile(name))) {
 			continue
 		}
 		targets = append(targets, archiveFileMove{

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -66,64 +65,7 @@ func overviewProseRunes(value any) int {
 	return 0
 }
 
-func TestCurrentOverviewBoundsAllProseWithoutDroppingGraphStructure(t *testing.T) {
-	long := strings.Repeat("한글🙂<&>\n", 2_000)
-	root := map[string]any{"id": int64(10), "description": long, "goal": long}
-	out := map[string]any{"task": root, "frontier_open": 800}
-	for _, key := range []string{"goals", "hints", "open_intents", "running_intents", "finding_list", "recent_facts", "recent_done_intents", "cold_digests"} {
-		field := "summary"
-		if key == "goals" || key == "hints" {
-			field = "text"
-		} else if key == "cold_digests" {
-			field = "body"
-		}
-		rows := make([]map[string]any, 300)
-		for i := range rows {
-			rows[i] = map[string]any{
-				"id": i + 20, "state": "running", field: long,
-				"parents": []int64{1, 2}, "yields": []int64{3}, "asset_ids": []any{float64(9)},
-			}
-			if key == "hints" {
-				rows[i]["traffic_refs"] = []any{map[string]any{"traffic_id": "request-id", "role": "proof", "note": long}}
-			}
-		}
-		out[key] = rows
-	}
-	limitCurrentOverviewText(out)
-	if total := overviewProseRunes(out); total > currentOverviewTotalTextRunes {
-		t.Fatalf("current prose=%d exceeds %d", total, currentOverviewTotalTextRunes)
-	}
-	if root["goal_truncated"] != true || root["description_truncated"] != true || out["summary_truncated"] != true || out["frontier_open"] != 800 {
-		t.Fatal("root truncation flags or frontier count changed")
-	}
-	if !strings.Contains(out["summary_note"].(string), "판단 전에") {
-		t.Fatal("missing instruction to retrieve truncated goals/hints before acting")
-	}
-	for _, key := range []string{"goals", "hints", "open_intents", "running_intents", "finding_list", "recent_facts", "recent_done_intents", "cold_digests"} {
-		rows := out[key].([]map[string]any)
-		if len(rows) != 300 {
-			t.Fatalf("%s lost graph rows", key)
-		}
-		for i, row := range rows {
-			if row["id"] != i+20 || row["state"] != "running" || !reflect.DeepEqual(row["parents"], []int64{1, 2}) || !reflect.DeepEqual(row["yields"], []int64{3}) || !reflect.DeepEqual(row["asset_ids"], []any{float64(9)}) {
-				t.Fatalf("%s lost graph structure", key)
-			}
-			for _, value := range row {
-				if text, ok := value.(string); ok && !utf8.ValidString(text) {
-					t.Fatalf("%s invalid UTF-8", key)
-				}
-			}
-			if key == "hints" {
-				ref := row["traffic_refs"].([]any)[0].(map[string]any)
-				if ref["traffic_id"] != "request-id" || ref["role"] != "proof" || ref["note_truncated"] != true {
-					t.Fatal("traffic provenance or truncation flag lost")
-				}
-			}
-		}
-	}
-}
-
-func TestGraphOverviewBudgetIncludesSourcesAndPreservesOriginals(t *testing.T) {
+func TestGraphOverviewPreservesCurrentTextAndBoundsRelatedSources(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 	long := strings.Repeat("원문🙂<&>\n", 2_000)
@@ -186,8 +128,26 @@ func TestGraphOverviewBudgetIncludesSourcesAndPreservesOriginals(t *testing.T) {
 	tools := NewToolSet(store, "planner")
 	tools.SetTaskID(current.ID)
 	overview := tools.graphOverviewData()
-	if total := overviewProseRunes(overview); total > currentOverviewTotalTextRunes+relatedOverviewTotalTextRunes {
-		t.Fatalf("combined current and related prose=%d exceeds budget", total)
+	root := overview["task"].(map[string]any)
+	if root["description"] != long || root["goal"] != long || root["description_truncated"] != nil {
+		t.Fatal("current task input was shortened before reaching the Planner")
+	}
+	for section, field := range map[string]string{
+		"goals": "text", "hints": "text", "open_intents": "summary",
+		"recent_facts": "summary", "finding_list": "summary", "cold_digests": "body",
+	} {
+		rows := overview[section].([]map[string]any)
+		if len(rows) == 0 {
+			t.Fatalf("missing %s", section)
+		}
+		for _, row := range rows {
+			if row[field] != long || row[field+"_truncated"] != nil || row["id"] == nil {
+				t.Fatalf("%s lost the full text or source id", section)
+			}
+		}
+	}
+	if overview["summary_truncated"] != nil {
+		t.Fatal("current overview was silently truncated")
 	}
 	for _, source := range overview["related_tasks"].([]map[string]any) {
 		if total := overviewProseRunes(source); total > relatedOverviewBudgetForSources(len(sourceIDs)) {
@@ -206,9 +166,8 @@ func TestGraphOverviewBudgetIncludesSourcesAndPreservesOriginals(t *testing.T) {
 		t.Fatalf("tool output differs from shared overview: %v", err)
 	}
 	if !strings.HasSuffix(renderGraphOverview(overview), string(raw)) {
-		t.Fatal("planner prompt did not use the same bounded overview")
+		t.Fatal("planner prompt did not use the same complete current overview")
 	}
-	root := overview["task"].(map[string]any)
 	originals = append(originals, original{root["id"].(int64), "goal"})
 	for _, original := range originals {
 		result := callReadJSON(t, tools.nodeDetail(), fmt.Sprintf(`{"id":%d}`, original.id)).(map[string]any)

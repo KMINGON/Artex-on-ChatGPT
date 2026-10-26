@@ -56,6 +56,9 @@ func TestGraphMutationsRollbackMandatoryEdges(t *testing.T) {
 	if id, err := s.AddFactWithIntent(ctx, map[string]any{"summary": "failed"}, nil, "worker", intent); err == nil || id != 0 {
 		t.Fatalf("fact id=%d err=%v", id, err)
 	}
+	if err := s.SetIntentState(intent, "done"); err != nil {
+		t.Fatal(err)
+	}
 	if all, _, err := s.ProveGoal(ctx, goal, fact, "failure must not set met", "worker is independent of this goal"); err == nil || all {
 		t.Fatalf("proof all=%v err=%v", all, err)
 	}
@@ -128,6 +131,9 @@ func TestGraphMutationsDirectSourcesAndOwnership(t *testing.T) {
 	}
 	if _, _, err := s.ProveGoal(ctx, goal, deepFact, "indirect"); err == nil {
 		t.Fatal("accepted indirect proof")
+	}
+	if err := s.SetIntentState(intent, "done"); err != nil {
+		t.Fatal(err)
 	}
 	if _, _, err := s.ProveGoal(ctx, goal, sourceFact, "direct source evidence", "source-backed single goal already verified"); err != nil {
 		t.Fatal(err)
@@ -203,63 +209,69 @@ func TestGraphMutationsRejectArchivedTaskWrites(t *testing.T) {
 	}
 }
 
-func TestLastGoalRequiresReviewOfPendingWork(t *testing.T) {
+func TestLastGoalPreservesActiveIntentsDespiteReview(t *testing.T) {
 	d, _ := templateFixtureDB(t)
-	_, s := graphMutationTask(t, d)
-	ctx := context.Background()
-	intent, err := s.AddIntentWithParents(ctx, map[string]any{"summary": "still running"}, 5, nil, nil, "planner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	leads, _ := NewFollowUps([]string{"pending local observation"})
-	fact, err := s.AddFactWithIntent(ctx, map[string]any{"summary": "result with next step", "follow_ups": leads}, nil, "worker", intent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := s.AddGoal(map[string]any{"text": "one verified property"}, "human")
-	if err != nil {
-		t.Fatal(err)
-	}
-	last, err := s.AddGoal(map[string]any{"text": "another verified property"}, "human")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if all, _, err := s.ProveGoal(ctx, first, fact, "first property verified"); err != nil || all {
-		t.Fatalf("non-final goal blocked: %v %v", all, err)
-	}
-	if all, _, err := s.ProveGoal(ctx, last, fact, "last property verified"); err == nil || all || !strings.Contains(err.Error(), "completion_review") {
-		t.Fatalf("unfinished work accepted: %v %v", all, err)
-	}
-	goal, err := s.GetNode(last)
-	if err != nil || goal.State == "met" {
-		t.Fatalf("rejected proof set goal met: %+v %v", goal, err)
-	}
-	if count := graphCount(t, d, `SELECT count(*) FROM exploration_edges WHERE dst_id=$1 AND rel='proves'`, last); count != 0 {
-		t.Fatal("rejected proof left evidence edge")
-	}
-	if all, _, err := s.ProveGoal(ctx, last, fact, "last property verified", "remaining exploration is outside these two explicit goals"); err != nil || !all {
-		t.Fatalf("review rejected: %v %v", all, err)
-	}
-	goal, _ = s.GetNode(last)
-	var payload struct {
-		Review GoalCompletionReview `json:"completion_review"`
-	}
-	if err := json.Unmarshal(goal.Payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	review := payload.Review
-	if len(review.ActiveIntentIDs) != 1 || review.ActiveIntentIDs[0] != intent || len(review.PendingFollowUps) != 0 || review.Reason == "" || review.ReviewedAt.IsZero() {
-		t.Fatalf("review snapshot incomplete: %+v", review)
-	}
-	// Fully settled tasks do not require an override or an arbitrary quota.
-	if err := s.SetNodeState(last, "open"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetIntentState(intent, "done"); err != nil {
-		t.Fatal(err)
-	}
-	if all, _, err := s.ProveGoal(ctx, last, fact, "settled proof"); err != nil || !all {
-		t.Fatalf("settled task blocked: %v %v", all, err)
+	for _, state := range []string{"open", "running", "paused"} {
+		for _, terminal := range []string{"done", "stopped"} {
+			t.Run(state+"_then_"+terminal, func(t *testing.T) {
+				_, s := graphMutationTask(t, d)
+				ctx := t.Context()
+				intent, err := s.AddIntentWithParents(ctx, map[string]any{"summary": "remaining validation"}, 5, nil, nil, "planner")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.SetIntentState(intent, state); err != nil {
+					t.Fatal(err)
+				}
+				fact, err := s.AddFactWithIntent(ctx, map[string]any{"summary": "one verified property, another control remains"}, nil, "worker", intent)
+				if err != nil {
+					t.Fatal(err)
+				}
+				first, err := s.AddGoal(map[string]any{"text": "first property"}, "human")
+				if err != nil {
+					t.Fatal(err)
+				}
+				last, err := s.AddGoal(map[string]any{"text": "remaining property"}, "human")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if all, _, err := s.ProveGoal(ctx, first, fact, "first property verified"); err != nil || all {
+					t.Fatalf("partial goal proof rejected: all=%v err=%v", all, err)
+				}
+				for _, review := range []string{"", "remaining exploration is outside this bounded goal"} {
+					if all, _, err := s.ProveGoal(ctx, last, fact, "last property verified", review); err == nil || all || !strings.Contains(err.Error(), "completion_review") {
+						t.Fatalf("active intent accepted via review: all=%v err=%v", all, err)
+					}
+				}
+				goal, err := s.GetNode(last)
+				if err != nil || goal.State != "open" || strings.Contains(string(goal.Payload), "proofs") {
+					t.Fatalf("rejected proof changed goal: %+v err=%v", goal, err)
+				}
+				if count := graphCount(t, d, `SELECT count(*) FROM exploration_edges WHERE dst_id=$1 AND rel='proves'`, last); count != 0 {
+					t.Fatal("rejected proof left an evidence edge")
+				}
+				work, err := s.GetNode(intent)
+				if err != nil || work.State != state {
+					t.Fatalf("rejected proof cancelled work: %+v err=%v", work, err)
+				}
+				if err := s.SetIntentState(intent, terminal); err != nil {
+					t.Fatal(err)
+				}
+				if all, _, err := s.ProveGoal(ctx, last, fact, "settled proof"); err != nil || !all {
+					t.Fatalf("settled task proof rejected: all=%v err=%v", all, err)
+				}
+				goal, _ = s.GetNode(last)
+				var payload struct {
+					Review GoalCompletionReview `json:"completion_review"`
+				}
+				if err := json.Unmarshal(goal.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if len(payload.Review.ActiveIntentIDs) != 0 || payload.Review.Reason == "" || payload.Review.ReviewedAt.IsZero() {
+					t.Fatalf("final review snapshot incorrect: %+v", payload.Review)
+				}
+			})
+		}
 	}
 }
 

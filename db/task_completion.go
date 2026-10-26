@@ -80,19 +80,29 @@ func (d *DB) CompleteReviewedTask(ctx context.Context, taskID int64) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	if reviewGoal == 0 {
-		// Legacy all-met and explicit goalless tasks used frontier exhaustion. They
-		// may retain that behavior only when no new structured work remains.
-		if len(current.ActiveIntentIDs) > 0 || len(current.PendingTodoIndexes) > 0 {
-			return false, nil
+	// A narrative review is never permission to cancel queued/running/paused
+	// intent execution. This also protects pre-upgrade reviews that included it.
+	if len(current.ActiveIntentIDs) > 0 || (reviewGoal != 0 && completionReviewHasNewWork(reviewed, current)) {
+		if reviewGoal == 0 {
+			// Reopen one legacy met goal so the same wake can review the unfinished
+			// work. A truly goalless task keeps its direct-worker execution path.
+			err := tx.QueryRowContext(ctx, `SELECT id FROM exploration_nodes WHERE exploration_id=$1 AND kind='goal' AND state='met' ORDER BY id DESC LIMIT 1`, explorationID).Scan(&reviewGoal)
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
 		}
-	} else if completionReviewHasNewWork(reviewed, current) {
 		if _, err := tx.ExecContext(ctx, `UPDATE exploration_nodes SET state='open',blocked_reason=NULL,content_version=content_version+1 WHERE id=$1 AND exploration_id=$2`, reviewGoal, explorationID); err != nil {
 			return false, err
 		}
 		if err := tx.Commit(); err != nil {
 			return false, err
 		}
+		return false, nil
+	}
+	if reviewGoal == 0 && len(current.PendingTodoIndexes) > 0 {
 		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status='done',completed_at=COALESCE(completed_at,now()),updated_at=now() WHERE id=$1`, taskID); err != nil {
@@ -104,17 +114,10 @@ func (d *DB) CompleteReviewedTask(ctx context.Context, taskID int64) (bool, erro
 	return true, nil
 }
 
+// Live intents are handled unconditionally before this evidence/Todo check.
 func completionReviewHasNewWork(reviewed, current GoalCompletionReview) bool {
-	if reviewed.LatestResultNodeID != nil && current.LatestResultNodeID != nil && *current.LatestResultNodeID > *reviewed.LatestResultNodeID {
-		return true
-	}
-	intents := make(map[int64]bool, len(reviewed.ActiveIntentIDs))
-	for _, id := range reviewed.ActiveIntentIDs {
-		intents[id] = true
-	}
-	for _, id := range current.ActiveIntentIDs {
-		version, versionKnown := reviewed.ActiveIntentVersions[id]
-		if !intents[id] || !versionKnown || version != current.ActiveIntentVersions[id] {
+	if current.LatestResultNodeID != nil && *current.LatestResultNodeID > 0 {
+		if reviewed.LatestResultNodeID == nil || *current.LatestResultNodeID > *reviewed.LatestResultNodeID {
 			return true
 		}
 	}

@@ -1712,7 +1712,8 @@
     },
     "target": {
       "tool_name": "Tool name",
-      "tool_input": "Input"
+      "tool_input": "Input",
+      "shell_command": "Shell command"
     },
     "matchType": {
       "regex": "Regex",
@@ -1733,6 +1734,8 @@
       "matchTarget": "Match target",
       "targetToolName": "Tool name (tool_name)",
       "targetToolInput": "Input (tool_input JSON)",
+      "targetShellCommand": "Shell command (Bash·shell_open·shell_send)",
+      "shellCommandHelp": "Matches the complete command text passed to the shell, including quoted strings.",
       "matchTypeLabel": "Match type",
       "typeStringContains": "String contains",
       "typeRegex": "Regex",

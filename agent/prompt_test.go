@@ -115,7 +115,7 @@ func TestWorkerHandoffRespectsDisabledToolsAndObservationLimits(t *testing.T) {
 	if !strings.HasPrefix(got, "USER WORKER BODY") {
 		t.Fatal("worker override lost")
 	}
-	for _, contract := range []string{"실제 활성 도구 목록", "비활성·미연결이면 호출하지", "최종 결과에 미등록 자료·미처리 이유", "이미 받은 document/xhr/fetch 응답만 읽어", "브라우저 조작 자체에는 기존 작업 제약", "failed/read_failed/dropped/limited", "미저장·생략 부분", "새 정찰 루프를 시작하거나", "요약이 없으면 자동 등록을 가정하지"} {
+	for _, contract := range []string{"실제 활성 도구 목록", "비활성·미연결이면 호출하지", "최종 결과에 미등록 자료·미처리 이유", "이미 받은 document/xhr/fetch 응답만 읽어", "브라우저 조작 자체에는 기존 작업 제약", "failed/read_failed/dropped/limited", "미저장·생략 부분", "필요한 재요청으로 보완", "요약이 없으면 자동 등록을 가정하지"} {
 		if !strings.Contains(got, contract) {
 			t.Fatalf("worker handoff omitted capability/observation contract: %s", contract)
 		}

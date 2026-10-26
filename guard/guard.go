@@ -80,7 +80,8 @@ func (g *Guard) preToolUse(ctx context.Context, ev hook.Event) hook.Result {
 }
 
 // applyIntercept evaluates user-configured intercept rules against the tool call.
-// Both rules and the fallback judge receive the complete tool input.
+// The interceptor and fallback judge receive the complete input; each rule then
+// selects its configured matching surface (full JSON, name, or shell command).
 func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}

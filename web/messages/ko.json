@@ -1712,7 +1712,8 @@
     },
     "target": {
       "tool_name": "도구 이름",
-      "tool_input": "입력 내용"
+      "tool_input": "입력 내용",
+      "shell_command": "셸 명령"
     },
     "matchType": {
       "regex": "정규식",
@@ -1733,6 +1734,8 @@
       "matchTarget": "대조 대상",
       "targetToolName": "도구 이름(tool_name)",
       "targetToolInput": "입력 내용(tool_input JSON)",
+      "targetShellCommand": "셸 명령(Bash·shell_open·shell_send)",
+      "shellCommandHelp": "셸에 전달되는 명령문 전체를 검사하며 따옴표 안의 문자열도 포함합니다.",
       "matchTypeLabel": "대조 방식",
       "typeStringContains": "문자열 포함",
       "typeRegex": "정규식",

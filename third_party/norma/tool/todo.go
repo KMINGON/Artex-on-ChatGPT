@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 )
 
@@ -28,9 +29,10 @@ type Todo struct {
 // TodoStore holds the current todo list across tool calls. It is safe for
 // concurrent reads; the host can inspect progress via List.
 type TodoStore struct {
-	mu    sync.Mutex
-	items []Todo
-	save  func(context.Context, []Todo) error
+	mu        sync.Mutex
+	items     []Todo
+	save      func(context.Context, []Todo) error
+	hostOwned bool
 }
 
 // NewTodoStore returns an empty store.
@@ -39,7 +41,77 @@ func NewTodoStore() *TodoStore { return &TodoStore{} }
 // NewPersistentTodoStore restores a host-owned plan. A failed save leaves the
 // in-memory list unchanged, so TodoWrite cannot acknowledge an unpersisted plan.
 func NewPersistentTodoStore(items []Todo, save func(context.Context, []Todo) error) *TodoStore {
-	return &TodoStore{items: append([]Todo(nil), items...), save: save}
+	return &TodoStore{items: append([]Todo(nil), items...), save: save, hostOwned: true}
+}
+
+// RestoreFromHistory restores successful TodoWrite calls from the full raw
+// transcript, including writes hidden behind compaction boundaries. Checkpoint
+// copies of an acknowledged call do not roll a newer plan back. Host-owned
+// stores remain authoritative and never replay their persistence callback.
+func (s *TodoStore) RestoreFromHistory(messages []llm.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hostOwned {
+		return
+	}
+	type write struct {
+		items []Todo
+		key   string
+	}
+	pending := map[string]write{}
+	completed := map[string]bool{}
+	var restored []Todo
+	schema := s.Tool().InputSchema()
+	for _, message := range messages {
+		for _, block := range message.Content {
+			if message.Role == llm.RoleAssistant && block.Type == llm.BlockToolUse && block.ID != "" {
+				if _, exists := pending[block.ID]; exists {
+					// Two outstanding calls with the same ID cannot be paired safely.
+					pending[block.ID] = write{}
+					continue
+				}
+				input := block.Input
+				name := block.Name
+				if name == ExecuteExtraToolName {
+					var args struct {
+						ToolName   string          `json:"tool_name"`
+						Params     json.RawMessage `json:"params"`
+						Parameters json.RawMessage `json:"parameters"`
+					}
+					if json.Unmarshal(input, &args) != nil {
+						continue
+					}
+					name, input = args.ToolName, args.Params
+					if len(args.Parameters) > 0 {
+						if len(input) > 0 && !equivalentDeferredParams(input, args.Parameters) {
+							continue
+						}
+						input = args.Parameters
+					}
+				}
+				if name != "TodoWrite" || ValidateInput(schema, input) != nil {
+					continue
+				}
+				var args struct {
+					Todos []Todo `json:"todos"`
+				}
+				if json.Unmarshal(input, &args) != nil {
+					continue
+				}
+				canonical, _ := json.Marshal(args.Todos)
+				pending[block.ID] = write{items: args.Todos, key: block.ID + "\x00" + string(canonical)}
+			} else if message.Role == llm.RoleUser && block.Type == llm.BlockToolResult {
+				candidate, exists := pending[block.ToolUseID]
+				delete(pending, block.ToolUseID)
+				if !exists || candidate.key == "" || block.IsError || completed[candidate.key] {
+					continue
+				}
+				completed[candidate.key] = true
+				restored = candidate.items
+			}
+		}
+	}
+	s.items = append([]Todo(nil), restored...)
 }
 
 // List returns a snapshot of the current todos.

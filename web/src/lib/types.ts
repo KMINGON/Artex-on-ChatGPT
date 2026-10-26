@@ -1333,7 +1333,7 @@ export interface Stats {
 
 // ---- Intercept Rules ----
 export type InterceptAction = "allow" | "deny" | "ask";
-export type InterceptMatchTarget = "tool_name" | "tool_input";
+export type InterceptMatchTarget = "tool_name" | "tool_input" | "shell_command";
 export type InterceptMatchType = "string" | "regex";
 
 export interface InterceptRule {

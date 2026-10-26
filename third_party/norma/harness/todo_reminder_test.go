@@ -87,10 +87,59 @@ func TestMaybeInjectTodoReminderSkipsAfterRecentWrite(t *testing.T) {
 	store.Tool().Call(context.Background(), []byte(`{"todos":[{"content":"x","status":"pending"}]}`), &tool.ToolContext{})
 
 	l := &loop{in: QueryInput{Todos: store}}
-	// Recent TodoWrite (only 2 turns ago) → sinceWrite < 10 → no injection.
-	l.messages = []llm.Message{todoWriteAsst(), asst("a"), asst("b")}
+	// A recent successful TodoWrite already exposes the current list.
+	write := todoWriteAsst()
+	write.Content[0].Input = []byte(`{"todos":[{"content":"x","status":"pending"}]}`)
+	l.messages = []llm.Message{write, {Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolResultText("t1", "ok", false)}}, asst("a"), asst("b")}
 	l.maybeInjectTodoReminder()
-	if len(l.messages) != 3 {
+	if len(l.messages) != 4 {
 		t.Fatalf("should not inject shortly after a TodoWrite, got %d msgs", len(l.messages))
+	}
+}
+
+func TestRestoredTodoReminderRequiresSuccessfulVisibleWrite(t *testing.T) {
+	input := []byte(`{"todos":[{"content":"unfinished comparison","status":"pending"}]}`)
+	for _, state := range []string{"hidden", "failed", "interrupted", "empty", "wrapper", "already_reminded"} {
+		t.Run(state, func(t *testing.T) {
+			store := tool.NewTodoStore()
+			store.Tool().Call(t.Context(), input, nil)
+			write := todoWriteAsst()
+			write.Content[0].Input = input
+			result := llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolResultText("t1", "ok", false)}}
+			messages := []llm.Message{llm.BoundaryMessage(llm.BoundaryMeta{}), llm.UserText("summary without plan")}
+			wantInjection := true
+			switch state {
+			case "failed":
+				result.Content[0].IsError = true
+				messages = append(messages, write, result)
+			case "interrupted":
+				messages = append(messages, write)
+			case "empty":
+				store.Tool().Call(t.Context(), []byte(`{"todos":[]}`), nil)
+				wantInjection = false
+			case "wrapper":
+				write.Content[0].Name = tool.ExecuteExtraToolName
+				write.Content[0].Input = []byte(`{"tool_name":"TodoWrite","parameters":` + string(input) + `}`)
+				messages = append(messages, write, result)
+				wantInjection = false
+			case "already_reminded":
+				messages = append(messages, llm.TodoReminderMessage(tool.RenderTodoReminder(store.List())))
+				wantInjection = false
+			}
+			before := len(messages)
+			l := &loop{in: QueryInput{Todos: store}, messages: messages}
+			l.maybeInjectTodoReminder()
+			if added := len(l.messages) > before; added != wantInjection {
+				t.Fatalf("reminder injected=%v want=%v", added, wantInjection)
+			}
+			if wantInjection && !strings.Contains(l.messages[len(l.messages)-1].Text(), "unfinished comparison") {
+				t.Fatal("restored reminder did not contain the active plan")
+			}
+			length := len(l.messages)
+			l.maybeInjectTodoReminder()
+			if len(l.messages) != length {
+				t.Fatal("a visible restored plan was injected repeatedly without the normal interval")
+			}
+		})
 	}
 }

@@ -32,6 +32,19 @@ func explorationID(ts *db.ExplorationStore) int64 {
 }
 
 type runInfoKey struct{}
+type captureRunIDKey struct{}
+
+// WithCaptureRunID connects a host's persisted preparation boundary to the
+// subsequent model run. It remains separate from tool attribution so assembling
+// Worker RunInfo cannot discard the identity. Each retry needs a fresh ID.
+func WithCaptureRunID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, captureRunIDKey{}, id)
+}
+
+func captureRunIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(captureRunIDKey{}).(string)
+	return id
+}
 
 // WithRunInfo attaches run attribution to ctx.
 func WithRunInfo(ctx context.Context, ri RunInfo) context.Context {

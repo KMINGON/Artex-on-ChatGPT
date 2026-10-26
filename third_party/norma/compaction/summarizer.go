@@ -10,12 +10,12 @@ import (
 	"github.com/Autumn-27/norma/llm"
 )
 
-// Summary generation constants (== claude-code).
+// Summary generation limits. Overflow recovery partitions complete rounds; it
+// never drops an earlier round merely to make a summary request fit.
 const (
-	compactMaxOutputTokens = 20000                                                   // COMPACT_MAX_OUTPUT_TOKENS
-	maxPTLRetries          = 3                                                       // MAX_PTL_RETRIES
-	maxStreamingRetries    = 2                                                       // MAX_COMPACT_STREAMING_RETRIES
-	ptlRetryMarker         = "[earlier conversation truncated for compaction retry]" // PTL_RETRY_MARKER
+	compactMaxOutputTokens = 20000 // COMPACT_MAX_OUTPUT_TOKENS
+	maxStreamingRetries    = 2     // MAX_COMPACT_STREAMING_RETRIES
+	summaryPartMarker      = "다음은 긴 대화의 연속된 한 구간입니다. 다른 구간은 별도로 요약합니다. 이 구간의 사용자 조건·근거·미완료 작업·참조 ID를 보존하고, 제시되지 않은 앞뒤 맥락이나 완료 여부를 추측하지 마세요."
 )
 
 // summarySystemPrompt is the summarizer's system prompt (== claude-code
@@ -27,38 +27,64 @@ const summarySystemPrompt = "You are a helpful AI assistant tasked with summariz
 // the real conversation messages (not a rendered text transcript) followed by the
 // summary-request user message, with thinking disabled and output capped at
 // min(20000, maxOutputTokens). It retries transient stream failures
-// (MAX_COMPACT_STREAMING_RETRIES) and, if the summary request itself overflows,
-// drops the oldest API-round groups and retries (MAX_PTL_RETRIES).
+// (MAX_COMPACT_STREAMING_RETRIES). If the summary request itself overflows, it
+// summarizes smaller, complete round groups and combines every part in order.
+// A failed part invalidates the whole summary, leaving the caller's history intact.
 func ProviderSummarizer(p llm.Provider, maxOutputTokens int, nonStreaming bool) Summarizer {
 	maxOut := compactMaxOutputTokens
 	if maxOutputTokens > 0 && maxOutputTokens < maxOut {
 		maxOut = maxOutputTokens
 	}
 	return func(ctx context.Context, msgs []llm.Message) (string, error) {
-		work := pairForReplay(msgs)
-		var lastErr error
-		for attempt := 0; attempt <= maxPTLRetries; attempt++ {
-			raw, err := streamSummary(ctx, p, maxOut, work, nonStreaming)
+		var summarize func([]llm.Message, bool) ([]string, error)
+		summarize = func(head []llm.Message, part bool) ([]string, error) {
+			requestHead := head
+			if part {
+				requestHead = append([]llm.Message{llm.UserText(summaryPartMarker)}, head...)
+			}
+			raw, err := streamSummary(ctx, p, maxOut, requestHead, nonStreaming)
 			if err == nil {
-				return formatCompactSummary(raw), nil
+				body := formatCompactSummary(raw)
+				if body == "" {
+					return nil, errors.New("대화 요약에 보존할 본문이 없습니다")
+				}
+				return []string{body}, nil
 			}
-			if !IsOverflow(err) {
-				return "", err
+			if !IsOverflow(err) || summaryRetryForbidden(err) {
+				return nil, err
 			}
-			lastErr = err
-			truncated, ok := truncateHeadForPTLRetry(work)
+			left, right, ok := splitSummaryReplay(head)
 			if !ok {
-				break
+				return nil, err // an indivisible round cannot be shortened without loss
 			}
-			work = truncated
+			before, err := summarize(left, true)
+			if err != nil {
+				return nil, err
+			}
+			after, err := summarize(right, true)
+			if err != nil {
+				return nil, err
+			}
+			return append(before, after...), nil
 		}
-		return "", lastErr
+		parts, err := summarize(pairForReplay(msgs), false)
+		if err != nil {
+			return "", err
+		}
+		if len(parts) == 1 {
+			return parts[0], nil
+		}
+		var joined strings.Builder
+		for index, part := range parts {
+			fmt.Fprintf(&joined, "\n\n【대화 구간 %d/%d — 시간순】\n%s", index+1, len(parts), part)
+		}
+		return strings.TrimSpace(joined.String()), nil
 	}
 }
 
 // streamSummary issues one summary request (head + summary-request message),
 // retrying transient (non-overflow) stream failures. Overflow is returned
-// immediately so the caller can truncate and retry at a coarser granularity.
+// immediately so the caller can split the input without losing any rounds.
 func streamSummary(ctx context.Context, p llm.Provider, maxOut int, head []llm.Message, nonStreaming bool) (string, error) {
 	reqMsgs := make([]llm.Message, 0, len(head)+1)
 	reqMsgs = append(reqMsgs, head...)
@@ -100,21 +126,19 @@ func streamSummary(ctx context.Context, p llm.Provider, maxOut int, head []llm.M
 				stopReason = acc.StopReason
 			}
 		}
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		if callErr == nil {
 			if stopReason != "end_turn" || tools || strings.TrimSpace(text) == "" {
 				return "", fmt.Errorf("summary did not complete normally (stop_reason=%q)", stopReason)
 			}
 			return text, nil
 		}
-		if IsOverflow(callErr) {
-			return "", callErr // PTL — let the caller truncate, don't burn streaming retries
-		}
-		var noFallback interface{ NoFallback() bool }
-		var noReplay interface{ NoReplay() bool }
-		if errors.As(callErr, &noReplay) && noReplay.NoReplay() {
+		if summaryRetryForbidden(callErr) {
 			return "", callErr
 		}
-		if errors.As(callErr, &noFallback) && noFallback.NoFallback() {
+		if IsOverflow(callErr) {
 			return "", callErr
 		}
 		lastErr = callErr // transient — retry
@@ -122,11 +146,15 @@ func streamSummary(ctx context.Context, p llm.Provider, maxOut int, head []llm.M
 	return "", lastErr
 }
 
-// pairForReplay drops dangling tool_use / tool_result blocks so the replayed head
-// is a valid request (the working-set boundary may split a tool_use from its
-// result). Mirrors claude-code's ensureToolResultPairing intent (drop, not
-// synthesize — summarization only needs the surrounding text). Messages left
-// empty are removed.
+func summaryRetryForbidden(err error) bool {
+	var noFallback interface{ NoFallback() bool }
+	var noReplay interface{ NoReplay() bool }
+	return errors.As(err, &noReplay) && noReplay.NoReplay() || errors.As(err, &noFallback) && noFallback.NoFallback()
+}
+
+// pairForReplay preserves complete tool exchanges. Unpaired calls/results are
+// represented as explicitly uncertain summary material, not replayable tool
+// blocks: missing metadata must not erase their inputs, evidence, or images.
 func pairForReplay(msgs []llm.Message) []llm.Message {
 	useIDs := map[string]bool{}
 	resIDs := map[string]bool{}
@@ -143,20 +171,26 @@ func pairForReplay(msgs []llm.Message) []llm.Message {
 	out := make([]llm.Message, 0, len(msgs))
 	for _, m := range msgs {
 		nc := make([]llm.ContentBlock, 0, len(m.Content))
+		changed := false
 		for _, b := range m.Content {
 			switch b.Type {
 			case llm.BlockToolUse:
 				if !resIDs[b.ID] {
+					nc = append(nc, llm.TextBlock(fmt.Sprintf("[연결된 결과가 없는 도구 호출 기록 — 실행 여부·성공 여부 미확인]\nID: %q\n도구: %q\n입력 원문:\n%s", b.ID, b.Name, string(b.Input))))
+					changed = true
 					continue
 				}
 			case llm.BlockToolResult:
 				if !useIDs[b.ToolUseID] {
+					nc = append(nc, llm.TextBlock(fmt.Sprintf("[연결된 호출이 없는 도구 결과 기록 — 실행 맥락·성공 여부를 추론하지 마세요]\n호출 ID: %q\n오류 표시: %t\n결과 원문:", b.ToolUseID, b.IsError)))
+					nc = append(nc, b.Content...)
+					changed = true
 					continue
 				}
 			}
 			nc = append(nc, b)
 		}
-		if len(nc) != len(m.Content) {
+		if changed {
 			m.ProviderData = nil
 		}
 		if len(nc) > 0 || len(m.ProviderData) > 0 {
@@ -169,40 +203,58 @@ func pairForReplay(msgs []llm.Message) []llm.Message {
 	return out
 }
 
-// truncateHeadForPTLRetry drops the oldest API-round groups when the summary
-// request itself overflows (== claude-code truncateHeadForPTLRetry, 20% fallback
-// branch — Norma cannot read a precise token gap from the provider error). It
-// strips a leading retry marker, groups by API round, drops floor(20%) of the
-// oldest groups (≥1, keeping ≥1), and re-prepends the marker if the result would
-// start with an assistant message (the API requires a user-first message).
-func truncateHeadForPTLRetry(msgs []llm.Message) ([]llm.Message, bool) {
-	input := msgs
-	if len(input) > 0 && isPTLMarker(input[0]) {
-		input = input[1:]
-	}
-	groups := groupByAPIRound(input)
+// splitSummaryReplay chooses a balanced boundary between API rounds, keeping
+// even interleaved tool exchanges together. Each side is strictly smaller, so
+// repeated overflow splitting is finite without discarding a single group.
+func splitSummaryReplay(msgs []llm.Message) ([]llm.Message, []llm.Message, bool) {
+	groups := groupByAPIRound(msgs)
 	if len(groups) < 2 {
-		return nil, false
+		return nil, nil, false
 	}
-	dropCount := len(groups) / 5 // floor(len * 0.2)
-	dropCount = max(dropCount, 1)
-	dropCount = min(dropCount, len(groups)-1)
-	var sliced []llm.Message
-	for _, g := range groups[dropCount:] {
-		sliced = append(sliced, g...)
+	lastReference := map[string]int{}
+	weights := make([]int, len(groups))
+	var total int
+	for index, group := range groups {
+		weights[index] = max(1, EstimateTokens(group))
+		total += weights[index]
+		for _, message := range group {
+			for _, block := range message.Content {
+				if block.Type == llm.BlockToolUse {
+					lastReference[block.ID] = index
+				} else if block.Type == llm.BlockToolResult {
+					lastReference[block.ToolUseID] = index
+				}
+			}
+		}
 	}
-	if len(sliced) == 0 {
-		return nil, false
+	cut, position, weight, end, best := 0, 0, 0, 0, total+1
+	for index, group := range groups[:len(groups)-1] {
+		position += len(group)
+		weight += weights[index]
+		for _, message := range group {
+			for _, block := range message.Content {
+				if block.Type == llm.BlockToolUse {
+					end = max(end, lastReference[block.ID])
+				} else if block.Type == llm.BlockToolResult {
+					end = max(end, lastReference[block.ToolUseID])
+				}
+			}
+		}
+		if end > index {
+			continue
+		}
+		distance := total - 2*weight
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < best {
+			cut, best = position, distance
+		}
 	}
-	if sliced[0].Role == llm.RoleAssistant {
-		sliced = append([]llm.Message{llm.UserText(ptlRetryMarker)}, sliced...)
+	if cut == 0 {
+		return nil, nil, false
 	}
-	return sliced, true
-}
-
-func isPTLMarker(m llm.Message) bool {
-	return m.Role == llm.RoleUser && len(m.Content) == 1 &&
-		m.Content[0].Type == llm.BlockText && m.Content[0].Text == ptlRetryMarker
+	return msgs[:cut], msgs[cut:], true
 }
 
 // groupByAPIRound partitions messages into one group per API round-trip: a new
@@ -237,7 +289,11 @@ var (
 func formatCompactSummary(raw string) string {
 	s := analysisRe.ReplaceAllString(raw, "")
 	if m := summaryRe.FindStringSubmatch(s); m != nil {
-		s = "Summary:\n" + strings.TrimSpace(m[1])
+		body := strings.TrimSpace(m[1])
+		if body == "" {
+			return ""
+		}
+		s = "Summary:\n" + body
 	}
 	s = blankRe.ReplaceAllString(s, "\n\n")
 	return strings.TrimSpace(s)

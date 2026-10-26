@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -29,23 +31,42 @@ import (
 func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
-	return captureRunSession(ctx, s, input, emit)
+	return captureRunSessionFinalized(ctx, s, input, emit, s.Close)
 }
 
 // captureRunSession is captureRun over an existing session, so a caller can run
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	return captureRunSessionFinalized(ctx, s, input, emit, nil)
+}
+
+// One-shot callers finalize while the run identity and original result remain
+// available, so a close failure can be appended to the same execution's history.
+func captureRunSessionFinalized(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity), finalize func() error) (finalText string, reason harness.TerminalReason, rerr error) {
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
-	var reason harness.TerminalReason
+	runID := captureRunIDFrom(ctx)
+	if runID == "" {
+		runID = transcript.NewSessionID()
+	}
 	rec := func(r db.Activity) {
+		metadata := map[string]any{}
+		_ = json.Unmarshal(r.Metadata, &metadata)
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["run_id"], metadata["session_id"] = runID, s.SessionID()
+		r.Metadata, _ = json.Marshal(metadata)
 		if r.Kind == "text" || r.Kind == "tool_result" {
 			auditTrace.Append(db.InterceptContextEntry{Kind: r.Kind, Tool: r.Tool, ToolUseID: r.ToolUseID, Text: r.Detail, IsError: r.IsError})
 		}
 		if emit != nil {
 			emit(r)
 		}
+	}
+	if RunInfoFrom(ctx).IntentID > 0 {
+		rec(db.Activity{Kind: "round", Summary: "모델 검증 실행 시작", Metadata: json.RawMessage(`{"run_start":true}`)})
 	}
 	toolNames := map[string]string{} // tool_use id -> name, to label results
 
@@ -74,11 +95,33 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		tbuf.WriteString(text)
 	}
 	lastTool := &runTrace{startedAt: time.Now(), role: sessionRole(s.SessionID())}
-	runID := transcript.NewSessionID()
 	var lastUsage *llm.Usage
+	var lastTurns int
+	if finalize != nil {
+		defer func() {
+			closeErr := finalize()
+			if closeErr == nil {
+				return
+			}
+			previousReason := reason
+			var storage *harness.StorageError
+			if !errors.As(closeErr, &storage) {
+				closeErr = &harness.StorageError{Err: closeErr}
+			}
+			reason, rerr = harness.ReasonStorageError, errors.Join(closeErr, rerr)
+			summary, detail := terminalText(ctx, &harness.Terminal{Reason: reason, Err: rerr, Text: finalText, Turns: lastTurns}, lastTool)
+			detail += "\n- **저장 확인 전 종료 상태**: `" + string(previousReason) + "`\n"
+			// The model's result already owns its usage. This additional storage
+			// outcome must not count the same model tokens a second time.
+			activity := failureActivity(ctx, db.Activity{Kind: "result", IsError: true, Summary: firstLine(summary, 400), Detail: detail}, rerr, runID, s.SessionID(), lastTool, lastTurns)
+			var metadata map[string]any
+			_ = json.Unmarshal(activity.Metadata, &metadata)
+			metadata["terminal_reason"], metadata["original_terminal_reason"], metadata["failure_stage"] = string(reason), string(previousReason), "session_close"
+			activity.Metadata, _ = json.Marshal(metadata)
+			rec(activity)
+		}()
+	}
 
-	var finalText string
-	var rerr error
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
 			flush()
@@ -137,6 +180,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 		case harness.KindResult:
 			if ev.Terminal != nil {
+				lastTurns = ev.Terminal.Turns
 				if ev.Terminal.Reason != harness.ReasonAbortedStreaming {
 					sidequestion.Finish(ctx, ev.Terminal.Messages)
 				}

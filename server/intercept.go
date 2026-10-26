@@ -535,9 +535,9 @@ func validateInterceptRuleReq(req interceptRuleReq) error {
 		return fmt.Errorf("name 값은 비워 둘 수 없습니다")
 	}
 	switch req.MatchTarget {
-	case "tool_name", "tool_input":
+	case "tool_name", "tool_input", "shell_command":
 	default:
-		return fmt.Errorf("match_target 값은 tool_name 또는 tool_input 중 하나여야 합니다")
+		return fmt.Errorf("match_target 값은 tool_name, tool_input, shell_command 중 하나여야 합니다")
 	}
 	switch req.MatchType {
 	case "string", "regex":

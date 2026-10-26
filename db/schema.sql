@@ -1039,7 +1039,7 @@ CREATE TABLE IF NOT EXISTS intercept_rules (
     name            TEXT NOT NULL,
     enabled         BOOLEAN NOT NULL DEFAULT true,
     priority        INTEGER NOT NULL DEFAULT 0,
-    match_target    TEXT NOT NULL CHECK (match_target IN ('tool_name', 'tool_input')),
+    match_target    TEXT NOT NULL CHECK (match_target IN ('tool_name', 'tool_input', 'shell_command')),
     match_type      TEXT NOT NULL CHECK (match_type IN ('string', 'regex')),
     pattern         TEXT NOT NULL,
     action          TEXT NOT NULL CHECK (action IN ('allow', 'deny', 'ask')),
@@ -1050,6 +1050,21 @@ CREATE TABLE IF NOT EXISTS intercept_rules (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Existing installations keep custom full-input rules; only the supported target
+-- vocabulary changes here. Exact shipped defaults are migrated separately.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='intercept_rules'::regclass
+          AND conname='intercept_rules_match_target_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%shell_command%'
+    ) THEN
+        ALTER TABLE intercept_rules DROP CONSTRAINT intercept_rules_match_target_check;
+        ALTER TABLE intercept_rules ADD CONSTRAINT intercept_rules_match_target_check
+            CHECK (match_target IN ('tool_name', 'tool_input', 'shell_command'));
+    END IF;
+END $$;
 DROP TRIGGER IF EXISTS trg_intercept_rules_upd ON intercept_rules;
 CREATE TRIGGER trg_intercept_rules_upd BEFORE UPDATE ON intercept_rules
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

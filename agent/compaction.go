@@ -13,11 +13,12 @@ package agent
 //	           reusing bodies whose signature is unchanged (§5.3).
 //
 // Concurrency: one compaction per task at a time (mutex), ≥cooldown between runs,
-// and a commit-time liveness recheck drops any member that revived while the body
-// was being generated so a digest never covers a hot node.
+// and a pre-save source recheck rejects any block changed during summarization.
+// Render-time source checks also invalidate summaries after subsequent writes.
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -126,7 +127,7 @@ func (c *Compactor) maintain(ts *db.ExplorationStore) (round int64, uncompressed
 	}
 	applyStampsInPlace(stamps, ops)
 	elig := g.eligibleCold(structCold, stamps, round, c.params)
-	covered, err := ts.CoveredMembers()
+	covered, err := completeCoveredMembers(ts)
 	if err != nil {
 		return
 	}
@@ -150,7 +151,7 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 	if err != nil {
 		return
 	}
-	g, nodeByID, err := loadColdGraph(ts)
+	g, nodeByID, cvers, err := loadCompressionSnapshot(ts)
 	if err != nil {
 		return
 	}
@@ -158,11 +159,7 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 	if err != nil {
 		return
 	}
-	cvers, err := ts.ContentVersions()
-	if err != nil {
-		return
-	}
-	covered, err := ts.CoveredMembers()
+	covered, err := completeCoveredMembers(ts)
 	if err != nil {
 		return
 	}
@@ -174,7 +171,7 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 			uncompressed[id] = true
 		}
 	}
-	blocks := g.group(uncompressed, c.params)
+	blocks := completeCompressionBlocks(g, g.group(uncompressed, c.params), nodeByID, c.params.K)
 	if len(blocks) == 0 {
 		return // this batch has no ≥2 connected/shared-parent block — nothing to fold (§7)
 	}
@@ -197,15 +194,11 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 	if err != nil {
 		return
 	}
-	g, nodeByID, err := loadColdGraph(ts)
+	g, nodeByID, cvers, err := loadCompressionSnapshot(ts)
 	if err != nil {
 		return
 	}
 	stamps, err := ts.ColdStamps()
-	if err != nil {
-		return
-	}
-	cvers, err := ts.ContentVersions()
 	if err != nil {
 		return
 	}
@@ -215,19 +208,21 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 	}
 	hot := g.hotSet()
 	elig := g.eligibleCold(g.structuralCold(hot), stamps, round, c.params)
-	blocks := g.group(elig, c.params)
+	blocks := completeCompressionBlocks(g, g.group(elig, c.params), nodeByID, c.params.K)
 
 	bySig := map[string]*db.Node{}
 	for _, d := range active {
-		sig, _ := digestSigGen(d)
-		bySig[sig] = d
+		if digestInputComplete(d) {
+			sig, _ := digestSigGen(d)
+			bySig[sig] = d
+		}
 	}
 	desired := map[string]bool{}
 	var toCreate []block
 	for _, b := range blocks {
 		sig := blockSignature(b, cvers)
 		desired[sig] = true
-		if _, ok := bySig[sig]; ok {
+		if existing := bySig[sig]; existing != nil && digestSourceSignature(existing) == compressionSourceSignature(g, b, nodeByID) {
 			continue // unchanged → reuse the existing digest, skip LLM (§5.3)
 		}
 		toCreate = append(toCreate, b)
@@ -241,58 +236,73 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 			log.Printf("[compaction] compress exp=%d block=%v: %v", ts.ID(), b.Members, err)
 			return
 		}
+		if body == "" {
+			return // an oversized complete input stays visible, never partially folded
+		}
 		bodies[i] = body
 	}
 	var stale []int64
 	for _, d := range active {
 		sig, _ := digestSigGen(d)
-		if !desired[sig] {
+		valid := desired[sig] && digestInputComplete(d)
+		if valid {
+			members, err := ts.DigestMembers(d.ID)
+			if err != nil {
+				return
+			}
+			valid = digestMatchesSource(d, members, g, nodeByID, cvers)
+		}
+		if !valid {
 			stale = append(stale, d.ID)
+		}
+	}
+	for i, b := range toCreate {
+		if !c.saveBlock(ts, g, b, nodeByID, cvers, c.generationFor(b, active), bodies[i]) {
+			return
 		}
 	}
 	if err := ts.SupersedeDigests(stale); err != nil {
 		log.Printf("[compaction] supersede exp=%d: %v", ts.ID(), err)
-		return
-	}
-	for i, b := range toCreate {
-		c.saveBlock(ts, b, nodeByID, cvers, c.generationFor(b, active), bodies[i])
 	}
 }
 
-// foldBlock compresses one block and writes its digest — with a commit-time
-// liveness recheck (§ concurrency): between grouping and write the graph may have
-// changed, so any member that has since gone hot (revived) is dropped from the
-// covers set. If the block dissolves below K it is skipped.
+// foldBlock compresses one block and writes it only while its entire source is
+// unchanged. Dropping changed members would leave their stale claims in the body.
 func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *coldGraph, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int) {
 	body, err := c.compress(ctx, g, b, nodeByID)
 	if err != nil {
 		log.Printf("[compaction] compress exp=%d block=%v: %v", ts.ID(), b.Members, err)
 		return
 	}
-	c.saveBlock(ts, b, nodeByID, cvers, generation, body)
+	if body != "" {
+		c.saveBlock(ts, g, b, nodeByID, cvers, generation, body)
+	}
 }
 
-func (c *Compactor) saveBlock(ts *db.ExplorationStore, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int, body string) {
-	// Re-read fresh state and drop any member that revived while we compressed.
-	fresh, _, err := loadColdGraph(ts)
+func (c *Compactor) saveBlock(ts *db.ExplorationStore, original *coldGraph, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int, body string) bool {
+	fresh, freshNodes, freshVersions, err := loadCompressionSnapshot(ts)
 	if err != nil {
-		return
+		return false
+	}
+	if blockSignature(b, cvers) != blockSignature(b, freshVersions) || compressionSourceSignature(original, b, nodeByID) != compressionSourceSignature(fresh, b, freshNodes) {
+		return false
 	}
 	freshHot := fresh.hotSet()
-	members := make([]int64, 0, len(b.Members))
 	for _, mID := range b.Members {
-		if !freshHot[mID] {
-			members = append(members, mID)
+		if freshHot[mID] {
+			return false
 		}
 	}
-	if len(members) < c.params.K {
-		return // block revived out from under us — leave those nodes hot, don't fold
+	if len(b.Members) < c.params.K {
+		return false
 	}
-	final := block{Members: members, Anchors: b.Anchors}
-	payload := digestPayload(body, final, nodeByID, generation, blockSignature(final, cvers))
-	if _, err := ts.AddDigest(payload, members); err != nil {
+	payload := digestPayload(body, b, nodeByID, generation, blockSignature(b, cvers))
+	payload["source_signature"] = compressionSourceSignature(original, b, nodeByID)
+	if _, err := ts.AddDigest(payload, b.Members); err != nil {
 		log.Printf("[compaction] add digest exp=%d: %v", ts.ID(), err)
+		return false
 	}
+	return true
 }
 
 // generationFor computes a digest's重摘代次 (§1): 1 for a fresh fold; for a major
@@ -347,16 +357,14 @@ func (c *Compactor) finish(expID int64) {
 // loadColdGraph reads the exploration's nodes + edges and builds the cold-graph
 // view plus an id→node index (for summaries/payload during compression).
 func loadColdGraph(ts *db.ExplorationStore) (*coldGraph, map[int64]*db.Node, error) {
-	// Compaction must see the WHOLE graph, not the default row caps — pass a very
-	// high limit so the LIMIT clause is effectively unbounded for real task sizes.
-	const allRows = 1 << 30
-	nodes, err := ts.Nodes(allRows)
+	g, nodes, _, err := loadCompressionSnapshot(ts)
+	return g, nodes, err
+}
+
+func loadCompressionSnapshot(ts *db.ExplorationStore) (*coldGraph, map[int64]*db.Node, map[int64]int, error) {
+	nodes, edges, versions, err := ts.CompactionSnapshot()
 	if err != nil {
-		return nil, nil, err
-	}
-	edges, err := ts.Edges(allRows)
-	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cgNodes := make([]cgNode, 0, len(nodes))
 	byID := make(map[int64]*db.Node, len(nodes))
@@ -369,7 +377,19 @@ func loadColdGraph(ts *db.ExplorationStore) (*coldGraph, map[int64]*db.Node, err
 	for _, e := range edges {
 		cgEdges = append(cgEdges, cgEdge{From: e.From, Rel: e.Rel, To: e.To})
 	}
-	return newColdGraph(cgNodes, cgEdges), byID, nil
+	return newColdGraph(cgNodes, cgEdges), byID, versions, nil
+}
+
+func compressionSourceSignature(g *coldGraph, b block, nodes map[int64]*db.Node) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(buildCompressionInput(g, b, nodes))))
+}
+
+func digestSourceSignature(n *db.Node) string {
+	var payload struct {
+		Signature string `json:"source_signature"`
+	}
+	_ = json.Unmarshal(n.Payload, &payload)
+	return payload.Signature
 }
 
 func toDBStampOps(ops []stampOp) []db.StampOp {
@@ -408,11 +428,12 @@ func digestPayload(body string, b block, nodeByID map[int64]*db.Node, generation
 		}
 	}
 	return map[string]any{
-		"body":       body,
-		"member_ids": map[string]any{"facts": facts, "intents": intents},
-		"anchor_ids": b.Anchors,
-		"generation": generation,
-		"signature":  signature,
+		"body":           body,
+		"member_ids":     map[string]any{"facts": facts, "intents": intents},
+		"anchor_ids":     b.Anchors,
+		"generation":     generation,
+		"signature":      signature,
+		"input_complete": true,
 	}
 }
 
@@ -477,9 +498,8 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		memberSet[m] = true
 	}
 	var sb strings.Builder
-	detailBudget := 24_000
 	sb.WriteString("【구성 노드(압축 대상)】: \n")
-	for memberIndex, m := range b.Members {
+	for _, m := range b.Members {
 		n := nodeByID[m]
 		kind := "fact"
 		if n != nil && n.Kind == db.KindIntent {
@@ -496,12 +516,19 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		sb.WriteString(line)
 		sb.WriteByte('\n')
 		if n != nil {
+			if len(n.Anchors) > 0 {
+				fmt.Fprintf(&sb, "  asset_ids: %v (자산 그래프 ID; 탐색 노드 ID와 구분)\n", n.Anchors)
+			}
 			var payload map[string]json.RawMessage
 			if json.Unmarshal(n.Payload, &payload) == nil {
-				// Reserve input for every member, not only the first large payloads.
-				nodeBudget := detailBudget / (len(b.Members) - memberIndex)
-				var fields []struct{ name, value string }
-			for _, field := range []string{"follow_ups", "evidence", "detail"} {
+				fields := make([]string, 0, len(payload))
+				for field := range payload {
+					if field != "summary" && field != "confidence" {
+						fields = append(fields, field)
+					}
+				}
+				sort.Strings(fields)
+				for _, field := range fields {
 					raw := payload[field]
 					if len(raw) == 0 || string(raw) == "null" {
 						continue
@@ -510,22 +537,9 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 					if json.Unmarshal(raw, &value) != nil {
 						value = string(raw)
 					}
-					if strings.TrimSpace(value) == "" {
-						continue
+					if strings.TrimSpace(value) != "" {
+						fmt.Fprintf(&sb, "  %s: %s\n", field, value)
 					}
-					fields = append(fields, struct{ name, value string }{field, value})
-				}
-				for i, field := range fields {
-					limit := min(3_000, nodeBudget/(len(fields)-i))
-					preview, omitted := compressionPreview(field.value, limit)
-					used := len([]rune(preview))
-					detailBudget -= used
-					nodeBudget -= used
-					fmt.Fprintf(&sb, "  %s: %s", field.name, preview)
-					if omitted {
-						fmt.Fprintf(&sb, " [일부 생략: node_detail(%d)의 %s 원문 확인 필요]", m, field.name)
-					}
-					sb.WriteByte('\n')
 				}
 			}
 		}
@@ -536,11 +550,18 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 		for _, to := range g.children[m] {
 			if memberSet[to] {
 				edgeLines = append(edgeLines, fmt.Sprintf("- #%d 생성/파생→ #%d", m, to))
+			} else {
+				edgeLines = append(edgeLines, fmt.Sprintf("- #%d 생성/파생→ #%d (이 묶음 밖의 후속 노드)", m, to))
+			}
+		}
+		for _, from := range g.parents[m] {
+			if !memberSet[from] {
+				edgeLines = append(edgeLines, fmt.Sprintf("- #%d (이 묶음 밖의 근거 노드) 생성/파생→ #%d", from, m))
 			}
 		}
 	}
 	if len(edgeLines) > 0 {
-		sb.WriteString("\n【구성 노드 간 계보 관계(부모→자식)】: \n")
+		sb.WriteString("\n【구성 노드의 계보 관계(부모→자식; 묶음 밖 원문은 해당 id로 조회)】: \n")
 		sort.Strings(edgeLines)
 		sb.WriteString(strings.Join(edgeLines, "\n"))
 		sb.WriteByte('\n')
@@ -559,32 +580,51 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 	return sb.String()
 }
 
-// Preserve both the observation prefix and the later limitations/next steps.
-// Omitted detail remains explicitly addressable by the source node id.
-func compressionPreview(value string, limit int) (string, bool) {
-	runes := []rune(value)
-	if len(runes) <= limit {
-		return value, false
+// Keep the existing compression input budget, but partition at whole-node
+// boundaries instead of discarding the middle of detail/evidence. A node larger
+// than the budget remains available as an original and never reaches the model
+// as an incomplete summary source.
+const compressionInputRunes = 24_000
+
+func completeCompressionBlocks(g *coldGraph, blocks []block, nodes map[int64]*db.Node, minMembers int) []block {
+	var out []block
+	for _, source := range blocks {
+		current := block{Anchors: source.Anchors}
+		flush := func() {
+			if len(current.Members) >= minMembers {
+				out = append(out, current)
+			}
+			current = block{Anchors: source.Anchors}
+		}
+		for _, id := range source.Members {
+			single := block{Members: []int64{id}, Anchors: source.Anchors}
+			if len([]rune(buildCompressionInput(g, single, nodes))) > compressionInputRunes {
+				continue
+			}
+			candidate := block{Members: append(append([]int64(nil), current.Members...), id), Anchors: source.Anchors}
+			if len([]rune(buildCompressionInput(g, candidate, nodes))) > compressionInputRunes {
+				flush()
+				current = single
+			} else {
+				current = candidate
+			}
+		}
+		flush()
 	}
-	if limit <= 0 {
-		return "", true
-	}
-	if limit < 8 {
-		return string(runes[:limit]), true
-	}
-	front := (limit - 3) * 2 / 3
-	back := limit - 3 - front
-	return string(runes[:front]) + " … " + string(runes[len(runes)-back:]), true
+	return out
 }
 
 // compress runs the §4 body LLM call on one block. Uses the same model the agent
 // runs on; thinking disabled (a pure summarization step).
 func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByID map[int64]*db.Node) (string, error) {
+	input := buildCompressionInput(g, b, nodeByID)
+	if len([]rune(input)) > compressionInputRunes {
+		return "", nil
+	}
 	req := llm.CompletionRequest{
-		System:    []string{compressionSystemPrompt},
-		Messages:  []llm.Message{llm.UserText(buildCompressionInput(g, b, nodeByID))},
-		MaxTokens: 1500,
-		Thinking:  "disabled",
+		System:   []string{compressionSystemPrompt},
+		Messages: []llm.Message{llm.UserText(input)},
+		Thinking: "disabled",
 	}
 	msg, stopReason, _, err := c.prov.Complete(ctx, req)
 	if err != nil {
@@ -609,7 +649,7 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 const compressionSystemPrompt = `서로 연관된 탐색 노드 묶음을 압축하여 종합 결론(body)을 작성합니다. 계획자가 "이 영역에서 무엇을 확인했는지" 빠르게 파악할 수 있어야 합니다.
 
 입력은 연결된 부분 그래프입니다:
-- 노드: 의도 또는 사실의 summary와 id, 유형(intent/fact), state, confidence 및 가능한 detail/evidence/과거 follow_ups가 포함됩니다. detail이 생략됐으면 해당 원문에 확인할 내용이 남아 있음을 본문에 표시하세요.
+- 노드: 의도 또는 사실의 summary와 id, 유형(intent/fact), state, confidence 및 detail/evidence/과거 follow_ups의 원문이 포함됩니다. 확인한 결론과 아직 검증하지 않은 질문·전제를 구분하여 보존하세요.
 - 관계: 노드 간 계보 관계(A가 B에서 파생 / A가 B를 생성)로 연결 방식을 보여 줍니다.
 - 노드 간 직접 계보 관계가 없지만 같은 상위 의도에 속한다면(해당 의도를 "공통 부모 #p"로 별도 제공), "이 의도(#p)가 무엇을 알아냈는가"를 기준으로 종합합니다. 공통 부모는 컨텍스트 기준점이며 압축 대상 구성원이 아닙니다.
 
@@ -619,7 +659,7 @@ const compressionSystemPrompt = `서로 연관된 탐색 노드 묶음을 압축
 3. 증거의 강도를 보존하세요. confidence가 있는 결론은 observed / inferred를 표시하세요. inferred인 부정적이거나 불확실한 결론은 추론이며 재검증할 수 있음을 밝히고 확정된 결론처럼 쓰지 마세요.
 4. id를 포함하세요. 각 결론 뒤에 출처 노드 id(예: "…(#12,#28)")를 표시하여 계획자가 원본 노드를 찾아볼 수 있게 하세요.
 5. 입력에 있는 내용만 직접 서술하세요. 추측하거나 입력에 없는 판단을 추가하지 마세요.
-   과거 follow_ups가 있으면 출처와 내용을 보존하되 별도 상태 큐로 해석하지 마세요. 생략된 상세를 읽었다고 가정하지 마세요.
+   과거 follow_ups가 있으면 출처와 내용을 보존하되 별도 상태 큐로 해석하지 마세요. intent가 done이라는 이유로 detail에 남은 질문까지 검증됐다고 해석하지 마세요.
 6. 중복을 합쳐 전체 입력보다 짧게 쓰되, 요약 길이를 줄이려고 검증 근거·제약·후속 단서·출처 ID를 없애지 마세요. 서로 다른 결론은 구분해서 보존하세요.
 
 body 본문만 출력하세요.`

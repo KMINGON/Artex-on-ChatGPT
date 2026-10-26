@@ -12,9 +12,9 @@ import (
 
 func TestCompactionKeepsWholeInterleavedToolBatch(t *testing.T) {
 	for _, priorBoundary := range []bool{false, true} {
-		msgs := []llm.Message{llm.UserText("old 1"), llm.UserText("old 2")}
+		msgs := []llm.Message{llm.UserText(strings.Repeat("old 1", 100)), llm.UserText(strings.Repeat("old 2", 100))}
 		if priorBoundary {
-			msgs = append(msgs, llm.BoundaryMessage(llm.BoundaryMeta{}), llm.UserText("prior summary"))
+			msgs = append(msgs, llm.BoundaryMessage(llm.BoundaryMeta{}), llm.UserText(strings.Repeat("prior summary", 100)))
 		}
 		msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
 			{Type: llm.BlockToolUse, ID: "a", Name: "Graph", Input: json.RawMessage(`{}`)},

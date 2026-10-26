@@ -11,12 +11,16 @@ import (
 )
 
 type graphSummaryProvider struct {
-	stop  string
-	calls int
+	stop          string
+	calls         int
+	afterComplete func()
 }
 
 func (p *graphSummaryProvider) Complete(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	p.calls++
+	if p.afterComplete != nil {
+		p.afterComplete()
+	}
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("partial graph summary")}}, p.stop, llm.Usage{}, nil
 }
 func (graphSummaryProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {

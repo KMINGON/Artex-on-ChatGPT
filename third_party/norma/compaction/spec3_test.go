@@ -145,32 +145,32 @@ func TestFormatCompactSummary(t *testing.T) {
 	}
 }
 
-func TestGroupByAPIRoundAndTruncate(t *testing.T) {
+func TestGroupByAPIRoundAndSplit(t *testing.T) {
 	msgs := []llm.Message{llm.UserText("u0"), asstText("a1"), llm.UserText("u1"), asstText("a2")}
 	if g := groupByAPIRound(msgs); len(g) != 3 {
 		t.Fatalf("groups=%d, want 3 ([u0][a1 u1][a2])", len(g))
 	}
-	out, ok := truncateHeadForPTLRetry(msgs)
+	left, right, ok := splitSummaryReplay(msgs)
 	if !ok {
-		t.Fatal("should truncate (≥2 groups)")
+		t.Fatal("should split independent rounds")
 	}
-	if out[0].Text() != ptlRetryMarker {
-		t.Fatalf("result starting with an assistant must be marker-prefixed, got %q", out[0].Text())
+	if len(left)+len(right) != len(msgs) || left[0].Text() != "u0" {
+		t.Fatal("split lost the first user message")
 	}
-	if _, ok := truncateHeadForPTLRetry([]llm.Message{llm.UserText("only")}); ok {
-		t.Fatal("a single group cannot be truncated")
+	if _, _, ok := splitSummaryReplay([]llm.Message{llm.UserText("only")}); ok {
+		t.Fatal("a single group cannot be split")
 	}
 }
 
-func TestPairForReplayDropsDangling(t *testing.T) {
+func TestPairForReplayPreservesDanglingEvidence(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "x", Name: "Read"}}}, // no result
 		llm.UserText("keep me"),
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.ToolResultText("y", "orphan", false)}}, // no use
 	}
 	out := pairForReplay(msgs)
-	if len(out) != 1 || out[0].Text() != "keep me" {
-		t.Fatalf("dangling tool blocks should be dropped, got %+v", out)
+	if len(out) != 3 || out[1].Text() != "keep me" || !strings.Contains(out[0].Text(), "Read") || !strings.Contains(out[2].Text(), "orphan") {
+		t.Fatalf("unpaired tool material must be preserved without replaying tool blocks, got %+v", out)
 	}
 }
 
@@ -222,20 +222,24 @@ func TestProviderSummarizerPTLRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "Summary:\nOK" {
+	if strings.Count(got, "Summary:\nOK") != 2 {
 		t.Fatalf("got %q", got)
 	}
-	if len(p.reqs) != 2 {
-		t.Fatalf("want 2 calls (overflow + truncated retry), got %d", len(p.reqs))
+	if len(p.reqs) != 3 {
+		t.Fatalf("want 3 calls (overflow + both complete segments), got %d", len(p.reqs))
 	}
-	// The retry dropped the oldest API-round group (u0) and prepended the marker.
-	retry := p.reqs[1].Messages
-	if retry[0].Text() != ptlRetryMarker {
-		t.Fatalf("retry should start with the PTL marker, got %q", retry[0].Text())
+	seen := map[string]int{}
+	for _, request := range p.reqs[1:] {
+		if request.Messages[0].Text() != summaryPartMarker {
+			t.Fatal("partial-context summary request must identify its scope")
+		}
+		for _, message := range request.Messages[1 : len(request.Messages)-1] {
+			seen[message.Text()]++
+		}
 	}
-	for _, m := range retry {
-		if m.Text() == "u0" {
-			t.Fatal("retry should have dropped the oldest group (u0)")
+	for _, message := range head {
+		if seen[message.Text()] != 1 {
+			t.Fatalf("original message %q missing or duplicated in successful summaries", message.Text())
 		}
 	}
 }

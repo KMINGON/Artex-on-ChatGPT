@@ -185,7 +185,7 @@ func TestPreAutoViaLastInputTokensNoMicro(t *testing.T) {
 	c := New(Config{ContextWindow: 200000, MaxOutputTokens: 8000, KeepRecent: 2}, rs.fn)
 	var msgs []llm.Message
 	for range 10 {
-		msgs = append(msgs, llm.UserText("small")) // no compactable tools
+		msgs = append(msgs, llm.UserText(strings.Repeat("small", 40))) // no compactable tools; still far below the auto threshold
 	}
 	out := c.Pre(context.Background(), msgs, 200000) // above autoThreshold (179000)
 	if boundaryCount(out) != 1 {
@@ -196,9 +196,8 @@ func TestPreAutoViaLastInputTokensNoMicro(t *testing.T) {
 	}
 }
 
-// MicroCompact-only band: above micro, below auto, not predictive → clears results
-// but inserts no boundary.
-func TestPreMicroOnlyBand(t *testing.T) {
+// Above the old micro threshold, below auto, not predictive: preserve evidence.
+func TestPreKeepsEvidenceBelowAutoThreshold(t *testing.T) {
 	rs := &recSummarizer{}
 	// eff=96000, micro=57600, auto=83000, growth=19000 → predictive at tok>77000.
 	c := New(Config{ContextWindow: 100000, MaxOutputTokens: 4000, KeepRecent: 2}, rs.fn)
@@ -207,8 +206,8 @@ func TestPreMicroOnlyBand(t *testing.T) {
 	if rs.calls != 0 || boundaryCount(out) != 0 {
 		t.Fatalf("micro-only band should not autoCompact (calls=%d boundaries=%d)", rs.calls, boundaryCount(out))
 	}
-	if countCleared(out) != 1 {
-		t.Fatalf("micro should clear the oldest result, cleared=%d", countCleared(out))
+	if countCleared(out) != 0 {
+		t.Fatalf("old results must remain available before summary, cleared=%d", countCleared(out))
 	}
 }
 
@@ -229,7 +228,7 @@ func TestPreNonDestructive(t *testing.T) {
 	c := New(Config{ContextWindow: 200000, MaxOutputTokens: 8000, KeepRecent: 2}, rs.fn)
 	var msgs []llm.Message
 	for range 10 {
-		msgs = append(msgs, llm.UserText("keep"))
+		msgs = append(msgs, llm.UserText(strings.Repeat("keep", 40)))
 	}
 	out := c.Pre(context.Background(), msgs, 200000)
 	// Full history retained + boundary + summary.
@@ -253,8 +252,8 @@ func TestReactiveTripped(t *testing.T) {
 	}
 }
 
-// If the summary is larger than the original working set, Reactive reports it did
-// not shrink (ok=false) even though a boundary was inserted.
+// A summary larger than the original working set must not hide the source
+// behind a boundary, including when the caller uses Pre instead of Reactive.
 func TestReactiveNoShrinkWhenSummaryHuge(t *testing.T) {
 	rs := &recSummarizer{reply: strings.Repeat("z", 200000)}
 	c := New(Config{ContextWindow: 200000, MaxOutputTokens: 8000, KeepRecent: 2}, rs.fn)
@@ -266,7 +265,7 @@ func TestReactiveNoShrinkWhenSummaryHuge(t *testing.T) {
 	if ok {
 		t.Fatal("a huge summary means the API view did not shrink → ok=false")
 	}
-	if boundaryCount(out) != 1 {
-		t.Fatalf("autoCompact still inserts a boundary, got %d", boundaryCount(out))
+	if boundaryCount(out) != 0 || len(out) != len(msgs) {
+		t.Fatalf("larger summary replaced the original view: boundaries=%d messages=%d", boundaryCount(out), len(out))
 	}
 }

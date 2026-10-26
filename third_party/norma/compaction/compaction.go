@@ -1,15 +1,16 @@
 // Package compaction keeps a conversation within a model's context window using
-// three mechanisms derived from claude-code:
+// two mechanisms derived from claude-code:
 //
-//   - MicroCompact — clear stale COMPACTABLE tool-result bodies (non-destructive:
-//     the result can be re-read). Keeps the most recent N compactable results and
-//     clears the rest.
 //   - AutoCompact  — summarize the working head behind a compact boundary at the
 //     token threshold (or predictively). Non-destructive: the full history is
 //     retained in the message array; only messages after the last boundary are
 //     sent to the model (llm.MessagesForAPI).
 //   - Reactive     — on a prompt-too-long (413) error, force one AutoCompact and
 //     retry. It reuses AutoCompact; it is not a separate algorithm.
+//
+// The original MicroCompact helper is retained for compatibility tests but is
+// not used by the runtime: clearing tool results before a successful summary
+// loses evidence and can erase the only reference to persisted output.
 //
 // Snip and Context-Collapse are intentionally absent: snip's removal decision can
 // only come from a model tool / user command (no automatic trigger), and
@@ -166,10 +167,10 @@ func blockChars(b llm.ContentBlock) int {
 	}
 }
 
-// Pre conditions the history before a model request: MicroCompact to clear stale
-// tool results, then AutoCompact at the threshold (or predictively). Both are
-// non-destructive. lastInputTokens is the previous response's total token size
-// (0 if none yet), used as the initial gate count.
+// Pre summarizes the complete working head at the threshold (or predictively).
+// Tool results remain intact until a smaller summary succeeds. lastInputTokens
+// is the previous response's total token size (0 if none yet), used as the
+// initial gate count.
 func (c *Compactor) Pre(ctx context.Context, msgs []llm.Message, lastInputTokens int) []llm.Message {
 	if c.cfg.ContextWindow <= 0 {
 		return msgs
@@ -177,13 +178,6 @@ func (c *Compactor) Pre(ctx context.Context, msgs []llm.Message, lastInputTokens
 	tok := c.count(msgs, lastInputTokens)
 	if tok <= c.microThreshold() {
 		return msgs
-	}
-	// MicroCompact: clear old COMPACTABLE tool results (non-destructive). Only
-	// re-estimate when it actually changed the array; otherwise the gate count
-	// (which prefers the accurate last-response size) still holds.
-	if out, changed := c.microCompact(msgs); changed {
-		msgs = out
-		tok = c.count(msgs, 0)
 	}
 	// AutoCompact: at the threshold, or predictively if the next turn would overflow.
 	if tok >= c.autoThreshold() || c.predictiveOver(tok) {
@@ -339,6 +333,9 @@ func (c *Compactor) autoCompact(ctx context.Context, msgs []llm.Message, preTok 
 		return msgs, false
 	}
 	summary, err := c.summarize(ctx, toSummarize)
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		c.failures++
 		if c.failures >= maxAutoCompactFails {
@@ -369,6 +366,11 @@ func (c *Compactor) autoCompact(ctx context.Context, msgs []llm.Message, preTok 
 	out = append(out, boundary, summaryMsg)
 	out = append(out, reinjected...)
 	out = append(out, msgs[tailStart:]...)
+	// Partitioned summaries may be larger in total than their source. Publishing
+	// such a boundary would increase context pressure while hiding the originals.
+	if c.count(out, 0) >= c.count(msgs, 0) {
+		return msgs, false
+	}
 	return out, true
 }
 

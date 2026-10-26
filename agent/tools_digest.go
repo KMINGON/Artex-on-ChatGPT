@@ -47,6 +47,7 @@ func coldDigestsRecent(store *db.ExplorationStore, cap int) (shown []map[string]
 	if err != nil || len(ads) == 0 {
 		return nil, nil
 	}
+	graph, nodes, versions, snapshotErr := loadCompressionSnapshot(store)
 	type dg struct {
 		id        int64
 		entry     map[string]any
@@ -58,14 +59,19 @@ func coldDigestsRecent(store *db.ExplorationStore, cap int) (shown []map[string]
 			Body string `json:"body"`
 		}
 		_ = json.Unmarshal(d.Payload, &p)
-		ms, _ := store.DigestMembers(d.ID) // sorted asc → last = freshest
+		ms, memberErr := store.DigestMembers(d.ID) // sorted asc → last = freshest
+		current := snapshotErr == nil && memberErr == nil && digestMatchesSource(d, ms, graph, nodes, versions)
+		entry := map[string]any{"id": d.ID, "body": p.Body, "member_count": len(ms), "input_complete": digestInputComplete(d), "source_current": current}
+		if !current {
+			entry["source_note"] = staleDigestNote
+		}
 		var fresh int64
 		if len(ms) > 0 {
 			fresh = ms[len(ms)-1]
 		}
 		items = append(items, dg{
 			id:        d.ID,
-			entry:     map[string]any{"id": d.ID, "body": p.Body, "member_count": len(ms)},
+			entry:     entry,
 			freshness: fresh,
 		})
 	}
@@ -87,15 +93,73 @@ func coldDigestsRecent(store *db.ExplorationStore, cap int) (shown []map[string]
 // hidden (§6 render-time revival check). Returns a never-hidden predicate when the
 // store has no digests.
 func hiddenMembersFor(store *db.ExplorationStore) func(int64) bool {
-	covered, err := store.CoveredMembers()
+	covered, hot, err := completeCoverageSnapshot(store)
 	if err != nil || len(covered) == 0 {
 		return func(int64) bool { return false }
 	}
-	var hot map[int64]bool
-	if cg, _, err := loadColdGraph(store); err == nil {
-		hot = cg.hotSet()
-	}
 	return func(id int64) bool { _, c := covered[id]; return c && !hot[id] }
+}
+
+func digestInputComplete(n *db.Node) bool {
+	var payload struct {
+		Complete bool `json:"input_complete"`
+	}
+	return n != nil && json.Unmarshal(n.Payload, &payload) == nil && payload.Complete
+}
+
+const staleDigestNote = "과거 요약입니다. input_complete는 생성 당시 원문 입력 여부이며 현재 일치 여부는 source_current입니다. 최신 결론·미완료 검증은 함께 보이는 원문 또는 expand_digest/node_detail로 확인하고 원문을 우선하세요."
+
+func digestMatchesSource(digest *db.Node, members []int64, graph *coldGraph, nodes map[int64]*db.Node, versions map[int64]int) bool {
+	if !digestInputComplete(digest) {
+		return false
+	}
+	var payload struct {
+		Signature string  `json:"signature"`
+		Anchors   []int64 `json:"anchor_ids"`
+	}
+	if json.Unmarshal(digest.Payload, &payload) != nil {
+		return false
+	}
+	block := block{Members: members, Anchors: payload.Anchors}
+	return payload.Signature == blockSignature(block, versions) && digestSourceSignature(digest) == compressionSourceSignature(graph, block, nodes)
+}
+
+// Legacy digests remain readable, but cannot hide originals whose full content
+// never reached the summary model. A changed source also becomes visible again.
+func completeCoveredMembers(store *db.ExplorationStore) (map[int64]int64, error) {
+	covered, _, err := completeCoverageSnapshot(store)
+	return covered, err
+}
+
+func completeCoverageSnapshot(store *db.ExplorationStore) (map[int64]int64, map[int64]bool, error) {
+	digests, err := store.ActiveDigests()
+	if err != nil {
+		return nil, nil, err
+	}
+	covered := map[int64]int64{}
+	if len(digests) == 0 {
+		return covered, nil, nil
+	}
+	graph, nodes, versions, err := loadCompressionSnapshot(store)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, digest := range digests {
+		if !digestInputComplete(digest) {
+			continue
+		}
+		members, err := store.DigestMembers(digest.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !digestMatchesSource(digest, members, graph, nodes, versions) {
+			continue
+		}
+		for _, id := range members {
+			covered[id] = digest.ID
+		}
+	}
+	return covered, graph.hotSet(), nil
 }
 
 // resolveDigest finds a digest node by id in the current task, else in a direct
@@ -140,7 +204,9 @@ func (t *ToolSet) expandDigest() actool.CoreTool {
 				Body string `json:"body"`
 			}
 			_ = json.Unmarshal(n.Payload, &p)
-			members, _ := store.DigestMembers(in.ID)
+			members, membersErr := store.DigestMembers(in.ID)
+			graph, nodes, versions, snapshotErr := loadCompressionSnapshot(store)
+			current := membersErr == nil && snapshotErr == nil && digestMatchesSource(n, members, graph, nodes, versions)
 			list := make([]map[string]any, 0, len(members))
 			for _, m := range members {
 				entry := t.digestMemberEntry(store, m)
@@ -151,10 +217,15 @@ func (t *ToolSet) expandDigest() actool.CoreTool {
 				list = append(list, entry)
 			}
 			out := map[string]any{
-				"id":      in.ID,
-				"state":   n.State, // active / superseded
-				"body":    p.Body,
-				"members": list,
+				"id":             in.ID,
+				"state":          n.State, // active / superseded
+				"body":           p.Body,
+				"members":        list,
+				"input_complete": digestInputComplete(n),
+				"source_current": current,
+			}
+			if !current {
+				out["source_note"] = staleDigestNote
 			}
 			if srcTaskID > 0 {
 				out["inherited"] = true

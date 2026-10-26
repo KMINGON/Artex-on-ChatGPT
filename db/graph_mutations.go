@@ -233,7 +233,8 @@ func (s *ExplorationStore) AddGoalWithOrigin(ctx context.Context, payload map[st
 	return id, nil
 }
 
-// GoalCompletionReview preserves why a final goal can close despite pending work.
+// GoalCompletionReview preserves the final evidence/Todo review. Active intent
+// snapshots remain readable for legacy records; a review cannot cancel live work.
 type GoalCompletionReview struct {
 	Reason                   string           `json:"reason"`
 	ActiveIntentIDs          []int64          `json:"active_intent_ids"`
@@ -345,8 +346,11 @@ func (s *ExplorationStore) ProveGoal(ctx context.Context, goalID, evidenceID int
 		if len(completionReview) > 0 {
 			review.Reason = strings.TrimSpace(completionReview[0])
 		}
-		if (len(review.ActiveIntentIDs) > 0 || len(review.PendingTodoIndexes) > 0) && review.Reason == "" {
-			return false, 0, fmt.Errorf("진행 중 의도 %d개, 미완료 계획 항목 %d개가 남아 있습니다. 결과를 확인하거나 completion_review에 남은 작업이 목표 달성에 영향을 주지 않는 근거를 기록하세요", len(review.ActiveIntentIDs), len(review.PendingTodoIndexes))
+		if len(review.ActiveIntentIDs) > 0 {
+			return false, 0, fmt.Errorf("대기·실행·일시정지 의도 %d개(%v)가 남아 있습니다. 결과를 받거나 근거를 남겨 해당 의도를 개별 중지한 뒤 마지막 목표를 증명하세요. completion_review는 의도 실행을 중단하는 근거를 대신할 수 없습니다", len(review.ActiveIntentIDs), review.ActiveIntentIDs)
+		}
+		if len(review.PendingTodoIndexes) > 0 && review.Reason == "" {
+			return false, 0, fmt.Errorf("미완료 계획 항목 %d개가 남아 있습니다. 검증을 마치거나 completion_review에 해당 항목이 이 목표 범위에 속하지 않는 근거를 기록하세요", len(review.PendingTodoIndexes))
 		}
 		if review.Reason == "" {
 			review.Reason = strings.TrimSpace(reason)

@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type {
   InterceptAction,
+  InterceptMatchTarget,
   InterceptRule,
   JudgeConfig,
   JudgeDayUsage,
@@ -94,7 +95,7 @@ type RuleForm = {
   name: string;
   enabled: boolean;
   priority: number;
-  match_target: "tool_name" | "tool_input";
+  match_target: InterceptMatchTarget;
   match_type: "string" | "regex";
   pattern: string;
   action: InterceptAction;
@@ -733,9 +734,7 @@ export default function InterceptPage() {
                         </TableCell>
                         <TableCell className="font-medium text-sm">{rule.name}</TableCell>
                         <TableCell>
-                          <span className="text-xs text-muted-foreground">
-                            {rule.match_target === "tool_name" ? t("target.tool_name") : t("target.tool_input")}
-                          </span>
+                          <span className="text-xs text-muted-foreground">{t(`target.${rule.match_target}`)}</span>
                         </TableCell>
                         <TableCell>
                           <span className="text-xs text-muted-foreground">
@@ -821,8 +820,12 @@ export default function InterceptPage() {
                 <SelectContent>
                   <SelectItem value="tool_name">{t("editor.targetToolName")}</SelectItem>
                   <SelectItem value="tool_input">{t("editor.targetToolInput")}</SelectItem>
+                  <SelectItem value="shell_command">{t("editor.targetShellCommand")}</SelectItem>
                 </SelectContent>
               </Select>
+              {form.match_target === "shell_command" && (
+                <p className="text-xs text-muted-foreground">{t("editor.shellCommandHelp")}</p>
+              )}
             </Field>
 
             <Field label={t("editor.matchTypeLabel")}>

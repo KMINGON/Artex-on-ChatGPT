@@ -10,6 +10,7 @@ import (
 )
 
 const IntentBlockedLLMQuota = "llm_quota_exhausted"
+const IntentBlockedActivityStorage = "activity_storage_error"
 
 var ErrTaskLLMBillingTransition = errors.New("OpenAI API 키와 ChatGPT 구독 사이의 자동 전환을 중단했습니다. 사용할 연결을 직접 선택하세요")
 

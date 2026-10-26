@@ -3,6 +3,8 @@ package compaction
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/norma/llm"
@@ -25,29 +27,29 @@ func TestPairForReplayKeepsPaired(t *testing.T) {
 	}
 }
 
-func TestPairForReplayDropsDanglingUse(t *testing.T) {
+func TestPairForReplayKeepsDanglingUseAsUncertainText(t *testing.T) {
 	msgs := []llm.Message{asstText("hi"), toolUse("a", "Read")} // result missing
 	out := pairForReplay(msgs)
-	if len(out) != 1 || out[0].Text() != "hi" {
-		t.Fatalf("dangling tool_use should be dropped: %+v", out)
+	if len(out) != 2 || out[0].Text() != "hi" || !strings.Contains(out[1].Text(), `도구: "Read"`) || !strings.Contains(out[1].Text(), "미확인") || len(out[1].ToolUses()) != 0 {
+		t.Fatalf("unpaired tool call must be kept as uncertain summary text: %+v", out)
 	}
 }
 
-func TestPairForReplayDropsDanglingResult(t *testing.T) {
+func TestPairForReplayKeepsDanglingResultAsUncertainText(t *testing.T) {
 	msgs := []llm.Message{llm.UserText("q"), toolResult("z")} // use missing
 	out := pairForReplay(msgs)
-	if len(out) != 1 || out[0].Text() != "q" {
-		t.Fatalf("dangling tool_result should be dropped: %+v", out)
+	if len(out) != 2 || out[0].Text() != "q" || !strings.Contains(out[1].Text(), "body") || !strings.Contains(out[1].Text(), "추론하지 마세요") {
+		t.Fatalf("unpaired result evidence must remain available: %+v", out)
 	}
 }
 
-func TestPairForReplayKeepsSiblingTextOfDroppedResult(t *testing.T) {
+func TestPairForReplayKeepsSiblingTextOfUnpairedResult(t *testing.T) {
 	msgs := []llm.Message{{Role: llm.RoleUser, Content: []llm.ContentBlock{
 		llm.TextBlock("keep"),
 		llm.ToolResultText("gone", "x", false), // dangling
 	}}}
 	out := pairForReplay(msgs)
-	if len(out) != 1 || len(out[0].Content) != 1 || out[0].Content[0].Text != "keep" {
+	if len(out) != 1 || len(out[0].Content) != 3 || out[0].Content[0].Text != "keep" || out[0].Content[2].Text != "x" {
 		t.Fatalf("sibling text should survive: %+v", out)
 	}
 }
@@ -78,55 +80,44 @@ func TestGroupByAPIRoundShapes(t *testing.T) {
 	}
 }
 
-// --- truncateHeadForPTLRetry ---
+// --- splitSummaryReplay ---
 
-func TestTruncateSingleGroupFails(t *testing.T) {
-	if _, ok := truncateHeadForPTLRetry([]llm.Message{llm.UserText("solo")}); ok {
-		t.Fatal("a single group cannot be truncated")
+func TestSummarySplitKeepsIndivisibleRound(t *testing.T) {
+	for _, messages := range [][]llm.Message{
+		{llm.UserText("solo")},
+		{toolUse("call", "Read"), toolResult("call")},
+	} {
+		if _, _, ok := splitSummaryReplay(messages); ok {
+			t.Fatal("an indivisible round cannot be shortened without losing its context")
+		}
 	}
 }
 
-func TestTruncateDropsTwentyPercent(t *testing.T) {
-	// 10 groups: [U] then 9 lone assistants.
-	msgs := []llm.Message{llm.UserText("u0")}
-	for range 9 {
-		msgs = append(msgs, asstText("a"))
-	}
-	if len(groupByAPIRound(msgs)) != 10 {
-		t.Fatalf("precondition: want 10 groups, got %d", len(groupByAPIRound(msgs)))
-	}
-	out, ok := truncateHeadForPTLRetry(msgs)
+func TestSummarySplitRetainsEveryMessage(t *testing.T) {
+	msgs := []llm.Message{llm.UserText("user conditions"), asstText("first check"), llm.UserText("remaining question"), asstText("latest attempt")}
+	left, right, ok := splitSummaryReplay(msgs)
 	if !ok {
-		t.Fatal("should truncate")
+		t.Fatal("independent rounds should be splittable")
 	}
-	// drop floor(10*0.2)=2 groups → 8 assistants remain, marker prepended.
-	if out[0].Text() != ptlRetryMarker || len(out) != 1+8 {
-		t.Fatalf("want marker + 8 messages, got len=%d first=%q", len(out), out[0].Text())
+	if len(left) == 0 || len(right) == 0 || !reflect.DeepEqual(append(append([]llm.Message{}, left...), right...), msgs) {
+		t.Fatal("splitting removed or changed source messages")
 	}
 }
 
-func TestTruncateKeepsAtLeastOneGroup(t *testing.T) {
-	out, ok := truncateHeadForPTLRetry([]llm.Message{llm.UserText("u"), asstText("a")}) // 2 groups
+func TestSummarySplitKeepsInterleavedToolExchange(t *testing.T) {
+	msgs := []llm.Message{
+		llm.UserText("scope"), toolUse("call", "Read"),
+		asstText("interleaved progress"), toolResult("call"),
+		asstText("later independent result"),
+	}
+	left, right, ok := splitSummaryReplay(msgs)
 	if !ok {
-		t.Fatal("should truncate 2 groups")
+		t.Fatal("expected a boundary outside the interleaved tool exchange")
 	}
-	// drop 1 → [A] remains, marker prepended (result would start with assistant).
-	if out[0].Text() != ptlRetryMarker || len(out) != 2 {
-		t.Fatalf("want [marker, A], got %+v", out)
-	}
-}
-
-func TestTruncateDoesNotDoubleMarker(t *testing.T) {
-	msgs := []llm.Message{llm.UserText(ptlRetryMarker), llm.UserText("u"), asstText("a"), llm.UserText("u2"), asstText("a2")}
-	out, ok := truncateHeadForPTLRetry(msgs)
-	if !ok {
-		t.Fatal("should truncate")
-	}
-	if out[0].Text() != ptlRetryMarker {
-		t.Fatalf("first should be the (single) marker, got %q", out[0].Text())
-	}
-	if out[1].Text() == ptlRetryMarker {
-		t.Fatal("marker must not be doubled")
+	for _, part := range [][]llm.Message{left, right} {
+		if !reflect.DeepEqual(pairForReplay(part), part) {
+			t.Fatal("a split separated tool use from its result")
+		}
 	}
 }
 
@@ -189,6 +180,6 @@ func TestSummarizerPTLExhausts(t *testing.T) {
 		t.Fatalf("persistent overflow should surface an overflow error, got %v", err)
 	}
 	if p.calls < 2 {
-		t.Fatalf("should have retried after truncation, calls=%d", p.calls)
+		t.Fatalf("should have tried a smaller complete segment, calls=%d", p.calls)
 	}
 }

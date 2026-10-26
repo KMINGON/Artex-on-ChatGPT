@@ -9,7 +9,8 @@ import (
 
 // ValidateInput checks a raw JSON input against a minimal subset of JSON Schema
 // sufficient for tool inputs: object type, required properties, and per-property
-// primitive type checks (string/number/integer/boolean/array/object). It never
+// primitive type checks (string/number/integer/boolean/array/object/null), including
+// unions such as ["integer", "null"] for optional values. It never
 // panics; a non-nil error means the input is invalid (FR-04.5, NFR-07).
 func ValidateInput(schema map[string]any, raw json.RawMessage) error {
 	if schema == nil {
@@ -25,8 +26,30 @@ func ValidateInput(schema map[string]any, raw json.RawMessage) error {
 }
 
 func validateValue(schema map[string]any, v any, path string) error {
+	if types := toStrings(schema["type"]); len(types) > 0 {
+		// Check every branch with the same property constraints. A union is not
+		// an untyped schema: malformed optional values must still be rejected.
+		branch := make(map[string]any, len(schema))
+		for key, value := range schema {
+			branch[key] = value
+		}
+		var failures []string
+		for _, typ := range types {
+			branch["type"] = typ
+			if err := validateValue(branch, v, path); err == nil {
+				return nil
+			} else {
+				failures = append(failures, err.Error())
+			}
+		}
+		return fmt.Errorf("%s", strings.Join(failures, "; "))
+	}
 	typ, _ := schema["type"].(string)
 	switch typ {
+	case "null":
+		if v != nil {
+			return fmt.Errorf("%s: expected null", at(path))
+		}
 	case "object", "":
 		m, ok := v.(map[string]any)
 		if !ok {

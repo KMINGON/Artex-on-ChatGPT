@@ -178,7 +178,11 @@ func refreshStoredPrompts(tx *sql.Tx, hashes map[string]string, note string) err
 	defaults := agent.BuiltinPromptSeeds()
 	defaults["reporter"] = agent.ReporterDefaultPrompt
 	defaults[db.FindingRetestAgentKey] = agent.RetesterDefaultPrompt
-	rows, err := tx.Query(`SELECT a.id,a.key,a.builtin,p.template_text FROM agents a JOIN agent_prompts p ON p.id=a.current_prompt_id ORDER BY a.id FOR UPDATE OF a`)
+	// An older selected version is an explicit rollback, even when its body is
+	// byte-for-byte a shipped default. Do not replace that choice on upgrade.
+	rows, err := tx.Query(`SELECT a.id,a.key,a.builtin,p.template_text FROM agents a JOIN agent_prompts p ON p.id=a.current_prompt_id
+		WHERE NOT EXISTS (SELECT 1 FROM agent_prompts newer WHERE newer.agent_id=a.id AND newer.version>p.version)
+		ORDER BY a.id FOR UPDATE OF a`)
 	if err != nil {
 		return err
 	}
