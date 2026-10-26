@@ -10,7 +10,7 @@
 | --- | --- |
 | [기능 추가](changes/features.md) | ChatGPT 구독, 브라우저 인증·이미지, 작업·자원 프리셋, 그래프 근거 인계 |
 | [동작·사용성 변경](changes/behavior.md) | 모델 조회·연결·저장 흐름, 한국어·영어, 자산 관찰 범위·현재 실행 설정 표시 |
-| [결함 수정](changes/fixes.md) | 두 그래프의 원자적 기록, Planner 상태 보존, 공유 파일·결과 조회, 압축·저장·취소 |
+| [결함 수정](changes/fixes.md) | 두 그래프의 원자적 기록, Planner 상태 보존, 공유 파일·결과 조회, 압축·저장·취소, 기본 템플릿 4종의 탐색·완료 지침 통일 |
 | [OpenAI 호환성](changes/openai.md) | Daybreak, 모델별 옵션, API·구독 차이, 실제 응답 메타데이터 |
 | [설치·운영·정리](changes/operations.md) | Compose·네트워크·볼륨·기존 데이터, 로컬 Norma, Claude·Noa·문서·스크립트 정리 |
 | [검증 기록](changes/validation.md) | 변경별 자동 검사, 격리 DB, 실제 계정·브라우저 관측과 남은 범위 |
