@@ -3250,7 +3250,10 @@
       "willDownloadSize": " ({size})",
       "willDownloadSuffix": ". It is replaced only after passing SHA256 verification and a smoke test; if either fails, the current version is kept automatically.",
       "upToDate": "You're already on the latest version.",
-      "dockerNote": "In a Docker environment, updating replaces only the program itself and does not update the image's tool chain such as playwright / nmap. Also, recreating the container with <code>docker compose up -d</code> reverts to the version bundled in the image. To upgrade the image as well, run <code>docker compose pull artex && docker compose up -d artex</code>.",
+      "dockerDesc": "Update Docker by choosing a source release tag and rebuilding the image.",
+      "dockerNote": "In the repository directory, select the release tag, set <code>ARTEX_BUILD_VERSION</code> to the same version, and run <code>docker compose up -d --build</code>.",
+      "dockerCommandsHint": "Example commands for the latest release {tag}:",
+      "dockerFooter": "Rebuilding the image updates the program and its tools together and interrupts running tasks.",
       "restarting": "Restarting and applying the new version. Please wait (the page will refresh automatically)…",
       "check": "Check for updates",
       "updateToVersion": "Update to {latest}",
@@ -3272,7 +3275,6 @@
       "confirm": {
         "title": "Update to {latest}?",
         "restart": "Updating restarts the program and interrupts running tasks.",
-        "docker": "Note: updating inside the container replaces only the program itself and does not update the image's tool chain such as playwright / nmap. If the new version depends on new tools, switch to running it with docker compose pull.",
         "rollback": "Roll back to the previous version?\n\nThe program will restart and running tasks will be interrupted.\nNote: the database structure is not rolled back, and the previous version may not recognize data written by the new version."
       }
     },

@@ -31,12 +31,14 @@ const (
 	updateErrAlreadyLatestFmt   = "이미 최신 버전입니다 (%s)"
 	updateErrInProgress         = "이미 업데이트가 진행 중입니다"
 	updateErrRollbackInProgress = "업데이트가 진행 중이어서 롤백할 수 없습니다"
+	updateErrDockerSource       = "Docker 설치는 릴리스 태그의 소스에서 이미지를 다시 빌드해 업데이트하거나 롤백하세요"
 )
 
 // restartCh 在升级就绪或回滚完成后关闭，main 收到后以 ExitRestart 退出。
 var (
-	restartOnce sync.Once
-	restartCh   = make(chan struct{})
+	restartOnce    sync.Once
+	restartCh      = make(chan struct{})
+	updateInDocker = selfupdate.InDocker
 )
 
 // RestartRequested 返回一个在"请退出并让守护进程重新拉起我"时关闭的 channel。
@@ -223,7 +225,7 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	current := BuildVersion
 	mode := "binary"
-	if selfupdate.InDocker() {
+	if updateInDocker() {
 		mode = "docker"
 	}
 	boot := bootUpdateState()
@@ -281,6 +283,10 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 // 立刻返回 202，实际工作在后台 goroutine 上跑：整包下载可能要几分钟，
 // 挂在请求上会被反代超时掐断。进度走 /api/update/stream。
 func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
+	if updateInDocker() {
+		writeErr(w, http.StatusConflict, updateErrDockerSource)
+		return
+	}
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
@@ -326,6 +332,10 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 
 // updateRollback 主动退回上一版本（换装前备份的 artex.old）。
 func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request) {
+	if updateInDocker() {
+		writeErr(w, http.StatusConflict, updateErrDockerSource)
+		return
+	}
 	if _, running := updHub.snapshot(); running {
 		writeErr(w, 409, updateErrRollbackInProgress)
 		return

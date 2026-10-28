@@ -20,6 +20,7 @@ func TestUpdateMessageConstantsLocalized(t *testing.T) {
 	assertKoreanError(t, "updateMsgStaged", updateMsgStaged)
 	assertKoreanError(t, "updateErrInProgress", updateErrInProgress)
 	assertKoreanError(t, "updateErrRollbackInProgress", updateErrRollbackInProgress)
+	assertKoreanError(t, "updateErrDockerSource", updateErrDockerSource)
 
 	// 형식 문자열 상수는 플레이스홀더를 채운 뒤 검사한다(%q/%s 가 치환되고 한자 0).
 	notRelease := fmt.Sprintf(updateErrNotReleaseFmt, "v0.0.0-dev")
@@ -71,6 +72,9 @@ func TestUpdateProgressMessagesLocalized(t *testing.T) {
 
 // updateRollback 의 "진행 중이라 롤백 불가" 409 응답이 한국어인지 DB 없이 실제 HTTP 로 확인한다.
 func TestUpdateRollbackInProgressLocalized(t *testing.T) {
+	previous := updateInDocker
+	updateInDocker = func() bool { return false }
+	t.Cleanup(func() { updateInDocker = previous })
 	updHub.mu.Lock()
 	prev := updHub.running
 	updHub.running = true

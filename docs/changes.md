@@ -12,7 +12,7 @@
 | [작업 방식과 설정](changes/behavior.md) | 원본과 같은 탐색 흐름, 한국어 기본 지침, 명시적 모델 선택·개별 자원 설정 |
 | [오류·상태 보존](changes/fixes.md) | 도구 인자·취약점 등록, 원자적 그래프 저장, Todo·실행 결과·대화 복구 |
 | [OpenAI 처리](changes/openai.md) | Responses 상태·완료 판정, API와 구독의 요청 차이, 계정·모델 선택 |
-| [설치·운영](changes/operations.md) | Compose, 로컬 Norma, 기존 데이터와 기본값 이관 |
+| [설치·운영](changes/operations.md) | v0.1.0 소스 릴리스와 태그 고정 Compose 빌드, 로컬 Norma, 기존 데이터와 기본값 이관 |
 | [검증과 한계](changes/validation.md) | 회귀 검사 범위와 실제 진단 성능의 미확인 부분 |
 
 원본에도 브라우저 MCP, 트래픽 증거 연결, 자동 보고서, 가로채기, 대화 압축과 탐색 그래프 요약이 있었습니다. 이 기능 자체를 포크의 신규 기능으로 설명하지 않습니다. [브라우저·설정](browser-and-presets.md), [트래픽 증거](finding-traffic-evidence.md)에서 현재 사용 조건을 확인할 수 있습니다.

@@ -20,12 +20,22 @@ Compose의 기본 웹 주소는 `0.0.0.0:8787`입니다. DB와 기록 프록시 
 
 ChatGPT 로그인 콜백은 공유 웹 포트의 `http://127.0.0.1:${ARTEX_PORT:-8787}/auth/callback`을 사용합니다. Docker를 실행한 PC의 브라우저에서 관리자 로그인 후 ChatGPT 계정을 연결합니다. 연결 해제와 서버 재시작은 별개이며, 재시작해도 저장한 연결이 유지됩니다.
 
+## 버전과 소스 배포
+
+공식 Git 태그와 GitHub Release는 `v0.1.0`, 앱에 주입하는 버전은 `0.1.0`입니다. GitHub Release는 자동 생성되는 소스 ZIP·tar.gz를 제공하며 사전 빌드 바이너리나 레지스트리 이미지는 배포하지 않습니다. 소스 압축파일로 설치할 때도 `ARTEX_BUILD_VERSION=0.1.0`을 지정해 빌드합니다.
+
+Compose는 선택한 소스를 `artex-on-chatgpt:0.1.0` 같은 로컬 이미지로 빌드합니다. 릴리스 태그를 선택해도 Docker가 버전을 자동 인식하지 않으므로 `ARTEX_BUILD_VERSION`을 함께 지정해야 합니다. 재기동할 때도 같은 값을 사용하거나 `.env`에 저장하세요. 값을 지정하지 않은 Docker 빌드는 `docker-local`, 직접 Go 빌드는 기본 `dev`로 구분합니다. `build.sh`는 명시한 버전이 없으면 Git 태그·커밋·작업 트리 상태를 반영한 값을 사용합니다.
+
+릴리스 설치·업데이트는 태그를 선택하고 소스에서 이미지를 다시 빌드합니다. `master`의 최신 개발 상태를 추적하려는 경우에는 `git switch master`와 `git pull --ff-only`를 사용하되, 릴리스 버전으로 표시하지 않도록 별도의 개발 빌드 버전을 사용하세요.
+
+화면의 원클릭 업데이트는 별도 플랫폼 ZIP과 `SHA256SUMS`가 있는 바이너리 배포용입니다. 현재 소스 릴리스는 해당 자산을 제공하지 않으므로 Compose 재빌드를 사용합니다. 컨테이너 안에서 바이너리만 교체하면 브라우저·CLI 도구·시작 스크립트는 바뀌지 않으며 컨테이너 재생성 시 이미지 버전으로 돌아갑니다.
+
 ## 호스트 설치
 
 Docker를 사용하지 않는 빌드 경로도 유지합니다. Go 1.26.3 이상, Node.js 24, npm, rsync, PostgreSQL을 준비합니다. 관리 브라우저를 사용하려면 Playwright·Chromium과 실행 라이브러리도 별도로 준비해야 합니다. Docker 이미지는 이 구성요소를 함께 제공합니다.
 
 ```sh
-ARTEX_OUTPUT=./artex ARTEX_BUILD_VERSION=openai-local ./build.sh --no-compress
+ARTEX_OUTPUT=./artex ARTEX_BUILD_VERSION=0.1.0 ./build.sh --no-compress
 export ARTEX_PG_DSN='postgres://artex:비밀번호@127.0.0.1:5432/artex?sslmode=disable'
 ARTEX_LANG=ko ./start.sh
 ```
@@ -40,7 +50,15 @@ ARTEX_LANG=ko ./start.sh
 | `artex-data` (`/app/data`) | 대화 기록·작업 파일·이미지·트래픽 증거 본문 |
 | `artex-auth` (`/app/auth`) | ChatGPT 자격증명·관리자 서명 키·브라우저 프로필 |
 
-같은 Compose 프로젝트는 볼륨을 재사용합니다. 업데이트 전 세 저장소를 함께 백업하고 `git pull --ff-only`, `docker compose up -d --build`로 소스와 이미지를 갱신합니다. `docker compose stop`과 `down`은 볼륨을 보존하지만 **`docker compose down -v`는 해당 프로젝트의 세 볼륨을 삭제**합니다. 별도 호스트 DB나 인증 폴더를 자동으로 옮기지는 않습니다.
+같은 Compose 프로젝트는 볼륨을 재사용합니다. 업데이트 전 세 저장소를 함께 백업한 뒤 다음과 같이 릴리스 소스와 이미지를 갱신합니다. 다음 버전을 선택할 때는 태그와 `ARTEX_BUILD_VERSION`을 함께 바꾸세요.
+
+```sh
+git fetch origin --tags
+git switch --detach v0.1.0
+ARTEX_BUILD_VERSION=0.1.0 docker compose up -d --build
+```
+
+`docker compose stop`과 `down`은 볼륨을 보존하지만 **`docker compose down -v`는 해당 프로젝트의 세 볼륨을 삭제**합니다. 별도 호스트 DB나 인증 폴더를 자동으로 옮기지는 않습니다.
 
 ChatGPT 자격증명은 PostgreSQL에 저장하지 않습니다. Compose에서는 `/app/auth/artex-on-chatgpt/`, 호스트에서는 기본적으로 `~/.config/artex-on-chatgpt/`에 보관하며 폴더 `0700`·파일 `0600` 권한을 사용합니다. 브라우저 프로필도 인증 저장소에 두고 일반 작업 파일 목록에 노출하지 않습니다.
 

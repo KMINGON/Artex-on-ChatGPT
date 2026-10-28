@@ -2,8 +2,9 @@
 """Smoke-test existing local images; never build, sign in to OpenAI, or infer.
 
 Run from any directory: python3 scripts/test-compose.py
-Requires Docker Compose v2 and locally available artex-on-chatgpt:local and
-postgres:16-alpine images. Uses a fresh project and deletes only its volumes.
+Requires Docker Compose v2 and locally available app and postgres:16-alpine
+images. Set ARTEX_BUILD_VERSION to test a versioned image instead of :local.
+Uses a fresh project and deletes only its volumes.
 Command output, HTTP bodies, credentials, and authentication URLs are not logged.
 """
 
@@ -79,6 +80,9 @@ def parse_json(raw, label):
 class Smoke:
     def __init__(self):
         self.env = clean_environment()
+        self.build_version = os.environ.get("ARTEX_BUILD_VERSION", "")
+        if self.build_version:
+            self.env["ARTEX_BUILD_VERSION"] = self.build_version
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
@@ -183,6 +187,7 @@ class Smoke:
                 "Compose would publish a port outside the selected loopback endpoint")
         require(not services["artex"].get("environment", {}).get("OPENAI_API_KEY"),
                 "Compose would inject an API credential")
+        self.images = [service["image"] for service in services.values()]
         self.cleanup_safe = True
 
     def check_bindings(self):
@@ -233,13 +238,15 @@ print(json.dumps({'jwt': digest(key), 'host': digest(state['host_id'].encode()),
 
     def run(self):
         self.check_configuration()
-        for image in ("artex-on-chatgpt:local", "postgres:16-alpine"):
+        for image in self.images:
             command(["docker", "image", "inspect", image], self.env, "required local image " + image)
         self.compose("up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180",
                      label="start isolated Compose project", timeout=240)
         self.check_bindings()
         health = self.json_request("/api/health")
         require(health.get("ok") is True and health.get("service") == "artex", "health response is not ARTEX")
+        require(health.get("version") == (self.build_version or "docker-local"),
+                "running app version does not match the selected build")
         html, content_type = self.request("/")
         require("text/html" in content_type and b"<html" in html.lower(), "embedded UI HTML is missing")
         asset = re.search(rb'(?:src|href)="(/_next/static/[^"?#]+\.js)"', html)
@@ -253,6 +260,9 @@ print(json.dumps({'jwt': digest(key), 'host': digest(state['host_id'].encode()),
         login = self.json_request("/api/auth/login", method="POST", body={"username": "ARTEX", "password": "artex1234"})
         token = login.get("token")
         require(isinstance(token, str) and token, "administrator login did not return a token")
+        for route in ("apply", "rollback"):
+            self.request("/api/update/" + route, method="POST", expected=409, token=token)
+        self.passed("Docker rejects binary update and rollback before external requests")
         # Check the real DB/API defaults, including editable prompt bodies and
         # nested tool descriptions that static page translation cannot cover.
         agents = self.json_request("/api/agents", token=token).get("agents", [])

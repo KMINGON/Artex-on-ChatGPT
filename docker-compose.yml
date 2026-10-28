@@ -17,7 +17,7 @@ services:
   artex:
     init: true
     shm_size: 1gb
-    image: artex-on-chatgpt:local
+    image: artex-on-chatgpt:${ARTEX_BUILD_VERSION:-local}
     pull_policy: never
     build:
       context: .

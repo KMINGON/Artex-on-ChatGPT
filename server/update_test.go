@@ -4,11 +4,48 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/config"
 	"github.com/Autumn-27/artex/selfupdate"
 )
+
+func TestDockerRejectsBinaryUpdateAndRollback(t *testing.T) {
+	previous := updateInDocker
+	updateInDocker = func() bool { return true }
+	t.Cleanup(func() { updateInDocker = previous })
+	previousLanguage := config.CurrentLanguage
+	t.Cleanup(func() { config.CurrentLanguage = previousLanguage })
+
+	for _, tc := range []struct {
+		name    string
+		handler func(*Server, http.ResponseWriter, *http.Request)
+	}{
+		{"apply", (*Server).updateApply},
+		{"rollback", (*Server).updateRollback},
+	} {
+		for _, language := range []string{"ko", "en"} {
+			t.Run(tc.name+"/"+language, func(t *testing.T) {
+				config.CurrentLanguage = func() string { return language }
+				rec := httptest.NewRecorder()
+				// A container must reject before reading the manager, release or files.
+				tc.handler(&Server{}, rec, httptest.NewRequest(http.MethodPost, "/api/update/"+tc.name, nil))
+				if rec.Code != http.StatusConflict {
+					t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+				}
+				want := updateErrDockerSource
+				if language == "en" {
+					want = "For Docker installations, rebuild the image from a release tag to update or roll back"
+				}
+				if got := decodeErrorField(t, rec.Body.Bytes()); got != want {
+					t.Fatalf("error = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
 
 // releaseCache 是保护 GitHub 配额的那一层：未认证的 API 只有 60 次/小时/IP，
 // 而顶栏的"有新版本"提示每次整页加载都会查一次。缓存一旦失效，用户多开几个

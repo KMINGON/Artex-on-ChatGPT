@@ -3250,7 +3250,10 @@
       "willDownloadSize": " ({size})",
       "willDownloadSuffix": ". SHA256 검증과 스모크 테스트를 통과한 뒤에만 교체하며, 실패하면 현재 버전을 자동으로 유지합니다.",
       "upToDate": "이미 최신 버전입니다.",
-      "dockerNote": "Docker 환경의 업데이트는 프로그램 본체만 교체하고 이미지의 playwright / nmap 등 도구 체인은 갱신하지 않습니다. 또한 <code>docker compose up -d</code> 명령으로 컨테이너를 재생성하면 이미지에 포함된 버전으로 되돌아갑니다. 이미지까지 함께 업그레이드하려면 <code>docker compose pull artex && docker compose up -d artex</code> 명령을 실행하세요.",
+      "dockerDesc": "Docker는 소스 릴리스 태그를 선택한 뒤 이미지를 다시 빌드해 업데이트합니다.",
+      "dockerNote": "저장소 디렉터리에서 사용할 릴리스 태그를 선택하고 <code>ARTEX_BUILD_VERSION</code>을 같은 버전으로 설정한 뒤 <code>docker compose up -d --build</code>를 실행하세요.",
+      "dockerCommandsHint": "최신 릴리스 {tag}의 실행 예시:",
+      "dockerFooter": "이미지를 다시 빌드하면 프로그램과 도구 환경이 함께 갱신되며 실행 중인 작업이 중단됩니다.",
       "restarting": "재시작하고 새 버전을 적용하는 중입니다. 잠시 기다려 주세요 (페이지가 자동으로 새로고침됩니다)…",
       "check": "업데이트 확인",
       "updateToVersion": "{latest} 버전으로 업데이트",
@@ -3272,7 +3275,6 @@
       "confirm": {
         "title": "{latest} 버전으로 업데이트할까요?",
         "restart": "업데이트하면 프로그램이 재시작되고 실행 중인 작업이 중단됩니다.",
-        "docker": "참고: 컨테이너 내 업데이트는 프로그램 본체만 교체하며, 이미지의 playwright / nmap 등 도구 체인은 갱신하지 않습니다. 새 버전이 새 도구에 의존하면 docker compose pull로 바꿔 실행하세요.",
         "rollback": "이전 버전으로 롤백할까요?\n\n프로그램이 재시작되고 실행 중인 작업이 중단됩니다.\n참고: 데이터베이스 구조는 되돌아가지 않으며, 이전 버전이 새 버전에서 기록한 데이터를 인식하지 못할 수 있습니다."
       }
     },

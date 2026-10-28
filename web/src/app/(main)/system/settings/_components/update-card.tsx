@@ -142,12 +142,10 @@ export function UpdateCard() {
   );
 
   const doUpdate = () => {
-    if (!info) return;
+    if (!info || info.mode === "docker") return;
     const from = info.current;
     const ok = window.confirm(
-      `${t("update.confirm.title", { latest: info.latest ?? "" })}\n\n` +
-        t("update.confirm.restart") +
-        (info.mode === "docker" ? `\n\n${t("update.confirm.docker")}` : ""),
+      `${t("update.confirm.title", { latest: info.latest ?? "" })}\n\n${t("update.confirm.restart")}`,
     );
     if (!ok) return;
 
@@ -163,7 +161,7 @@ export function UpdateCard() {
   };
 
   const doRollback = () => {
-    if (!info) return;
+    if (!info || info.mode === "docker") return;
     if (!window.confirm(t("update.confirm.rollback"))) return;
     const from = info.current;
     setBusy(true);
@@ -185,6 +183,9 @@ export function UpdateCard() {
   // 时长不可知的阶段，进度条填满并加个脉冲动画表示"在忙但说不准还要多久"。
   const downloading = !restarting && phase === "downloading";
   const pct = downloading ? Math.max(progress?.percent ?? 0, 0) : 100;
+  const isDocker = info?.mode === "docker";
+  const latestTag = info?.latest?.trim();
+  const dockerTag = latestTag && /^v?\d+\.\d+\.\d+$/.test(latestTag) ? latestTag : null;
 
   return (
     // 设置页是多列瀑布流布局，卡片自己负责行间距并禁止跨列断开（见 page.tsx 的注释）。
@@ -194,7 +195,7 @@ export function UpdateCard() {
           <DownloadIcon className="size-4" />
           {t("update.title")}
         </CardTitle>
-        <CardDescription>{t("update.desc")}</CardDescription>
+        <CardDescription>{t(isDocker ? "update.dockerDesc" : "update.desc")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -246,16 +247,18 @@ export function UpdateCard() {
           </p>
         )}
 
-        {info && !info.comparable && info.reason && <p className="text-xs text-muted-foreground">{info.reason}</p>}
+        {!isDocker && info && !info.comparable && info.reason && (
+          <p className="text-xs text-muted-foreground">{info.reason}</p>
+        )}
 
-        {info?.has_update && info.asset_available === false && (
+        {!isDocker && info?.has_update && info.asset_available === false && (
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
             {t("update.noAsset", { latest: info.latest ?? "", os: info.os, arch: info.arch, asset: info.asset ?? "" })}
           </p>
         )}
 
-        {info?.has_update && info.asset_available !== false && (
+        {!isDocker && info?.has_update && info.asset_available !== false && (
           <p className="text-xs text-muted-foreground">
             {t("update.willDownloadPrefix")}
             <span className="font-mono">{info.asset}</span>
@@ -271,11 +274,21 @@ export function UpdateCard() {
           </p>
         )}
 
-        {info?.mode === "docker" && info.has_update && (
-          <p className="text-xs text-muted-foreground">{t.rich("update.dockerNote", richTags)}</p>
+        {isDocker && (
+          <div className="space-y-2 text-muted-foreground text-xs">
+            <p>{t.rich("update.dockerNote", richTags)}</p>
+            {dockerTag && (
+              <>
+                <p>{t("update.dockerCommandsHint", { tag: dockerTag })}</p>
+                <pre className="overflow-x-auto rounded-md bg-muted p-3 text-foreground">
+                  <code>{`git fetch origin --tags\ngit switch --detach ${dockerTag}\nARTEX_BUILD_VERSION=${dockerTag.replace(/^v/, "")} docker compose up -d --build`}</code>
+                </pre>
+              </>
+            )}
+          </div>
         )}
 
-        {showProgress && (
+        {!isDocker && showProgress && (
           <div className="space-y-1.5">
             <Progress value={pct} className={downloading ? undefined : "animate-pulse"} />
             <p className="text-xs text-muted-foreground">{restarting ? t("update.restarting") : progress?.message}</p>
@@ -287,15 +300,17 @@ export function UpdateCard() {
             <RefreshCwIcon className={checking ? "size-4 animate-spin" : "size-4"} />
             {t("update.check")}
           </Button>
-          <Button
-            size="sm"
-            onClick={doUpdate}
-            disabled={busy || restarting || !info?.has_update || info?.asset_available === false}
-          >
-            <DownloadIcon className="size-4" />
-            {info?.has_update ? t("update.updateToVersion", { latest: info.latest ?? "" }) : t("update.updateNow")}
-          </Button>
-          {info?.has_backup && (
+          {!isDocker && (
+            <Button
+              size="sm"
+              onClick={doUpdate}
+              disabled={busy || restarting || !info?.has_update || info?.asset_available === false}
+            >
+              <DownloadIcon className="size-4" />
+              {info?.has_update ? t("update.updateToVersion", { latest: info.latest ?? "" }) : t("update.updateNow")}
+            </Button>
+          )}
+          {!isDocker && info?.has_backup && (
             <Button variant="ghost" size="sm" onClick={doRollback} disabled={busy || restarting}>
               <RotateCcwIcon className="size-4" />
               {t("update.rollback")}
@@ -303,7 +318,9 @@ export function UpdateCard() {
           )}
         </div>
 
-        <p className="text-xs text-muted-foreground">{t.rich("update.footer", richTags)}</p>
+        <p className="text-xs text-muted-foreground">
+          {t.rich(isDocker ? "update.dockerFooter" : "update.footer", richTags)}
+        </p>
       </CardContent>
     </Card>
   );

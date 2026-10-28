@@ -28,15 +28,16 @@ API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. Chat
 
 ## 빠른 시작
 
-Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
+현재 소스 릴리스는 **v0.1.0**입니다. Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
 
 ```sh
 git clone https://github.com/KMINGON/Artex-on-ChatGPT.git
 cd Artex-on-ChatGPT
-docker compose up -d
+git switch --detach v0.1.0
+ARTEX_BUILD_VERSION=0.1.0 docker compose up -d --build
 ```
 
-첫 실행은 이미지를 빌드합니다. `docker compose logs -f artex`로 진행 상태를 확인하고 [http://127.0.0.1:8787](http://127.0.0.1:8787)을 엽니다.
+선택한 소스로 로컬 이미지를 빌드하며 앱에는 `0.1.0`이 표시됩니다. GitHub Release는 소스 압축파일을 제공하며, 사전 빌드 바이너리·레지스트리 이미지는 배포하지 않습니다. `docker compose logs -f artex`로 진행 상태를 확인하고 [http://127.0.0.1:8787](http://127.0.0.1:8787)을 엽니다.
 
 | 항목 | 기본값 |
 | --- | --- |
@@ -76,14 +77,15 @@ PC 브라우저는 `http://127.0.0.1:3000`, ARTEX 작업의 대상 주소는 **`
 
 ```sh
 docker compose stop
-docker compose up -d
+ARTEX_BUILD_VERSION=0.1.0 docker compose up -d
 ```
 
-업데이트할 때는 DB·앱 파일·인증 볼륨을 함께 백업한 뒤 소스와 이미지를 갱신합니다.
+업데이트할 때는 DB·앱 파일·인증 볼륨을 함께 백업한 뒤 원하는 릴리스 태그의 소스와 이미지를 갱신합니다. 아래는 `v0.1.0`을 선택하는 예시이며, 다음 버전에는 태그와 빌드 버전을 함께 바꾸세요.
 
 ```sh
-git pull --ff-only
-docker compose up -d --build
+git fetch origin --tags
+git switch --detach v0.1.0
+ARTEX_BUILD_VERSION=0.1.0 docker compose up -d --build
 ```
 
 | 볼륨 | 내용 |
