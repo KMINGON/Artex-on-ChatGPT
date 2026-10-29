@@ -94,7 +94,7 @@ secrets.env
 /artex.err.log
 
 # 개인 문서·조사·검증 자료
-/reference/
+/.local/
 
 # 로컬 에이전트 작업 지침
 /AGENTS.md

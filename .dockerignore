@@ -11,10 +11,11 @@ transcripts
 /dist/
 
 # Private local documents, research, snapshots, and generated artifacts
-/reference/
+/.local/
 
 # Other checkouts, credentials, and runtime artifacts must never enter images.
 **/.git
+**/.local
 **/reference
 **/AGENTS.md
 **/AGENT.md
