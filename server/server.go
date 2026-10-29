@@ -371,6 +371,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[prompts] 원본 동작 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
 		} else if err := s.refreshInstructionDefaults(); err != nil {
 			log.Printf("[prompts] 도구 계약 기본 지침 갱신 실패(다음 시작 시 재시도): %v", err)
+		} else if err := s.refreshCompletionDefaults(); err != nil {
+			log.Printf("[prompts] 목표 완료 기본 지침 갱신 실패(다음 시작 시 재시도): %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)

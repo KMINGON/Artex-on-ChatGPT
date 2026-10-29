@@ -173,6 +173,9 @@ func Open(dsn string) (*DB, error) {
 		if err := d.seedDefaultTaskTemplates(); err != nil {
 			return fmt.Errorf("seed default task templates: %w", err)
 		}
+		if err := d.refreshTaskCompletionDefaults(); err != nil {
+			return fmt.Errorf("refresh task completion defaults: %w", err)
+		}
 		if err := d.seedBuiltins(); err != nil {
 			return fmt.Errorf("seed builtins: %w", err)
 		}
