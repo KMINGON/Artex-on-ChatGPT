@@ -5,6 +5,7 @@
 - 원본 커밋: `320ae32989da97dd91469bb89164cbfe87d83d5d`
 - 원본 모듈 체크섬: `h1:DnmOhJPL6OZSMnCVYO5Ujh4yVINuDarEickVi9jx1hI=`
 - 모듈 경로와 기존 저작권 표기를 유지합니다. 해당 배포물에는 별도 LICENSE·NOTICE 파일이 없었으며, 이 문서는 새 라이선스를 부여하거나 원저작자의 권리를 변경하지 않습니다.
+- 빌드 기준은 Go 1.26.10 이상이며, `golang.org/x/net`은 HTTP/2·HTML 처리의 보안 수정이 포함된 v0.62.0을 사용합니다.
 
 아래는 원본과 현재 사본의 차이입니다. ARTEX의 계획·작업 배정은 루트 `agent`·`server`에 있으며, 프로젝트 전체 차이는 [ARTEX 변경점](../../docs/changes.md)에 정리합니다.
 

@@ -22,9 +22,9 @@ ChatGPT 로그인 콜백은 공유 웹 포트의 `http://127.0.0.1:${ARTEX_PORT:
 
 ## 버전과 소스 배포
 
-공식 Git 태그와 GitHub Release는 `v0.1.0`, 앱에 주입하는 버전은 `0.1.0`입니다. GitHub Release는 자동 생성되는 소스 ZIP·tar.gz를 제공하며 사전 빌드 바이너리나 레지스트리 이미지는 배포하지 않습니다. 소스 압축파일로 설치할 때도 `ARTEX_BUILD_VERSION=0.1.0`을 지정해 빌드합니다.
+공식 Git 태그와 GitHub Release는 `v0.1.1`, 앱에 주입하는 버전은 `0.1.1`입니다. GitHub Release는 자동 생성되는 소스 ZIP·tar.gz를 제공하며 사전 빌드 바이너리나 레지스트리 이미지는 배포하지 않습니다. 소스 압축파일로 설치할 때도 `ARTEX_BUILD_VERSION=0.1.1`을 지정해 빌드합니다.
 
-Compose는 선택한 소스를 `artex-on-chatgpt:0.1.0` 같은 로컬 이미지로 빌드합니다. 릴리스 태그를 선택해도 Docker가 버전을 자동 인식하지 않으므로 `ARTEX_BUILD_VERSION`을 함께 지정해야 합니다. 재기동할 때도 같은 값을 사용하거나 `.env`에 저장하세요. 값을 지정하지 않은 Docker 빌드는 `docker-local`, 직접 Go 빌드는 기본 `dev`로 구분합니다. `build.sh`는 명시한 버전이 없으면 Git 태그·커밋·작업 트리 상태를 반영한 값을 사용합니다.
+Compose는 선택한 소스를 `artex-on-chatgpt:0.1.1` 같은 로컬 이미지로 빌드합니다. 릴리스 태그를 선택해도 Docker가 버전을 자동 인식하지 않으므로 `ARTEX_BUILD_VERSION`을 함께 지정해야 합니다. 재기동할 때도 같은 값을 사용하거나 `.env`에 저장하세요. 값을 지정하지 않은 Docker 빌드는 `docker-local`, 직접 Go 빌드는 기본 `dev`로 구분합니다. `build.sh`는 명시한 버전이 없으면 Git 태그·커밋·작업 트리 상태를 반영한 값을 사용합니다.
 
 릴리스 설치·업데이트는 태그를 선택하고 소스에서 이미지를 다시 빌드합니다. `master`의 최신 개발 상태를 추적하려는 경우에는 `git switch master`와 `git pull --ff-only`를 사용하되, 릴리스 버전으로 표시하지 않도록 별도의 개발 빌드 버전을 사용하세요.
 
@@ -32,10 +32,10 @@ Compose는 선택한 소스를 `artex-on-chatgpt:0.1.0` 같은 로컬 이미지�
 
 ## 호스트 설치
 
-Docker를 사용하지 않는 빌드 경로도 유지합니다. Go 1.26.3 이상, Node.js 24, npm, rsync, PostgreSQL을 준비합니다. 관리 브라우저를 사용하려면 Playwright·Chromium과 실행 라이브러리도 별도로 준비해야 합니다. Docker 이미지는 이 구성요소를 함께 제공합니다.
+Docker를 사용하지 않는 빌드 경로도 유지합니다. Go 1.26.10 이상, Node.js 24, npm, rsync, PostgreSQL을 준비합니다. Docker 빌드도 Go 1.26.10을 사용하며, 로컬 Norma를 포함한 네트워크·암호화·압축 의존성은 알려진 보안 수정 버전으로 맞춥니다. 관리 브라우저를 사용하려면 Playwright·Chromium과 실행 라이브러리도 별도로 준비해야 합니다. Docker 이미지는 이 구성요소를 함께 제공합니다.
 
 ```sh
-ARTEX_OUTPUT=./artex ARTEX_BUILD_VERSION=0.1.0 ./build.sh --no-compress
+ARTEX_OUTPUT=./artex ARTEX_BUILD_VERSION=0.1.1 ./build.sh --no-compress
 export ARTEX_PG_DSN='postgres://artex:비밀번호@127.0.0.1:5432/artex?sslmode=disable'
 ARTEX_LANG=ko ./start.sh
 ```
@@ -54,8 +54,8 @@ ARTEX_LANG=ko ./start.sh
 
 ```sh
 git fetch origin --tags
-git switch --detach v0.1.0
-ARTEX_BUILD_VERSION=0.1.0 docker compose up -d --build
+git switch --detach v0.1.1
+ARTEX_BUILD_VERSION=0.1.1 docker compose up -d --build
 ```
 
 `docker compose stop`과 `down`은 볼륨을 보존하지만 **`docker compose down -v`는 해당 프로젝트의 세 볼륨을 삭제**합니다. 별도 호스트 DB나 인증 폴더를 자동으로 옮기지는 않습니다.

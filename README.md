@@ -22,22 +22,22 @@ API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. Chat
 | 설정·화면 | 한국어·영어, 작업 템플릿의 이름·고급값 저장, 그래프 페이지 조회 |
 | 설치 | 현재 소스로 앱·웹을 빌드하는 Docker Compose와 PostgreSQL 구성 |
 
-의도 분할·우선순위·재검증·사실 기록·목표 판단은 원본 지침의 한국어 번역을 사용합니다. 
+원본의 의도 분할·우선순위·재검증 흐름을 유지하고, 한국어 지침의 자산·사실 기록과 목표 판단을 실제 도구 계약과 검증 근거에 맞춥니다.
 
 [전체 변경점](docs/changes.md) · [브라우저·설정](docs/browser-and-presets.md) · [트래픽 증거](docs/finding-traffic-evidence.md)
 
 ## 빠른 시작
 
-현재 소스 릴리스는 **v0.1.0**입니다. Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
+현재 소스 릴리스는 **v0.1.1**입니다. Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
 
 ```sh
 git clone https://github.com/KMINGON/Artex-on-ChatGPT.git
 cd Artex-on-ChatGPT
-git switch --detach v0.1.0
-ARTEX_BUILD_VERSION=0.1.0 docker compose up -d --build
+git switch --detach v0.1.1
+ARTEX_BUILD_VERSION=0.1.1 docker compose up -d --build
 ```
 
-선택한 소스로 로컬 이미지를 빌드하며 앱에는 `0.1.0`이 표시됩니다. GitHub Release는 소스 압축파일을 제공하며, 사전 빌드 바이너리·레지스트리 이미지는 배포하지 않습니다. `docker compose logs -f artex`로 진행 상태를 확인하고 [http://127.0.0.1:8787](http://127.0.0.1:8787)을 엽니다.
+선택한 소스로 로컬 이미지를 빌드하며 앱에는 `0.1.1`이 표시됩니다. GitHub Release는 소스 압축파일을 제공하며, 사전 빌드 바이너리·레지스트리 이미지는 배포하지 않습니다. `docker compose logs -f artex`로 진행 상태를 확인하고 [http://127.0.0.1:8787](http://127.0.0.1:8787)을 엽니다.
 
 | 항목 | 기본값 |
 | --- | --- |
@@ -77,15 +77,15 @@ PC 브라우저는 `http://127.0.0.1:3000`, ARTEX 작업의 대상 주소는 **`
 
 ```sh
 docker compose stop
-ARTEX_BUILD_VERSION=0.1.0 docker compose up -d
+ARTEX_BUILD_VERSION=0.1.1 docker compose up -d
 ```
 
-업데이트할 때는 DB·앱 파일·인증 볼륨을 함께 백업한 뒤 원하는 릴리스 태그의 소스와 이미지를 갱신합니다. 아래는 `v0.1.0`을 선택하는 예시이며, 다음 버전에는 태그와 빌드 버전을 함께 바꾸세요.
+업데이트할 때는 DB·앱 파일·인증 볼륨을 함께 백업한 뒤 원하는 릴리스 태그의 소스와 이미지를 갱신합니다. 아래는 `v0.1.1`을 선택하는 예시이며, 다음 버전에는 태그와 빌드 버전을 함께 바꾸세요.
 
 ```sh
 git fetch origin --tags
-git switch --detach v0.1.0
-ARTEX_BUILD_VERSION=0.1.0 docker compose up -d --build
+git switch --detach v0.1.1
+ARTEX_BUILD_VERSION=0.1.1 docker compose up -d --build
 ```
 
 | 볼륨 | 내용 |

@@ -10,7 +10,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY web/ ./
 RUN npm run build:static
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS go-build
 WORKDIR /src
 COPY go.mod go.sum ./
 COPY third_party/norma/go.mod third_party/norma/go.sum ./third_party/norma/
