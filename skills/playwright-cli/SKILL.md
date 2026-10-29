@@ -6,6 +6,8 @@ allowed-tools: Bash(playwright-cli:*) Bash(npx:*) Bash(npm:*)
 
 # Browser Automation with playwright-cli
 
+`allowed-tools`는 스킬 메타데이터이며 ARTEX의 실행 권한을 부여하거나 제한하는 규칙이 아닙니다. 실제 도구 제공 여부와 실행 권한은 호스트 설정을 따릅니다.
+
 ## Quick start
 
 ```bash
@@ -114,6 +116,8 @@ playwright-cli tab-select 0
 ```
 
 ### Storage
+
+`state-load` 후에는 대상 페이지의 화면과 권한 상태를 확인하세요. 저장 파일을 읽었다는 사실만으로 서버 세션이나 모든 인증 상태가 복원됐다고 판단하지 마세요.
 
 ```bash
 playwright-cli state-save
@@ -324,6 +328,8 @@ playwright-cli click "getByTestId('submit-button')"
 
 ## Browser Sessions
 
+작업마다 이름을 구분하고 사용한 세션만 `-s=<name>`으로 닫거나 정리하세요. `close-all`/`kill-all`은 이 CLI가 관리하는 전체 세션을 정리하는 명령이므로, 전체가 이번 작업의 정리 대상일 때만 사용하세요.
+
 ```bash
 # create new browser session named "mysession" with persistent profile
 playwright-cli -s=mysession open example.com --persistent
@@ -334,24 +340,24 @@ playwright-cli -s=mysession close  # stop a named browser
 playwright-cli -s=mysession delete-data  # delete user data for persistent session
 
 playwright-cli list
-# Close all browsers
+# 이 CLI의 전체 세션이 이번 작업의 정리 대상일 때만 사용
 playwright-cli close-all
-# Forcefully kill all browser processes
+# 위 범위의 세션이 응답하지 않을 때 전체 daemon 강제 종료
 playwright-cli kill-all
 ```
 
 ## Installation
 
-If global `playwright-cli` command is not available, try a local version via `npx playwright cli`:
+ARTEX Docker의 내장 CLI 또는 프로젝트가 이미 설치한 버전을 먼저 사용하세요. 기존 설치가 있으면 최신 버전으로 다시 설치하지 않습니다. 전역 `playwright-cli`가 없으면 프로젝트의 Playwright 설치를 확인합니다:
 
 ```bash
 npx --no-install playwright --version
 ```
 
-When local version is available, use `npx playwright cli` in all commands. Otherwise, install `playwright-cli` as a global command:
+로컬 설치가 CLI를 제공하면 모든 명령에 `npx --no-install playwright cli`를 사용하세요. CLI가 없는 환경에서만 프로젝트 설치 명세의 버전을 설치합니다. 현재 ARTEX Docker와 같은 CLI 버전이 필요하면:
 
 ```bash
-npm install -g @playwright/cli@latest
+npm install -g @playwright/cli@0.1.22
 ```
 
 ## Example: Form submission

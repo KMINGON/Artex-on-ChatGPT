@@ -4,7 +4,7 @@ Manage cookies, localStorage, sessionStorage, and browser storage state.
 
 ## Storage State
 
-Save and restore complete browser state including cookies and storage.
+지원되는 쿠키·저장소 상태를 저장하고 복원합니다. 모든 저장소·탭·서버 세션이 복원된다고 가정하지 말고, `state-load` 후 대상 페이지에서 실제 화면과 권한 상태를 확인하세요.
 
 ### Save Storage State
 
@@ -242,10 +242,11 @@ playwright-cli click e3
 # Save the authenticated state
 playwright-cli state-save auth.json
 
-# Step 2: Later, restore state and skip login
+# Step 2: 저장 상태를 복원하고 대상 페이지에서 인증 상태 확인
 playwright-cli state-load auth.json
 playwright-cli open https://app.example.com/dashboard
-# Already logged in!
+playwright-cli snapshot
+# 기대한 로그인 화면·권한 상태인지 확인한 뒤 진행
 ```
 
 ### Save and Restore Roundtrip
@@ -263,7 +264,8 @@ playwright-cli state-save my-session.json
 # Restore state
 playwright-cli state-load my-session.json
 playwright-cli open https://example.com
-# Cookies and localStorage are restored!
+playwright-cli snapshot
+# 대상 origin의 쿠키·localStorage와 화면 상태가 기대대로 복원됐는지 확인
 ```
 
 ## Security Notes

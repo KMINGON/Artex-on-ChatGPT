@@ -195,6 +195,11 @@ func TestOriginalBehaviorDefaultsUpgradeOnlyUneditedCurrentValues(t *testing.T) 
 			if err := s.refreshOriginalBehaviorDefaults(); err != nil {
 				t.Fatal(err)
 			}
+			// Startup applies instruction corrections after restoring the original
+			// pipeline defaults, including descriptions added to batch item fields.
+			if err := s.refreshInstructionDefaults(); err != nil {
+				t.Fatal(err)
+			}
 			for key, expected := range want {
 				row, _ := pg.GetAgentByKey(key)
 				got, err := pg.CurrentPrompt(row.ID)

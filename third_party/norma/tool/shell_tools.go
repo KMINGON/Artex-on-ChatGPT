@@ -75,16 +75,16 @@ func ms(v int, def int) time.Duration {
 
 // NewShellOpen 开一个交互会话。
 func NewShellOpen() CoreTool {
-	desc := "지속되는 PTY 대화형 세션을 열어 대화형 입력이나 실제 TTY가 필요한 프로그램(msfconsole/대화형 ssh/mysql·python 등의 REPL/비밀번호 입력/nc 세션)을 실행하고 session_id를 반환합니다. **일회성 비대화형 명령은 Bash를 사용하세요.** mode: interactive=첫 프롬프트 또는 출력 중단까지 기다린 뒤 시작 출력을 반환; hands-free(기본값)=즉시 반환하고 이후 shell_read로 확인; dispatch=즉시 반환하고 완료 시 알림; monitor=즉시 반환하고 백그라운드에서 watch 키워드가 감지되면 알림(세션은 종료하지 않으며 이번 실행 동안만 유지). prompt_regex(예: 'msf6? >\\s*$')로 완료 여부를 정확히 판단할 수 있습니다. 사용 후 반드시 shell_close로 종료하세요."
+	desc := "지속되는 PTY 대화형 세션을 열어 대화형 입력이나 실제 TTY가 필요한 프로그램(msfconsole/대화형 ssh/mysql·python 등의 REPL/비밀번호 입력/nc 세션)을 실행하고 session_id를 반환합니다. **일회성 비대화형 명령은 Bash를 사용하세요.** mode: interactive=첫 프롬프트 또는 출력 중단까지 기다린 뒤 시작 출력을 반환; hands-free(기본값)=즉시 반환하고 이후 shell_read로 확인; dispatch=즉시 반환하고 대기 종료 시 알림; monitor=즉시 반환하고 백그라운드에서 watch 키워드가 감지되면 알림(세션은 종료하지 않으며 이번 실행 동안만 유지). prompt_regex(예: 'msf6? >\\s*$')는 프롬프트 감지 조건입니다. done_by는 프롬프트·출력 정지·세션 종료·대기 시간 초과 등의 대기 종료 사유이며 명령 성공을 뜻하지 않습니다. running/exit는 PTY 세션 상태이므로 개별 명령의 성공 여부는 그 명령의 실제 출력으로 확인하세요. 사용 후 반드시 shell_close로 종료하세요."
 	schema := obj(map[string]any{
 		"command":          strProp("실행할 대화형 프로그램. 예: 'msfconsole -q' / 'ssh user@host' / 'python3'"),
 		"mode":             strProp("interactive | hands-free(기본값) | dispatch | monitor"),
 		"watch":            arrStr("monitor 모드 필수: 감시할 키워드/정규식 배열. 출력에서 하나라도 일치하면 알림(항목별 한 번만 알림)"),
-		"prompt_regex":     strProp("선택: 명령 완료를 판단할 프롬프트 정규식(출력 끝부분에 적용)"),
+		"prompt_regex":     strProp("선택: 대기 종료를 판단할 프롬프트 정규식(출력 끝부분에 적용)"),
 		"rows":             intProp("선택: PTY 행 수(기본값 24)"),
 		"cols":             intProp("선택: PTY 열 수(기본값 80)"),
-		"quiet_ms":         intProp("선택: 출력이 멈춘 뒤 완료로 판단하기까지의 시간(ms, 기본값 8000)"),
-		"startup_grace_ms": intProp("선택: 시작 유예 시간(ms). 이 동안은 출력 중단으로 완료를 판단하지 않음(기본값 15000)"),
+		"quiet_ms":         intProp("선택: 출력이 멈춘 뒤 대기를 끝내기까지의 시간(ms, 기본값 8000)"),
+		"startup_grace_ms": intProp("선택: 시작 유예 시간(ms). 이 동안은 출력 중단으로 대기를 끝내지 않음(기본값 15000)"),
 	}, "command")
 	return sessTool("shell_open", desc, schema, false, func(ctx context.Context, in json.RawMessage, tc *ToolContext) (Result, error) {
 		m, errR := sessManager(tc)
@@ -164,7 +164,7 @@ func NewShellOpen() CoreTool {
 
 // NewShellSend 向会话发送输入/按键。
 func NewShellSend() CoreTool {
-	desc := "대화형 세션에 입력을 보냅니다. text/submit/keys/hex/paste를 조합할 수 있으며 나열된 순서로 전송합니다(각 인자의 의미는 필드 설명 참조). wait=true(기본값)이면 명령이 완료될 때까지 기다린 뒤 새로 추가된 출력을 반환합니다."
+	desc := "대화형 세션에 입력을 보냅니다. text/submit/keys/hex/paste를 조합할 수 있으며 나열된 순서로 전송합니다(각 인자의 의미는 필드 설명 참조). wait=true(기본값)이면 프롬프트·출력 정지·세션 종료 또는 대기 중단 조건까지 기다린 뒤 새로 추가된 출력을 반환합니다. done_by는 대기 종료 사유이며 명령 성공을 뜻하지 않습니다. running/exit는 PTY 세션 상태이므로 개별 명령의 성공 여부는 그 명령의 실제 출력으로 확인하세요."
 	schema := obj(map[string]any{
 		"session_id":   strProp("세션 ID(shell_open에서 반환)"),
 		"text":         strProp("입력할 텍스트(자동 줄바꿈 없음)"),
@@ -172,8 +172,8 @@ func NewShellSend() CoreTool {
 		"keys":         arrStr("키 이름: ctrl+c/ctrl+d/tab/enter/esc/up/down/left/right/..."),
 		"hex":          arrStr("원시 바이트의 16진수 표기. 예: ['0x1b','0x5b','0x41']"),
 		"paste":        strProp("여러 줄 붙여넣기(bracketed paste, 줄마다 실행되지 않음)"),
-		"wait":         boolProp("명령이 완료될 때까지 동기적으로 기다릴지 여부(기본값 true)"),
-		"prompt_regex": strProp("선택: 세션의 기본 완료 판단 프롬프트를 재정의"),
+		"wait":         boolProp("대기 종료 조건에 도달할 때까지 동기적으로 기다릴지 여부(기본값 true)"),
+		"prompt_regex": strProp("선택: 세션의 기본 프롬프트 감지 정규식을 재정의"),
 		"quiet_ms":     intProp("선택: 출력 중단 판단 기준 시간(ms, 기본값 8000)"),
 		"timeout_ms":   intProp("선택: wait의 최대 대기 시간(ms, 기본값 120000)"),
 	}, "session_id")

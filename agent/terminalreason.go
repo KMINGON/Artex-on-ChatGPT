@@ -36,8 +36,8 @@ func (t *runTrace) done(id string) {
 
 var reasonHint = map[harness.TerminalReason]string{
 	harness.ReasonCompleted:         "모델이 이번 회차를 정상 종료했지만 텍스트 요약을 남기지 않았습니다. 사실과 자산은 이번 회차의 도구 호출 기록을 기준으로 확인하세요",
-	harness.ReasonMaxTurns:          "단계 상한(MaxTurns)에 도달했습니다. SDK가 마무리를 수행하고 사실과 자산을 기록했으며, 의도는 실패 대신 exhausted로 표시되어 계획자가 방향을 바꾸어 계속할 수 있습니다",
-	harness.ReasonTimeout:           "단일 실행의 시간 예산(MaxDuration)에 도달했습니다. 실행 중인 도구를 중단하고 바로 마무리하여 파악한 사실과 자산을 기록하며, 의도는 exhausted로 표시됩니다",
+	harness.ReasonMaxTurns:          "단계 상한(MaxTurns)에 도달했습니다. 마무리·저장 여부는 성공한 도구 결과와 실행 기록에서 확인하세요. Worker 의도는 실패 대신 exhausted로 표시되어 계획자가 이어서 배정하거나 방향을 바꿀 수 있습니다",
+	harness.ReasonTimeout:           "단일 실행의 시간 예산(MaxDuration)에 도달했습니다. 마무리·저장 여부는 성공한 도구 결과와 실행 기록에서 확인하세요. Worker 의도는 exhausted로 표시됩니다",
 	harness.ReasonModelError:        "이번 모델 호출을 완료하지 못했습니다. 구체 원인과 재시도 여부는 기록된 진단 정보로 확인하세요",
 	harness.ReasonOutputLimit:       "출력 상한과 이어쓰기 예산에 도달해 응답이 미완료로 끝났습니다. 생성된 내용은 남아 있지만 작업 완료를 뜻하지 않습니다",
 	harness.ReasonStorageError:      "실행 기록을 읽거나 저장하지 못했습니다. 기존 기록을 확인한 뒤 재개해야 하며 앞서 실행한 도구를 자동으로 다시 실행하지 않습니다",
@@ -89,7 +89,7 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	} else if reason == harness.ReasonOutputLimit || reason == harness.ReasonStorageError {
 		sum = "실행 미완료 (" + string(reason) + "): " + terminalReasonHint(reason)
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
-		sum = "(실행 예산 상한 도달(" + string(reason) + "), 마무리 후 사실 기록 완료" + progressSuffix(term, tr) + "; 이번 실행의 텍스트 요약 없음)"
+		sum = "(실행 예산 상한 도달(" + string(reason) + ")" + progressSuffix(term, tr) + "; 이번 실행의 텍스트 요약 없음. 마무리·저장 여부는 도구 결과와 실행 기록에서 확인)"
 	} else {
 		hint := terminalReasonHint(reason)
 		sum = "(텍스트 요약 없음, 종료 상태 " + terminalReasonLabel(reason) + "：" + firstLine(hint, 80) + "）"

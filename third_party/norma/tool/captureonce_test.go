@@ -38,7 +38,7 @@ func TestCaptureOnceTruncationIsIdempotent(t *testing.T) {
 	long := strings.Repeat("y", 5000)
 
 	first := CaptureOnce(tc, long)
-	if !strings.Contains(first, "characters truncated]") {
+	if !strings.Contains(first, "bytes truncated]") {
 		t.Fatalf("expected truncation marker: %q", first)
 	}
 	if second := CaptureOnce(tc, first); second != first {

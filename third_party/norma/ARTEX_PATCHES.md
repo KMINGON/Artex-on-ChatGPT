@@ -57,15 +57,15 @@ Checkpoint는 `checkpoint_begin`·`checkpoint_part`·`checkpoint_commit`으로 �
 | 인자 오류 | 직접 호출과 `ExecuteExtraTool`에서 현재 필수 필드·타입을 안내합니다. 누락 값을 만들어 실행하거나 전달된 비밀 값을 오류 안내에 복사하지 않습니다. |
 | wrapper 호환 | `params`와 `parameters`를 같은 인자 객체로 받습니다. 둘을 함께 보내 값이 다르면 실행하지 않습니다. 내부 필드 이름은 추측하거나 변환하지 않습니다. |
 | 선택값 | JSON Schema의 union·`null`과 두 가지 `required` 배열 표현을 처리합니다. nullable 객체의 하위 필수 필드 검사는 유지합니다. |
-| 출력 캡처 | 같은 호출에서 실제로 캡처한 결과만 중복 캡처에서 제외합니다. 외부 출력에 포함된 marker 문자열은 신뢰하지 않습니다. |
-| 파일 검색 | `Grep.only_matching`은 `content` 모드에서 일치 부분과 파일·행 번호를 반환합니다. 기본 전체 행 출력은 유지하며 Go 검색·ripgrep 양쪽에 pagination을 적용합니다. 이 옵션에서는 `-A`·`-B`·`-C`의 전체 문맥 행을 제외합니다. |
-| Shell | 대화형 Shell의 설명·인자 도움말·오류·완료 알림을 한국어로 제공합니다. `Monitor`에도 작업의 Bash 환경을 전달합니다. 도구 이름·JSON 필드·상태값은 유지합니다. |
+| 출력 캡처 | 같은 호출에서 실제로 캡처한 결과만 중복 캡처에서 제외합니다. 외부 출력에 포함된 marker 문자열은 신뢰하지 않습니다. 잘림 안내의 크기는 실제 계산 단위인 바이트로 표시합니다. |
+| 파일 검색 | `Grep.only_matching`은 `content` 모드에서 일치 부분과 파일·행 번호를 반환합니다. 기본 전체 행 출력은 유지하며 Go 검색·ripgrep 양쪽에 pagination을 적용합니다. 이 옵션에서는 `-A`·`-B`·`-C`의 전체 문맥 행을 제외합니다. Grep와 LS의 안내는 실제 제공된 검색 도구와 Bash를 사용하도록 하며, ARTEX에 없는 SDK Agent 도구를 권하지 않습니다. |
+| Shell | 대화형 Shell의 설명·인자 도움말·오류·완료 알림을 한국어로 제공합니다. 프롬프트·출력 정지 등에 따른 대기 종료, PTY 세션의 running/exit 상태, 개별 명령 성공을 구분합니다. `Monitor`에도 작업의 Bash 환경을 전달합니다. 도구 이름·JSON 필드·상태값은 유지합니다. |
 
 관련 구현: [`harness/streaming.go`](harness/streaming.go), [`harness/tools.go`](harness/tools.go), [`tool/schema.go`](tool/schema.go), [`tool/deferred.go`](tool/deferred.go), [`tool/helpers.go`](tool/helpers.go), [`tool/search.go`](tool/search.go), [`tool/ripgrep.go`](tool/ripgrep.go).
 
 ## 이미지·MCP·네트워크
 
-- MCP의 텍스트·이미지 혼합 결과와 `Read`의 이미지 파일을 실제 `llm.BlockImage`로 전달합니다. MIME·크기·해상도와 결과당 이미지 수를 검사합니다. 출력 폴더가 있으면 SHA-256 이름의 0600 파일로 저장하고, 재전송할 때 형식·해시를 확인합니다. 일반 로그에는 픽셀 데이터를 넣지 않으며 문맥 계산은 별도의 이미지 예산을 사용합니다.
+- MCP의 텍스트·이미지 혼합 결과와 `Read`의 이미지 파일을 실제 `llm.BlockImage`로 전달합니다. PNG·JPEG·정적 GIF·WebP의 MIME·크기·해상도와 결과당 이미지 수를 검사합니다. 텍스트가 없는 MCP 리소스에는 서버가 조회 도구를 제공하는 경우 이를 사용하라고 조건부로 안내합니다. 출력 폴더가 있으면 SHA-256 이름의 0600 파일로 저장하고, 재전송할 때 형식·해시를 확인합니다. 일반 로그에는 픽셀 데이터를 넣지 않으며 문맥 계산은 별도의 이미지 예산을 사용합니다.
 - MCP stdio 종료·초기화 실패 시 하위 프로세스도 정리합니다. Unix는 별도 process group, Windows는 `taskkill /T`를 사용합니다. Windows 프로세스 종료는 실제 환경에서 검증하지 않았습니다.
 - WebFetch와 WebSearch의 공통 HTTP client는 미지정 프록시를 명시적인 직접 연결로 처리하고 잘못된 프록시 설정은 오류로 반환합니다. 지정된 기록 프록시 때문에 실패한 경우에만 기록기를 우회하며 외부 egress 프록시는 유지합니다. 일반 프록시를 조용히 우회하지 않습니다.
 - WebFetch는 본문 수신 중단을 오류로 반환하며 받은 부분을 함께 제공합니다. 2 MiB 수신 한도와 50,000바이트 표시 한도를 구분하고 UTF-8 경계에서 자릅니다.

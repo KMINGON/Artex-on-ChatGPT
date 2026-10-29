@@ -4,7 +4,7 @@ Run multiple isolated browser sessions concurrently with state persistence.
 
 ## Named Browser Sessions
 
-Use `-s` flag to isolate browser contexts:
+작업별로 구분되는 이름을 `-s`에 지정해 브라우저 컨텍스트를 분리하고, 정리할 때도 같은 이름을 사용하세요:
 
 ```bash
 # Browser 1: Authentication flow
@@ -38,10 +38,10 @@ playwright-cli list
 playwright-cli close                # stop the default browser
 playwright-cli -s=mysession close   # stop a named browser
 
-# Stop all browser sessions
+# 이 CLI의 전체 세션이 이번 작업의 정리 대상일 때만 전체 종료
 playwright-cli close-all
 
-# Forcefully kill all daemon processes (for stale/zombie processes)
+# 위 범위의 세션이 응답하지 않을 때 전체 daemon 강제 종료
 playwright-cli kill-all
 
 # Delete browser session user data (profile directory)
@@ -77,8 +77,10 @@ playwright-cli -s=site1 snapshot
 playwright-cli -s=site2 snapshot
 playwright-cli -s=site3 snapshot
 
-# Cleanup
-playwright-cli close-all
+# 이 예제에서 사용한 세션만 정리
+playwright-cli -s=site1 close
+playwright-cli -s=site2 close
+playwright-cli -s=site3 close
 ```
 
 ### A/B Testing Sessions
@@ -205,16 +207,12 @@ playwright-cli -s=s1 open https://github.com
 
 ### 2. Always Clean Up
 
+작업에서 사용한 세션만 이름으로 지정해 닫습니다. 기본 세션을 사용했다면 그 세션이 이번 작업 소유인지 확인하세요. 전체 세션이 정리 대상인 경우가 아니라면 `close-all`/`kill-all`을 사용하지 마세요.
+
 ```bash
 # Stop browsers when done
 playwright-cli -s=auth close
 playwright-cli -s=scrape close
-
-# Or stop all at once
-playwright-cli close-all
-
-# If browsers become unresponsive or zombie processes remain
-playwright-cli kill-all
 ```
 
 ### 3. Delete Stale Browser Data

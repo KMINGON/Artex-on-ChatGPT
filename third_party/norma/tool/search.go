@@ -126,16 +126,14 @@ func globSegments(pat, name []string) bool {
 const grepDescription = "A powerful search tool built on ripgrep\n" +
 	"\n" +
 	"Usage:\n" +
-	"- 검색 작업에는 항상 Grep를 사용하세요. Bash 명령으로 `grep`이나 `rg`를 실행하지 마세요. Grep 도구는 올바른 권한과 접근에 맞춰 최적화되어 있습니다.\n" +
+	"- 일반 파일 내용 검색에는 Grep를 우선 사용하세요. 셸 기능이 필요하면 Bash의 검색 명령을 사용할 수 있습니다.\n" +
 	"- Supports full regex syntax (e.g., \"log.*Error\", \"function\\s+\\w+\")\n" +
 	"- Filter files with glob parameter (e.g., \"*.js\", \"**/*.tsx\") or type parameter (e.g., \"js\", \"py\", \"rust\")\n" +
 	"- Output modes: \"content\" shows matching lines, \"files_with_matches\" shows only file paths (default), \"count\" shows match counts\n" +
 	"- output_mode: \"content\"의 only_matching: true는 일치 부분만 반환합니다. 주변 문자는 pattern에 포함할 수 있습니다.\n" +
-	"- Use Agent tool for open-ended searches requiring multiple rounds\n" +
 	"- Pattern syntax: Uses ripgrep (not grep) - literal braces need escaping (use `interface\\{\\}` to find `interface{}` in Go code)\n" +
 	"- Prefer `head_limit` to avoid large result sets.\n" +
-	"- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\{[\\s\\S]*?field`, use `multiline: true`\n" +
-	"- Prefer Grep over terminal rg/grep for codebase search unless you specifically need shell features."
+	"- Multiline matching: By default patterns match within single lines only. For cross-line patterns like `struct \\{[\\s\\S]*?field`, use `multiline: true`"
 
 func NewGrep() CoreTool {
 	return Build(Spec{

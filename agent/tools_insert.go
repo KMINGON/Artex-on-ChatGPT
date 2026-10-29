@@ -366,7 +366,7 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 		"도메인/IP/CIDR/ICP 등록/회사 키워드를 회사의 【자산 범위】에 추가합니다. 도메인·네트워크·ICP에 일치하는 자산은 자동 귀속하고 키워드는 에이전트에 범위 힌트로만 제공합니다.\n"+
 			"회사명은 고유합니다. company가 없으면 생성하고 이미 있으면 재사용하며 범위만 병합합니다.\n"+
 			"scope는 한 줄에 하나이며 시스템이 자동 판별합니다: 루트 도메인 / URL / 단일 IP / CIDR 대역 / ICP 등록 / 회사 키워드.\n"+
-			"reason에 귀속 근거(whois/인증서/ASN 등)를 반드시 설명하세요.\n"+
+			"귀속 판단의 근거와 확인한 출처(whois/인증서/ASN 등)를 reason에 반드시 작성하세요.\n"+
 			"보호 규칙: TLD만 지정하거나 지나치게 넓은 대역은 거부합니다(IPv4 접두사 /16-/32, IPv6 접두사 /32-/128 필요). 유효하지 않은 줄은 건너뛰고 errors로 반환합니다.",
 		obj(map[string]any{
 			"company": str("회사명(없으면 생성, 있으면 재사용. 이름은 고유)"),
@@ -419,9 +419,9 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 		"add_task_scope",
 		"【이 작업】에 테스트 범위를 추가합니다. 작업의 허가 경계이자 자산 테스트 커버리지의 분모입니다.\n"+
 			"지원 kind: company(회사 전체 자산) / root_domain(모든 하위 도메인을 포함한 루트 도메인 전체) / subdomain(정확히 일치하는 단일 하위 도메인) / ip / cidr / icp / keyword.\n"+
-			"설명: Worker가 개별적으로 접한 호스트는 시스템이 【자동으로】 범위에 추가합니다(정확한 하위 도메인). 이 도구는 전체 루트 도메인/회사를 포함하거나 특정 하위 도메인/IP를 추가하여 【명시적으로 확장】할 때 사용합니다.\n"+
+			"insert_assets로 명시 등록한 자산은 해당 유형에 따라 작업 범위에 자동 추가됩니다. 단순한 요청·브라우저 방문·파일 기록만으로 새 자산이 등록되는 것은 아닙니다. 이 도구는 전체 루트 도메인/회사를 포함하거나 특정 하위 도메인/IP를 추가하여 【명시적으로 확장】할 때 사용합니다.\n"+
 			"value: company는 회사명 또는 id(기존 회사 필수), root_domain/subdomain은 도메인, ip/cidr는 IP 또는 대역, icp/keyword는 등록 번호 또는 회사 키워드를 전달하세요.\n"+
-			"reason에 감사 가능한 근거를 반드시 설명하세요. 여러 항목은 entries 배열을 사용하세요.",
+			"범위에 포함하는 사유와 확인한 근거를 reason에 반드시 작성하세요. 여러 항목은 entries 배열을 사용하세요.",
 		obj(map[string]any{
 			"entries": map[string]any{"type": "array", "description": "일괄: [{kind, value}]. kind∈company/root_domain/subdomain/ip/cidr/icp/keyword.", "items": map[string]any{"type": "object"}},
 			"kind":    str("[단일] company / root_domain / subdomain / ip / cidr / icp / keyword"),
@@ -473,7 +473,7 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 	return readTool(
 		"list_untested_assets",
-		"【이 작업과 직접 연결된 작업】 범위에서 아직 사실 기준점으로 다루지 않은 자산을 조회합니다(연결된 범위는 읽기 전용이며 추가 테스트 여부를 직접 판단할 참고 자료이지 결정을 대신하지 않음).\n"+
+		"【이 작업과 직접 연결된 작업】의 등록 자산 중 유효한 fact/finding의 자산 연결(anchor)이 아직 없는 항목을 조회합니다. 실제 요청 이력이나 기능별 검증 완료 여부와 같지 않습니다(연결된 범위는 읽기 전용이며 추가 테스트 여부를 직접 판단할 참고 자료이지 결정을 대신하지 않음).\n"+
 			"자산 유형 필터 선택 가능: root_domain/subdomain/service/app/endpoint/ip.\n"+
 			"페이지 조회: page는 1부터, page_size는 기본 10입니다. 반환값 {assets:[{id,type,label}], total, page, page_size}. 작업 컨텍스트에서만 사용 가능합니다.",
 		obj(map[string]any{
@@ -516,18 +516,19 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 func (t *ToolSet) listAssets() actool.CoreTool {
 	return readTool(
 		"list_assets",
-		"자산 저장소 조회: DSL 표현식 검색 또는 id/ids 직접 조회, 페이지 조회 지원. 【이 작업과 직접 연결된 작업】의 테스트 범위 내 자산만 반환합니다.\n"+
+		"자산 저장소 조회: DSL 표현식 검색 또는 id/ids 직접 조회, 페이지 조회 지원. 작업 안에서는 【이 작업과 직접 연결된 작업】의 테스트 범위 내 자산만 반환하며, 작업 컨텍스트가 없는 플랫폼 에이전트에서는 전역 자산 저장소를 조회합니다.\n"+
 			"DSL: field=value 부분 일치(ILIKE) | field==value 정확히 일치 | field!=value 제외 | 숫자 필드는 > >= < <= 지원 | 필드 없는 단어=전체 텍스트 부분 일치. AND/OR 결합(AND 우선), 괄호 그룹 지원. 자산 유형은 DSL 대신 별도 type 인자를 사용하세요.\n"+
 			"id/ids를 전달하지 않으면 dsl이 비어 있으면 안 됩니다(조건 없는 전체 조회 금지).\n"+
+			"조회 우선순위는 양수 id, 비어 있지 않은 ids, dsl 순입니다. 직접 id/ids 조회에서는 dsl/type/limit/offset을 적용하지 않습니다.\n"+
 			"사용 가능 필드: domain(루트/하위/서비스 도메인), root_domain, ip, url, page_title, icp, service_name, app_name, method(예: GET/POST), service_type(http|other), record_type(예: A/CNAME), technology(배열, =부분 일치 ==정확히 일치), port/status_code/company_id(정수).\n"+
 			"예: status_code>=400 AND technology=shiro ; (port==80 OR port==443) AND technology=nginx",
 		obj(map[string]any{
 			"dsl":    str(`DSL 조회 표현식(문법/필드는 도구 설명 참조). id/ids가 없으면 필수입니다.`),
-			"type":   str("자산 유형 필터: root_domain|ip|subdomain|app|service|endpoint(독립 필드이며 dsl과 결합 가능. type만으로는 조회할 수 없고 dsl이 필요함)"),
-			"id":     intp("단일 자산 id 직접 조회(선택 사항, dsl/type과 함께 사용할 수 없음)"),
-			"ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "여러 자산 id 직접 조회(선택 사항, dsl/type과 함께 사용할 수 없음)"},
-			"limit":  intp("반환 상한, 기본 10(선택 사항)"),
-			"offset": intp("페이지 오프셋, 기본 0(선택 사항)"),
+			"type":   str("DSL 검색의 자산 유형 필터: root_domain|ip|subdomain|app|service|endpoint. type만으로는 조회할 수 없고 dsl이 필요하며, id/ids 직접 조회에는 적용하지 않습니다."),
+			"id":     intp("단일 자산 id 직접 조회(선택 사항). 양수 id가 있으면 ids/dsl/type보다 우선합니다."),
+			"ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "여러 자산 id 직접 조회(선택 사항). 양수 id가 없으면 dsl/type보다 우선합니다."},
+			"limit":  intp("DSL 검색의 반환 상한, 기본 10(선택 사항)"),
+			"offset": intp("DSL 검색의 페이지 오프셋, 기본 0(선택 사항)"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.as == nil {

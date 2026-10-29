@@ -74,9 +74,9 @@ grep -rhoaE '([A-Z_][A-Z0-9_]*):\{name:"[^"]*",link:"/[^"]+"\}' js | head
 
 | API | 일반적인 payload | 사용하는 곳 |
 |---|---|---|
-| `.../role_permissions` | `{ permissions: string[], role_type }` | 경로 가드, 버튼 수준 ACL |
+| `.../role_permissions` | `{ permissions: string[], role_type }` | 프런트엔드 라우트 가드, 버튼 수준 ACL |
 | `.../permissions/all` | `tree[{ code, position, children }]` | 사이드바 메뉴 렌더링 |
-| bundle 안의 `userRouteAuth` | `{ CODE: { url, name? } }` | code → 프런트엔드 path |
+| bundle 안의 `userRouteAuth` | `{ CODE: { url, name? } }` | code → 프런트엔드 라우트 |
 | bundle 안의 `routeMap` | `{ KEY: { name, link } }` | 별칭 해석(webpack `o.DASHBOARD`) |
 
 사용하는 쪽의 코드를 읽어 `getResultTree(tree, permissions)`의 필터 방식과 `v-if` / `hasAuth(code)`가 확인하는 필드를 파악합니다.
@@ -152,15 +152,15 @@ grep -rhoaE '([A-Z_][A-Z0-9_]*):\{name:"[^"]*",link:"/[^"]+"\}' js | head
 ```
 
 필드 설명:
-- `runtimeMode`: `depth`(Puppeteer), `coverage`(browser MCP), `both`
+- `runtimeMode`: `depth`(Playwright), `coverage`(browser MCP), `both`
 - `cookies[].value` 접두사: `b64json:` → base64(JSON), `json:` → 원시 JSON, 접두사 없음 → 리터럴
-- `forward: true`는 실제 요청을 전달하고 코드 필드를 수정. `false`는 완전한 오프라인 stub
+- `forward: true`는 stub으로 처리하지 않은 API 요청을 전달한 뒤 응답 본문의 업무 코드 필드를 보정합니다. depth의 `false`는 `apiPattern`에 맞는 요청을 stub 처리하며, HTML/JS와 패턴 밖 요청은 전송될 수 있습니다. coverage의 preload에서는 mock에 일치하는 fetch/XHR에만 `forward: false`가 적용됩니다. 네트워크 격리 설정은 아닙니다.
 - `mockTier`: coverage 모드 preload에서 활성화할 계층. 예: `L1+L2`, `L1+L2+L3`
-- `routes`는 `routes.txt`에서 가져옴. 모의 메뉴 생성 후 harness가 `<a href>`를 자동 추가
+- `routes`는 `routes.txt`의 프런트엔드 라우트에서 가져옴. 모의 메뉴 생성 후 harness가 `<a href>`를 자동 추가
 - `captureResponses` / `recordWs`는 depth 모드에서만 유효
-- `waitUntil`: 대형 SPA는 `networkidle2`에서 멈추지 않도록 `domcontentloaded` 사용
-- `routeTimeout`: 각 경로의 `page.goto` 제한 시간(ms)
-- `proxy`: Puppeteer `--proxy-server`. `HTTP_PROXY` / `HTTPS_PROXY`도 설정 가능
+- `waitUntil`: 대형 SPA는 상시 통신으로 대기가 끝나지 않을 수 있으므로 `domcontentloaded`를 사용합니다. 이전 Puppeteer 명칭인 `networkidle2`/`networkidle0`도 호환 별칭으로 받지만 Playwright의 `networkidle`로 변환됩니다.
+- `routeTimeout`: 각 프런트엔드 라우트의 `page.goto` 제한 시간(ms)
+- `proxy`: Playwright launch의 `proxy` 설정으로 전달합니다. 생략하면 `HTTP_PROXY` / `HTTPS_PROXY`를 사용합니다.
 
 ### B1. 이중 stub 템플릿(role_permissions + permissions/all)
 
@@ -241,9 +241,9 @@ preload(coverage)와 runtime_harvest(depth)에 내장된 브라우저 Hook 기�
 | Hook fetch / XHR.open | 요청 URL/메서드 기록 | ✅ `recordDetail` + `__API_RECON_LOG__` |
 | Hook XHR.setRequestHeader | Authorization 등의 헤더 발견 | ✅ `observe.xhrHeaders` |
 | localStorage/cookie 읽기 Hook | 세션 키 이름 확인 | ⚠️ 선택 사항 `observe.storageReads/cookieReads` |
-| Vue 경로 조회 | frontendRoutes 보완 | ✅ `__API_RECON_ROUTES__`(로드된 경로) |
-| Vue 경로 가드 무력화 / 로그인 이동 차단 | 모듈을 렌더링하여 API 실행 | ✅ `neutralizeVueRouter` + 기본 페이지 이동 무력화 |
-| React 경로 조회 | 경로 보완 | ⚠️ 정적 분석 + 클릭. 전용 Hook 없음 |
+| Vue 라우트 조회 | frontendRoutes 보완 | ✅ `__API_RECON_ROUTES__`(로드된 라우트) |
+| Vue 라우트 가드 무력화 / 로그인 이동 차단 | 모듈을 렌더링하여 API 실행 | ✅ `neutralizeVueRouter` + 기본 페이지 이동 무력화 |
+| React 라우트 조회 | 프런트엔드 라우트 보완 | ⚠️ 정적 분석 + 클릭. 전용 Hook 없음 |
 | 페이지 이동 차단(로그인 path) | 페이지를 유지하며 분석 | ⚠️ 업무 탐색을 막지 않도록 로그인 path만 차단 |
 | 암호화 라이브러리 Hook(CryptoJS/SM 등) | 암호화 인자 → 평문 API body | ❌ 암호화 함수 입력을 수동 Hook해야 함. 결론은 config에 기록 |
 | 디버깅 방지 우회 | 없으면 runtime에서 API 기록 불가 | ❌ 수동 처리 필요. 정적 분석은 계속 가능 |
@@ -269,7 +269,7 @@ grep -rhoaE '/api/[a-zA-Z0-9_./-]+' js | sort -u
 | chunk 수 ≪ manifest | CSS 전용 또는 배포되지 않은 chunk. 404는 재시도됨 |
 | runtime에서 여전히 로그인 페이지 표시 | 렌더링 조건 오류 → A1 재확인: 키 이름, 저장소, 인코딩, domain |
 | 화면 구조는 진입했지만 모듈이 비어 있음 | 콘텐츠 조건 → 모의 메뉴 구성(A3). `routes` path가 잘못되었을 수 있음 |
-| 경로마다 bootstrap/locale만 발생 | 권한 코드 부족 → I절 권한 트리 복원. `role_permissions` + `permissions/all` 이중 stub 확인 |
+| 라우트마다 bootstrap/locale만 발생 | 권한 코드 부족 → I절 권한 트리 복원. `role_permissions` + `permissions/all` 이중 stub 확인 |
 | 사이드바 항목은 있으나 하위 페이지가 비어 있음 | tree의 중간 노드 누락 또는 code가 `userRouteAuth`와 불일치 |
 | 모든 API가 로그인으로 이동 | 인터셉터 조건 → `neutralize` 확인. 중첩 필드는 순회 로직 확장 필요 |
 | WS 프레임이 0 | 사용자 상호작용 후에만 subscribe될 수 있음. `perRouteMs` 증가 |
@@ -281,8 +281,8 @@ grep -rhoaE '/api/[a-zA-Z0-9_./-]+' js | sort -u
 | Vue가 여전히 로그인으로 이동 | preload가 document-start가 아님 → 주입 시점 변경. 또는 `neutralizeVueRouter: false`일 때 가드를 수동 제거 |
 | 응답의 URL이 log에 없음 | `extractUrlsFromResponse` 활성화 또는 `__API_RECON_DETAIL__`에서 수동 추출 |
 | Authorization 헤더 이름을 모름 | `observe.xhrHeaders` 활성화 또는 DevTools에서 요청 헤더 확인 |
-| runtime이 매우 느리거나 시간 초과 | `waitUntil: domcontentloaded`로 변경. `routeTimeout` 감소. `networkidle2` 사용 금지 |
-| 프록시 연결 실패 | `proxy` / 환경 변수 확인. Puppeteer와 curl의 프록시 포트 일치 여부 확인 |
+| runtime이 매우 느리거나 시간 초과 | `waitUntil: domcontentloaded`로 변경. `routeTimeout` 감소. `networkidle` 대기를 피하고 요소/앱 상태로 준비 여부 확인 |
+| 프록시 연결 실패 | `proxy` / 환경 변수 확인. Playwright launch에 적용한 proxy와 curl의 프록시 주소·포트 일치 여부 확인 |
 
 ---
 
@@ -291,7 +291,7 @@ grep -rhoaE '/api/[a-zA-Z0-9_./-]+' js | sort -u
 서버가 단계별로 세션을 검증하면(모의 생성 불가한 서명 cookie, 서버 렌더링되어 stub 처리 불가한 메뉴) runtime이 화면 구조에서 막힐 수 있습니다. 예상되는 동작:
 
 - **정적 분석만으로 endpoint 열거 가능** — 모듈 path가 코드 안에 있음
-- 승인 범위가 허용하면 **실제 세션**으로 같은 harness 실행: `forward: true`, neutralize 불필요. 실제 methods/params/responses 수집
+- 이 스킬의 자격 증명 없는 조사로 진행할 수 없으면 정적 후보와 한계를 기록합니다. 승인된 실제 세션 검증은 일반 브라우저 흐름에서 별도로 수행하세요. 이 harness는 `forward: true`여도 수신 응답을 보정하며, `neutralize`를 생략해도 기본 보정값이 적용됩니다. mock·보정 응답을 실제 서버 검증 결과로 사용하지 마세요.
 
 ---
 
@@ -302,8 +302,8 @@ grep -rhoaE '/api/[a-zA-Z0-9_./-]+' js | sort -u
 3. **Phase 1b**: path 기준점 주변 코드 확장 + 바인딩 계층 → `param_candidates.json`(J절)
 4. A1/A2/A3 역추적 → 사이트별 `config.json` 작성
 5. `runtime_harvest.js` / `preload.js`를 **읽고 수정한 뒤** 실행
-6. `runtimeMode=depth`: `npm install` → 수정한 harvest 스크립트 실행
-7. `runtimeMode=coverage/both`: document-start에 수정한 preload 주입 → browser MCP 동적 열거 + **인자 실행 행렬**
+6. `runtimeMode=depth`: ARTEX Docker에서는 포함된 Playwright/Chromium으로 수정한 OUTDIR 스크립트를 실행합니다. Playwright가 없는 로컬 환경에서는 OUTDIR에 복사한 `package.json`/`package-lock.json`으로 `npm ci` 후 `npx playwright install chromium`을 실행합니다.
+7. `runtimeMode=coverage/both`: document-start에 수정한 preload 주입 → browser MCP 동적 열거 + **UI 조작별 요청 파라미터 수집·비교표**
 8. 모듈이 렌더링되지 않음 → **I절 권한 트리 복원** → stubs 수정 → 재실행
 9. 여러 인자 표본 diff + 오류 역추적 → `params_merged.json`
 10. 병합 → `site_map.json` + `api_merged.txt`. 확인한 범위, 누락된 부분, 스크립트 수정 사항을 정확히 명시
@@ -327,7 +327,7 @@ grep -rhoaE 'getResultTree|role_permissions|permissions/all' js | head
 ### I2. routeMap 추출
 
 ```bash
-python3 scripts/extract_route_map.py recon/js recon/
+python3 recon/extract_route_map.py recon/js recon/
 # recon/route_map.json 생성
 ```
 
@@ -340,7 +340,7 @@ grep -rhoaE '([A-Z_][A-Z0-9_]*):\{name:"[^"]*",link:"/[^"]+"\}' js | head -20
 ### I3. 권한 트리 + stub 구성
 
 ```bash
-python3 scripts/build_perm_tree.py recon/js recon/ --config recon/config.json
+python3 recon/build_perm_tree.py recon/js recon/ --config recon/config.json
 ```
 
 스크립트 동작:
@@ -373,14 +373,14 @@ node recon/runtime_harvest.js recon/config.json
 
 | 모의 구성 전 | 모의 구성 후(성공) |
 |---|---|
-| 모든 경로에서 동일한 bootstrap 3–5개 | 경로별로 서로 다른 모듈 API 실행 |
+| 모든 라우트에서 동일한 bootstrap 3–5개 | 라우트별로 서로 다른 모듈 API 실행 |
 | `/api/locale/language`만 존재 | `/api/web/...` 모듈 endpoint 등장 |
-| `routes.txt`에 한 자릿수 경로 | route_map에서 가져온 `routes`가 80–110개 이상 |
+| `routes.txt`에 한 자릿수 라우트 | route_map에서 가져온 `routes`가 80–110개 이상 |
 
 ### I6. 여전히 실패하는 경우
 
 - **coverage 모드**: 사이드바 + 탭 클릭. 상호작용 이후에 권한 조건 요청이 발생할 수 있음
-- **stub 필드**: 실제 API(curl + 실제 session)와 stub의 중첩 구조 비교
+- **stub 필드**: bundle의 응답 사용 코드나 이미 확보한 승인된 응답 자료와 stub의 중첩 구조를 비교합니다. 실제 세션 검증이 필요하면 이 스킬의 mock 조사와 구분하여 일반 브라우저 흐름에서 수행하세요.
 - **추가 가드**: `hasPermission|checkRole|func.` 등의 버튼 수준 검사를 grep하고 `role_permissions.permissions` 확장
 - **정적 분석으로 보완**: 모듈 API path는 `api_static.txt`에 남아 있음. runtime은 METHOD/body를 보완. 인자는 `param_candidates.json` + 기록된 표본 유지
 
@@ -445,7 +445,7 @@ grep -rhoaE 'encrypt|decrypt|sign|CryptoJS|sm2|sm3|sm4|RSA|AES' js | head
 
 **암호문으로 필드를 추측하지 마세요.** 암호화 함수의 **입력 인자**를 Hook하고 암호화 전에 평문 payload를 기록합니다. 결론은 `config.json` / `param_candidates.json`에 기록합니다.
 
-### J6. 인자 실행 행렬(Phase 3 필수)
+### J6. UI 조작별 요청 파라미터 수집·비교표(Phase 3 필수)
 
 각 모듈에서 작업별로 한 번씩 기록하고 요청 body/query를 diff합니다.
 
@@ -467,7 +467,7 @@ grep -rhoaE 'encrypt|decrypt|sign|CryptoJS|sm2|sm3|sm4|RSA|AES' js | head
 | **높음** | 정적 호출 위치와 runtime 표본 2개 이상이 일치 |
 | **중간** | 정적 정보만 있거나 runtime 표본이 1개뿐 |
 | **낮음** | 응답/오류에서 추론했으며 재검증하지 않음 |
-| **실행 대기** | 정적으로 알려진 필드이나 UI/권한 조건에 도달하지 못함 |
+| **아직 유발하지 못함(미관측)** | 정적으로 알려진 필드이나 UI/권한 조건에 도달하지 못함 |
 
 ### J8. 상황별 빠른 구성
 
@@ -484,7 +484,7 @@ grep -rhoaE 'encrypt|decrypt|sign|CryptoJS|sm2|sm3|sm4|RSA|AES' js | head
 |---|---|
 | Phase 1 정적 분석 | J1 기준점 주변 코드 확장 |
 | Phase 2 A2 인터셉터 | 전역 주입 필드(tenantId, sign) |
-| Phase 3 runtime | J6 실행 행렬 + `param_samples.json` |
+| Phase 3 runtime | J6 수집·비교표 + `param_samples.json` |
 | Phase 4 권한 트리 | 모듈별 폼이 다르므로 충분한 권한 조건이 있어야 모든 필드 실행 가능 |
 | Phase 5 병합 | `params_merged.json` + 신뢰도. 단일 표본으로 필수 여부를 확정하지 않음 |
 
@@ -492,7 +492,7 @@ grep -rhoaE 'encrypt|decrypt|sign|CryptoJS|sm2|sm3|sm4|RSA|AES' js | head
 
 | 현상 | 조치 |
 |---|---|
-| 정적 필드명이 runtime에 나타나지 않음 | 실행 대기로 표시. 권한 트리 보완 / 고급 필터 클릭 / 연동 select의 각 option 확인 |
+| 정적 필드명이 runtime에 나타나지 않음 | “아직 유발하지 못함(미관측)”으로 표시. 권한 트리 보완 / 고급 필터 클릭 / 연동 select의 각 option 확인 |
 | 같은 path에서 body 구조가 다름 | 정상. `action`별로 분리 기록하고 schema를 강제로 합치지 않음 |
 | stub 응답은 가짜지만 params를 확인하고 싶음 | **outbound 요청**의 body/headers 확인. stub 응답에서 역추론하지 않음 |
 | 400 오류가 nested field를 지목 | 바깥쪽 래퍼 `data`/`bizData`/`variables` 확인 |

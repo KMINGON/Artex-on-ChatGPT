@@ -1,0 +1,133 @@
+{
+  "prompts": {
+    "auto": "95b0017548f90ba7c23fdbbbccd72de99ab05ca0d599e0378d89edade894061f",
+    "worker": "101410c3eb5bb40db91f3eff2a810c906af2a00b010b1c62c44c11c567ef9d54",
+    "planner": "2929142b74decbb59955f8021440b5bc8dc99b4d9c47d1aab88f888b851647a5",
+    "pentest": "f65a2d3e3137c2cc64eecd46922be60249d6e11c2f334e2a59e235459a9a74d3"
+  },
+  "tools": {
+    "graph_overview": {
+      "description": "5f3bed274a60806a0324da78a9776ff8624268ac338543f503b7fe0a83845211",
+      "schema": {}
+    },
+    "record_fact": {
+      "description": "d0438769ace170f7bd7104dfa5a3fb695d7a9a5962c5f4b193febca35d3b6663",
+      "schema": {
+        "properties/asset_ids/description": "c65fb76c1d6fabdf65554b189c7037cbd8161a0fa08a5537ee21db841d6f0ad5",
+        "properties/confidence/description": "2be6111e6c22a6c96d3f9e3c63172cf7a93478c9a98d1ef87f2d78f1f57d5b2a",
+        "properties/detail/description": "bbdc28943275d75b822511cbe12810954730e27dbaec46deeae1d1c60854a827",
+        "properties/evidence/description": "c7144d63d4e7532dbede05cc0bde65ec6cc9b183d812f1c0739bd6370e205cd6",
+        "properties/facts/description": "782b24c4f4499136db2e45f27a746483d5bb79d516579a7630b6646b2bef1291",
+        "properties/facts/items/properties/asset_ids/description": "c65fb76c1d6fabdf65554b189c7037cbd8161a0fa08a5537ee21db841d6f0ad5",
+        "properties/facts/items/properties/confidence/description": "2be6111e6c22a6c96d3f9e3c63172cf7a93478c9a98d1ef87f2d78f1f57d5b2a",
+        "properties/facts/items/properties/detail/description": "bbdc28943275d75b822511cbe12810954730e27dbaec46deeae1d1c60854a827",
+        "properties/facts/items/properties/evidence/description": "c7144d63d4e7532dbede05cc0bde65ec6cc9b183d812f1c0739bd6370e205cd6",
+        "properties/facts/items/properties/intent_id/description": "aac86aa43da4eb11c35a8d97ebae6e1845552983c09104773c64f895bb44454b",
+        "properties/facts/items/properties/summary/description": "fa1cf65d2529639a8bdb92246a9670c5a4768d4fedefbff9246b78ace0e2dfec",
+        "properties/intent_id/description": "aac86aa43da4eb11c35a8d97ebae6e1845552983c09104773c64f895bb44454b",
+        "properties/summary/description": "fa1cf65d2529639a8bdb92246a9670c5a4768d4fedefbff9246b78ace0e2dfec"
+      }
+    },
+    "set_goals": {
+      "description": "0e973643e9a86f944ef92b65c21ccbd3b818b166abafd096af29fcfa9ca53da2",
+      "schema": {
+        "properties/goals/description": "d4cfb14fe880cb5c0403fa99621977c98b5d44062abd90efcd1e7dcdee97b940",
+        "properties/text/description": "8aa0498f9dd0d6cdc4696e4044aaaa208968f135c44a8e3d93fbc90c1f462c4a",
+        "properties/vulnclass/description": "9c07c4c71b7f93c4c8ab45578b0b52661ed1d8e2dd011f05119c776bd0a0dab0"
+      }
+    },
+    "set_constraints": {
+      "description": "6de4de812dc7e8053690c02e1587fcb62e03bda54f8d7e3575e137f46f0439be",
+      "schema": {
+        "properties/constraints/description": "e6f3938f90f85eac9360c8dd9c13b3153845b153714840fd7a0d5c5ed264073c",
+        "properties/text/description": "3c00555f31460a14f8d65995a3660ebb0ca1a304b74037b93eb30ff5b31ee627",
+        "properties/type/description": "00b532889c15cc9af658a6fb0cdb6f600baffcfc3dccc8399a94b0823bc035f2"
+      }
+    },
+    "add_hint": {
+      "description": "e7693a22f1a0e0d8b8269264d93f6f64cad55175fb2e1aaf720ce5869e08dca5",
+      "schema": {
+        "properties/asset_ids/description": "f520fe7a26e77afaa2e8fba02e8e896b7e9e6ad49e7403d3830217a5e171b1df",
+        "properties/hints/description": "84c91a3c7c3136a1a46540e4403bb5cbf2f15767a818d7ad35102d3d82eb7279",
+        "properties/hints/items/properties/text/description": "5a91a213e0b4e0f81af863b597e0e0adf5c07f7c3ed01f1222d2b7433b3221bc",
+        "properties/hints/items/properties/traffic_refs/description": "4382e09a7f8c4035fc6c22d5d3cc67492bf564ffca8b53f7c783cfea908b23db",
+        "properties/hints/items/properties/traffic_refs/items/properties/note/description": "aef1111b5ae6f050d3525c64a7e07b4d9e90848d00595b257b2d2d5c6b619839",
+        "properties/hints/items/properties/traffic_refs/items/properties/role/description": "87328e08ef21241ffa5d7f500b5bc1fbd68a41515d180f90d1d4dca02c6f8041",
+        "properties/hints/items/properties/traffic_refs/items/properties/traffic_id/description": "c651a972ab3b22845197db4fb1b7703d77a3f399933e13f8bd86124fd45f8dd4",
+        "properties/text/description": "6597c9ea3367740d11a236da040d545aa1a08d389a07ac77c8a8c85ed502d8f0",
+        "properties/traffic_refs/description": "4382e09a7f8c4035fc6c22d5d3cc67492bf564ffca8b53f7c783cfea908b23db",
+        "properties/traffic_refs/items/properties/note/description": "aef1111b5ae6f050d3525c64a7e07b4d9e90848d00595b257b2d2d5c6b619839",
+        "properties/traffic_refs/items/properties/role/description": "87328e08ef21241ffa5d7f500b5bc1fbd68a41515d180f90d1d4dca02c6f8041",
+        "properties/traffic_refs/items/properties/traffic_id/description": "c651a972ab3b22845197db4fb1b7703d77a3f399933e13f8bd86124fd45f8dd4"
+      }
+    },
+    "get_worker_trace": {
+      "description": "a7c5428dd780be29de266bc5592260c22738386ee3a08f883a0454b9fb677ab2",
+      "schema": {
+        "properties/intent_id/description": "012a844d1c623652e1cfb221b4f5f9650d99d512537a4306a6a08c9ddce62998",
+        "properties/limit/description": "136385c204b78e24a65598a2d15553415499335114443af8e8298dc95889dcbe",
+        "properties/q/description": "4c0705a7096eac173cdd1d560b52bbcbb13a17d7bbb306bd9e0c2245d5616611",
+        "properties/step_ids/description": "0c07cd741f1518e496747a66d00e5c29736bfe383a13017cc0cfab2cf73ebb24"
+      }
+    },
+    "list_assets": {
+      "description": "6f2986adfdfc33bd420ffff2634ab02e7e7182758297bd6bbc5a98055ebdc97c",
+      "schema": {
+        "properties/dsl/description": "8966c400f0662ace50d94cac02574ef80120518fbb6816be5ea18f4e0a5ee87f",
+        "properties/id/description": "d72ecea19955d367d59d0c48e17e1a165af14b3a6c631062cd8873014474e716",
+        "properties/ids/description": "37a54fc8ff2cfa38877be1f34c61cd06037bfef0fd910cbbbf58568fb39a8986",
+        "properties/limit/description": "87902ab41741f937eb10f47cfd94683ee39fdd97109def859e097769439d2d8f",
+        "properties/offset/description": "04ca90b68e7ae8363a23eea93848eceadb03183719f2eeca09d28f17286b1f89",
+        "properties/type/description": "97c331ca668c1f25aff37cb7cfda3a130565565551a7e9db0cd2b593412301d5"
+      }
+    },
+    "add_task_scope": {
+      "description": "171967b5753606d7bb42267370c05d866bb9323d9bd0b81da12b86d2fb88f9dc",
+      "schema": {
+        "properties/entries/description": "a21e838e850e841af9ee3daddb407e1adeb7b0e5d757c31e33cf47f5e9014701",
+        "properties/kind/description": "4f006ef9a29a95e27f87c116cb72a6f65c371c72d3644017b235f8332d965320",
+        "properties/reason/description": "89f3b61b23ca2becd3053b68cd9830107ca22a9eaae6eaea253a35dfb0a10b20",
+        "properties/value/description": "fe8f237e5de25eb975c68df05cfe093b2b04a18598fa85e6e56eacfaa0032929"
+      }
+    },
+    "add_company_scope": {
+      "description": "6ced90c961835225600f416ef9abb1663e6033c50608074a6ef8aeff60e1b6b3",
+      "schema": {
+        "properties/company/description": "79eae2f420e958e0b35e32efb67f4469dd11089737ec621e0fa2487e793387ad",
+        "properties/logo/description": "fc9903a97d2da04013d64118754d533abdc27a1c0aed915113262f762133f35f",
+        "properties/reason/description": "960f5df455a3662f4982ee98be6f62410913a49c0de0c5ddf2119288a59002ee",
+        "properties/scope/description": "e58136796e938fc48b762a604498e2d4524bfa88067890bb3d6a6bfc36e75bc3"
+      }
+    },
+    "list_untested_assets": {
+      "description": "d89307cdcdc8cbada7c2419d4dffacb22ed490b2fb9fe6f23001328f2539f01d",
+      "schema": {
+        "properties/page/description": "2078e94a85bb9d7504a04f55a9f1a996344024b3f1e997731c7c4cd775293527",
+        "properties/page_size/description": "8e2f428ddb61043ac270af53b55b41e379f631b68bd0c838b8dcd20bffad7d66",
+        "properties/type/description": "593fa1be99dbdae0576bcea672d08ead16d6bd7c9ba59f3130a322807805c659"
+      }
+    },
+    "get_task_graph": {
+      "description": "b3887f286373701c70ba100dc0d884752db6afad9e9987b7c64a0e1c4c6a4511",
+      "schema": {
+        "properties/task_id/description": "fcd299cf9a142db4e846775ccdb0737d41d14f3b8da9e4f0175491fc5a57136c"
+      }
+    },
+    "update_finding_report": {
+      "description": "63e04a6822a4f31e296b9d1a67710e1fb80f12b1a5fa3070565f92352fdaa9ea",
+      "schema": {
+        "properties/evidence_version/description": "a446b3c311950efb5270ac63a2cfd290c26f6132a880bb2f803435b414d734e9",
+        "properties/finding_id/description": "9ee6cda2182ad33d2836b97ace0d8e618d352747c6de1aebcafb8c43fbbe5568",
+        "properties/report/description": "1ad2d8ae1f5232a18ff45d2b67da0441d0f7c43207e8569c7cbfe43dafdaf920"
+      }
+    },
+    "get_finding_traffic": {
+      "description": "2e07e00ee43031cb8835787758ff5e8eceea78a30527bdd38257a9a39b5ea018",
+      "schema": {
+        "properties/binding_id/description": "46522ae6b8f4d03c39c6332d52643323f567a46432e9ce92a1ebd877c2e6a773",
+        "properties/finding_id/description": "a5fd10939f6d0758c0e67900e2fbb8e72f816b5d388fc16a2bea05f2f30ce975",
+        "properties/side/description": "9945903f1b4af1cf6d1b3ebcdc18c819bce72193c63cf6cdc7798b5617d2a9d1"
+      }
+    }
+  }
+}

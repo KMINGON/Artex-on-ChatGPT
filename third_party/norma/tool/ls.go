@@ -13,7 +13,7 @@ import (
 func NewLS() CoreTool {
 	return Build(Spec{
 		Name:        "LS",
-		Description: "Lists the files and subdirectories of a directory (non-recursive). Use Glob to match by pattern across depth, or Grep to search contents.",
+		Description: "Lists the files and subdirectories of a directory (non-recursive). For recursive file-name or content searches, use the search tools available to your role, or Bash when a dedicated search tool is unavailable or shell features are needed.",
 		Prompt:      "path may be absolute or relative to the working directory; defaults to the working directory.",
 		Schema: map[string]any{
 			"type": "object",

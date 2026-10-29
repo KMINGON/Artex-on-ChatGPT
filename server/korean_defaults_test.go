@@ -21,13 +21,15 @@ func TestKoreanToolContractsMatchReviewedChanges(t *testing.T) {
 	// Keep the production localization baseline immutable: its hashes recognize
 	// historical defaults without overwriting user edits. These reviewed contracts
 	// cover fact/intent linking, required goal reasons without completion_review,
-	// and nullable optional finding evidence; all
+	// nullable optional finding evidence, and batch goal/constraint field exposure; all
 	// other tool schemas must still match the original translation contract.
 	functionalUpdates := map[string]string{
-		"record_fact":    "33486853960f5f14a8bfbe6a822c6d52633ef3496ada96eff4065ca0de23f32e",
-		"add_intent":     "cd849d60948f02d4779622d246be160883c503817cdc5cdf47af27790aa7f5ce",
-		"prove_goal":     "4742a0d1ccf9a0b864b3a860cba896b184887f0eed0dab697053461c308448ff",
-		"report_finding": "9d78621ed7c485bdc0865addb48a871d197f077cc5f482d5b6ff8bd0acc32f88",
+		"record_fact":     "33486853960f5f14a8bfbe6a822c6d52633ef3496ada96eff4065ca0de23f32e",
+		"add_intent":      "cd849d60948f02d4779622d246be160883c503817cdc5cdf47af27790aa7f5ce",
+		"prove_goal":      "4742a0d1ccf9a0b864b3a860cba896b184887f0eed0dab697053461c308448ff",
+		"report_finding":  "9d78621ed7c485bdc0865addb48a871d197f077cc5f482d5b6ff8bd0acc32f88",
+		"set_goals":       "a903e89bf379922de680a7092b87e935632a08f638376d549e52639ba7011fc4",
+		"set_constraints": "3d31c5e5e26cb8efe1efe84b938aeeabeaa3fb8fe57e52776ed4f4f4aba831ed",
 	}
 	strip := func(value any) any { return value }
 	strip = func(value any) any {

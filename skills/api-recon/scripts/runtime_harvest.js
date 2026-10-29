@@ -21,13 +21,13 @@
  *   "localStorage": {"token":"x","isLogin":"1"},
  *   "neutralize": { "fields":["response_code","code","errno","ret"], "success":0,
  *                   "flags":{"success":true,"message":"ok"} },
- *   "forward": true,                            // forward real req then rewrite code; false = offline stub
+ *   "forward": true,                            // true: 응답 업무 코드 보정; false: apiPattern 요청만 stub(HTML/JS·패턴 밖 요청은 전송 가능)
  *   "loginUrlPattern": "/login",               // navigations matching this are suppressed as a fallback
  *   "stubs": [ {"match":"permission|menu|role", "body": { ...full-feature menu... }} ],
  *   "routes": ["/dashboard","/device", ...],   // from routes.txt or the forged menu
  *   "apiPattern": "/api/|/rest/|/graphql",      // what counts as an API call to record
  *   "proxy": "http://127.0.0.1:8080",           // optional; also HTTP_PROXY / HTTPS_PROXY
- *   "waitUntil": "domcontentloaded",            // prefer over networkidle2 for large SPAs
+ *   "waitUntil": "domcontentloaded",            // 대형 SPA는 networkidle 대기보다 권장(networkidle2/0은 호환 별칭)
  *   "routeTimeout": 12000,
  *   "waitMs": 1200, "perRouteMs": 900, "headless": true,
  *   "ignoreHTTPSErrors": false                  // explicit self-signed lab targets only

@@ -87,11 +87,11 @@ func resolvePath(tc *ToolContext, p string) string {
 	return filepath.Join(tc.WorkingDir, p)
 }
 
-// truncate trims s to max characters, keeping head and tail.
+// truncate trims s to max bytes, keeping head and tail.
 func truncate(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
 	half := max / 2
-	return s[:half] + fmt.Sprintf("\n\n... [%d characters truncated] ...\n\n", len(s)-max) + s[len(s)-half:]
+	return s[:half] + fmt.Sprintf("\n\n... [%d bytes truncated] ...\n\n", len(s)-max) + s[len(s)-half:]
 }

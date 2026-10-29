@@ -16,7 +16,7 @@ func TestCapOutputCapsOversizedTextBlock(t *testing.T) {
 
 	out := capOutput(tc, res)
 	got := out.Content[0].Text
-	if len(got) >= 5000 || !strings.Contains(got, "characters truncated]") {
+	if len(got) >= 5000 || !strings.Contains(got, "bytes truncated]") {
 		t.Fatalf("capOutput did not cap oversized block: len=%d", len(got))
 	}
 }

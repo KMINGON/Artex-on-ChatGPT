@@ -26,7 +26,7 @@ ALTER TABLE intercept_rules ADD CONSTRAINT intercept_rules_match_target_check CH
 	originalIDs := make(map[int64]bool, len(rules))
 	for _, r := range rules {
 		originalIDs[r.ID] = true
-		if r.Name == "[내장] 종료 / 재시작" {
+		if r.Name == "[내장] 시스템 종료 / 재부팅" {
 			original = r
 		}
 	}

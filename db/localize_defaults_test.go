@@ -5,9 +5,65 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 )
+
+func TestShutdownWordingUpgradePreservesRuleAndRollback(t *testing.T) {
+	d, _ := templateFixtureDB(t)
+	if _, err := d.Exec(`DELETE FROM settings WHERE key=$1`, shutdownRuleWordingFlag); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE intercept_rules SET name=$1,message=$2,enabled=false,priority=37,action='ask',timeout_enabled=true,timeout_seconds=91
+WHERE name=$3`, "[내장] 종료 / 재시작", "종료 또는 재시작 명령은 금지됩니다", "[내장] 시스템 종료 / 재부팅"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := d.ListInterceptRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.localizeBuiltinDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := d.ListInterceptRules()
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("rule count changed: %v", err)
+	}
+	byID := make(map[int64]InterceptRule)
+	for _, r := range after {
+		byID[r.ID] = r
+	}
+	var updatedID int64
+	for _, r := range before {
+		got := byID[r.ID]
+		if r.Name == "[내장] 종료 / 재시작" {
+			updatedID = r.ID
+			r.Name = "[내장] 시스템 종료 / 재부팅"
+			r.Message = "시스템 전원을 끄거나 재부팅하는 명령은 금지됩니다"
+			if got.UpdatedAt.Before(r.UpdatedAt) {
+				t.Fatal("updated timestamp moved backwards")
+			}
+			r.UpdatedAt = got.UpdatedAt // The DB trigger timestamps the wording update.
+		}
+		if !reflect.DeepEqual(r, got) {
+			t.Fatalf("rule changed beyond wording: before=%+v after=%+v", r, got)
+		}
+	}
+	if updatedID == 0 {
+		t.Fatal("missing shutdown rule")
+	}
+	if _, err := d.Exec(`UPDATE intercept_rules SET name=$1,message=$2 WHERE id=$3`, "[내장] 종료 / 재시작", "종료 또는 재시작 명령은 금지됩니다", updatedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.localizeBuiltinDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	if err := d.QueryRow(`SELECT name FROM intercept_rules WHERE id=$1`, updatedID).Scan(&name); err != nil || name != "[내장] 종료 / 재시작" {
+		t.Fatalf("explicit rollback overwritten: %s, %v", name, err)
+	}
+}
 
 func TestLocalizeDefaultsPreservesUserChanges(t *testing.T) {
 	dsn := os.Getenv("ARTEX_PG_DSN")

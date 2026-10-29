@@ -420,12 +420,12 @@ func defaultInterceptRules() []interceptRuleDefault {
 			priority: 100,
 		},
 		{
-			name:     "[내장] 종료 / 재시작",
+			name:     "[내장] 시스템 종료 / 재부팅",
 			target:   "shell_command",
 			typ:      "regex",
 			pattern:  `\b(?:shutdown|reboot|halt|poweroff|init\s+[06])\b`,
 			action:   "deny",
-			message:  "종료 또는 재시작 명령은 금지됩니다",
+			message:  "시스템 전원을 끄거나 재부팅하는 명령은 금지됩니다",
 			priority: 100,
 		},
 		{

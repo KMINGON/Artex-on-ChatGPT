@@ -1,6 +1,10 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+)
 
 // Only exact shipped text is replaced; rule matching, user edits and history stay intact.
 func (d *DB) localizeBuiltinDefaults() error {
@@ -9,6 +13,9 @@ func (d *DB) localizeBuiltinDefaults() error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(7337741014)`); err != nil {
+		return err
+	}
 	for _, r := range legacyRuleLabels {
 		if _, err := tx.Exec(`UPDATE intercept_rules SET
     name=CASE WHEN name=$1 THEN $2 ELSE name END,
@@ -16,6 +23,9 @@ func (d *DB) localizeBuiltinDefaults() error {
     WHERE name=$1 OR message=$3`, r.oldName, r.name, r.oldMessage, r.message); err != nil {
 			return fmt.Errorf("localize intercept rule: %w", err)
 		}
+	}
+	if err := refineShutdownRuleWording(tx); err != nil {
+		return err
 	}
 	for _, r := range legacyAssetRuleNotes {
 		if _, err := tx.Exec(`UPDATE asset_intercept_rules SET note=$2 WHERE builtin AND note=$1`, r[0], r[1]); err != nil {
@@ -42,13 +52,38 @@ func (d *DB) localizeBuiltinDefaults() error {
 	return tx.Commit()
 }
 
+const shutdownRuleWordingFlag = "shutdown_rule_wording_v1"
+
+func refineShutdownRuleWording(tx *sql.Tx) error {
+	var done string
+	if err := tx.QueryRow(`SELECT value FROM settings WHERE key=$1`, shutdownRuleWordingFlag).Scan(&done); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if done == "true" {
+		return nil
+	}
+	// Only change known wording on the shipped command pattern. Matching policy,
+	// enabled state, custom wording and deleted rules are never reset.
+	if _, err := tx.Exec(`UPDATE intercept_rules SET
+name=CASE WHEN name=$1 THEN $2 ELSE name END,
+message=CASE WHEN message=$3 THEN $4 ELSE message END
+WHERE match_type='regex' AND pattern=$5 AND (name=$1 OR message=$3)`,
+		"[내장] 종료 / 재시작", "[내장] 시스템 종료 / 재부팅",
+		"종료 또는 재시작 명령은 금지됩니다", "시스템 전원을 끄거나 재부팅하는 명령은 금지됩니다",
+		`\b(?:shutdown|reboot|halt|poweroff|init\s+[06])\b`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`INSERT INTO settings(key,value) VALUES($1,'true') ON CONFLICT(key) DO UPDATE SET value='true'`, shutdownRuleWordingFlag)
+	return err
+}
+
 var legacyRuleLabels = []struct{ oldName, name, oldMessage, message string }{
 	{"[内置] 递归强制删除 rm -rf", "[내장] 재귀 강제 삭제 rm -rf", "禁止执行递归强制删除（rm -rf / rm --recursive），可能永久损坏系统或靶机环境", "재귀 강제 삭제(rm -rf / rm --recursive)는 시스템 또는 대상 환경을 영구적으로 손상시킬 수 있어 금지됩니다"},
 	{"[内置] 删除系统关键目录", "[내장] 시스템 핵심 디렉터리 삭제", "禁止删除系统关键路径", "시스템 핵심 경로 삭제는 금지됩니다"},
 	{"[内置] 磁盘格式化 mkfs", "[내장] 디스크 포맷 mkfs", "禁止格式化磁盘（mkfs）", "디스크 포맷(mkfs)은 금지됩니다"},
 	{"[内置] 覆写磁盘设备 dd", "[내장] 디스크 장치 덮어쓰기 dd", "禁止使用 dd 覆写磁盘设备", "dd로 디스크 장치를 덮어쓰는 작업은 금지됩니다"},
 	{"[内置] Fork 炸弹", "[내장] Fork 폭탄", "禁止执行 Fork 炸弹", "Fork 폭탄 실행은 금지됩니다"},
-	{"[内置] 关机 / 重启", "[내장] 종료 / 재시작", "禁止执行关机或重启命令", "종료 또는 재시작 명령은 금지됩니다"},
+	{"[内置] 关机 / 重启", "[내장] 시스템 종료 / 재부팅", "禁止执行关机或重启命令", "시스템 전원을 끄거나 재부팅하는 명령은 금지됩니다"},
 	{"[内置] 杀死全部进程", "[내장] 모든 프로세스 강제 종료", "禁止 kill -9 -1 或 killall -9（杀死所有进程）", "kill -9 -1 또는 killall -9(모든 프로세스 강제 종료)는 금지됩니다"},
 	{"[内置] 磁盘擦除 shred / wipe", "[내장] 디스크 삭제 shred / wipe", "禁止对磁盘设备执行 shred/wipe 擦除", "디스크 장치에 대한 shred/wipe 삭제는 금지됩니다"},
 	{"[内置] 清空防火墙规则", "[내장] 방화벽 규칙 초기화", "禁止清空防火墙规则（iptables -F / nft flush）", "방화벽 규칙 초기화(iptables -F / nft flush)는 금지됩니다"},

@@ -6,6 +6,7 @@
  *
  * document-start에 주입(CDP addScriptToEvaluateOnNewDocument 또는 userscript)
  * CONFIG 필드는 recon/config.json과 일치해야 함
+ * forward:false는 mock에 일치하는 fetch/XHR만 stub 처리하며 다른 요청은 차단하지 않음
  */
 (function () {
   'use strict';

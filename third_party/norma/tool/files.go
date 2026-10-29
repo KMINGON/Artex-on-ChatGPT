@@ -18,7 +18,7 @@ import (
 func NewRead() CoreTool {
 	return Build(Spec{
 		Name:        "Read",
-		Description: "로컬 파일을 읽습니다. 텍스트는 줄 번호와 함께 반환하며 큰 파일은 offset/limit로 나누어 읽습니다. PNG/JPEG/GIF/WebP 이미지는 실제 이미지 입력으로 전달합니다. 편집 전에는 먼저 파일을 읽으세요.",
+		Description: "로컬 파일을 읽습니다. 텍스트는 줄 번호와 함께 반환하며 큰 파일은 offset/limit로 나누어 읽습니다. 크기·해상도 제한 내의 PNG/JPEG/정적 GIF/WebP 이미지는 실제 이미지 입력으로 전달합니다. 편집 전에는 먼저 파일을 읽으세요.",
 		Prompt:      "file_path may be absolute or relative to the working directory. Output lines are prefixed with their 1-based line number.",
 		Schema: map[string]any{
 			"type": "object",
@@ -53,7 +53,7 @@ func runRead(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil
 	}
 	if info.IsDir() {
-		return Errorf(fmt.Sprintf("Error: %s is a directory, not a file. Use LS or Glob to list its contents.", in.FilePath)), nil
+		return Errorf(fmt.Sprintf("Error: %s is a directory, not a file. Use LS to list its contents.", in.FilePath)), nil
 	}
 	// Detect images before the unbounded text-file read, so oversized screenshots
 	// cannot allocate arbitrary memory and binary pixels never become text.

@@ -11,7 +11,7 @@ import (
 )
 
 func TestCaptureOnceDoesNotTrustMarkers(t *testing.T) {
-	for _, marker := range []string{"<persisted-output>", "characters truncated]"} {
+	for _, marker := range []string{"<persisted-output>", "bytes truncated]", "characters truncated]"} {
 		for _, s := range []string{marker + strings.Repeat("x", 200000), strings.Repeat("x", 100000) + marker + strings.Repeat("x", 100000), `{"data":"` + marker + strings.Repeat("x", 200000) + `"}`} {
 			got := CaptureOnce(&ToolContext{MaxOutputChars: 100}, s)
 			if len(got) > 200 {

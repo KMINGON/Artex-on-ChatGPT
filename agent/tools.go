@@ -331,7 +331,7 @@ func jsonResult(v any) (actool.Result, error) {
 
 func (t *ToolSet) graphOverview() actool.CoreTool {
 	return t.readExpTool("graph_overview",
-		"(탐색 연결 그래프) 탐색 현황 요약: 자산 수, 인터페이스 없는 사이트, frontier, 발견, hints(사용자/메인 에이전트의 전략 힌트이며 의도 생성 시 반영 필수). 계획 시 먼저 호출하세요.",
+		"탐색 현황의 goals, hints, open_intents, running_intents, recent_done_intents, frontier_open, 사실·발견 요약과 선택적 coverage·호스트 수를 반환합니다. hints는 의도 생성 시 반영할 사용자/메인 에이전트의 전략 힌트입니다. Planner 입력에 같은 개요가 이미 있으면 재호출할 필요가 없으며 자산 상세는 list_assets로 조회하세요.",
 		obj(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
 			return jsonResult(t.graphOverviewData())
@@ -1402,14 +1402,14 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"⚠️도구 출력에서 【실제로 관찰한】 결론만 쓰고 추측하지 마세요. evidence와 confidence는 부정확한 결론이 그래프를 오염시키지 않도록 합니다:\n"+
 		"  · evidence=이 결론을 뒷받침하는 핵심 증거 【한 줄】(명령+가장 잘 입증하는 출력 한두 줄). **반드시 간결하게** 작성하세요. 세부 내용은 detail에 있으므로 긴 출력을 다시 붙이지 마세요.\n"+
 		"  · confidence=observed(출력에서 직접 관찰) | inferred(현상에서 추론).\n"+
-		"  · **부정적 결론**(주입 불가/포트 닫힘/진입점 미발견 등)은 \"관찰 + 잠정적 해석\"만 쓰세요. 실제 본 것을 설명하고 방향 포기 여부는 계획자가 전체 현황을 종합하여 결정하게 하세요. evidence는 반드시 제공하고, 수단을 충분히 시도하지 않았거나 증거가 약하면(한 번만 확인/그렇게 보임 포함) inferred, 충분히 시도하고 직접 관찰한 경우에만 observed로 표시하세요.",
+		"  · 직접 확인한 응답 코드·출력·재현 결과 자체는 observed로 표시하세요. 관측 범위를 넘어선 \"취약점 없음\", \"우회 불가\", \"진입점 없음\" 같은 일반화는 inferred로 구분하고, detail에 이번 의도·허가 범위에서 시도한 조건과 남은 미확인 조건을 적으세요. evidence는 반드시 제공하고 방향 포기 여부는 계획자가 전체 현황을 종합하여 결정하게 하세요.",
 		withBatchSchema(obj(map[string]any{
 			"facts":      map[string]any{"type": "array", "description": "【서로 다른 결론이 여러 개일 때 사용】사실 배열. 각 요소는 아래 최상위 필드(summary/detail/evidence/confidence/intent_id/asset_ids)와 같고 intent_id 생략 시 최상위 값을 사용합니다. 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
 			"summary":    str("이번 탐색 결론을 【요약한 한 문장】(detail의 요약)"),
 			"intent_id":  idp("이 사실을 생성한 의도 id(할당받은 의도. 일괄 제출 시 각 항목의 기본값)"),
 			"detail":     str("이 사실의 세부 내용: 이번 탐색에서 얻은 여러 관찰 사실을 모두 기록하세요"),
 			"evidence":   str("핵심 증거 【한 줄】: 명령 + 결론을 가장 잘 입증하는 출력 한두 줄. 간결하게 쓰고 긴 출력을 붙이지 마세요(상세는 detail)."),
-			"confidence": str("observed(출력에서 직접 관찰) | inferred(현상에서 추론). 부정적 결론은 반드시 정확하게 표시하세요."),
+			"confidence": str("직접 확인한 응답·출력·재현 결과는 observed, 관측 범위를 넘어선 부재·우회 불가 등의 일반화는 inferred. 시도 범위와 미확인 조건은 detail에 기록하세요."),
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "관련 자산 id(선택 사항, 0/1/여러 개): 이 사실이 다루는 자산"},
 		}), "facts", "summary"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
@@ -1520,11 +1520,11 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 		"【이 작업】에 탐색 목표(goal)를 추가합니다. 목표는 최종적으로 제공하거나 검증할 수 있는 결과이며 공격 단계나 정찰 동작이 아닙니다.\n"+
 			"★일괄 제출 우선: 여러 목표를 goals 배열로 한 번에 제출하세요. 반환 ids는 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 goals를 생략하고 최상위 text를 전달하세요.\n"+
 			"vulnclass는 선택 사항이며 대응하는 취약점 유형(예: SQLi/IDOR)입니다. 비즈니스 로직 목표는 비워 두세요. 목표 달성 여부는 시스템이 met로 판정하며 이 도구는 추가만 담당합니다.",
-		obj(map[string]any{
+		withBatchSchema(obj(map[string]any{
 			"goals":     map[string]any{"type": "array", "description": "【우선 사용】추가할 목표 배열이며 순서대로 처리합니다. 각 요소: text(필수, 독립적으로 검증 가능한 최종 목표)+vulnclass(선택). 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
-			"text":      str("[단일] 독립적으로 검증 가능한 최종 목표"),
-			"vulnclass": str("[단일] 명확한 경우 대응 취약점 유형(예: SQLi/IDOR). 비즈니스 로직 목표는 비워 둘 수 있습니다"),
-		}),
+			"text":      str("독립적으로 검증 가능한 최종 목표"),
+			"vulnclass": str("명확한 경우 대응 취약점 유형(예: SQLi/IDOR). 비즈니스 로직 목표는 비워 둘 수 있습니다"),
+		}), "goals"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
 				return actool.Errorf("set_goals 비활성: ExplorationStore가 초기화되지 않았습니다"), nil
@@ -1617,9 +1617,17 @@ func (t *ToolSet) setConstraints() actool.CoreTool {
 			"★일괄 제출 우선: 여러 제약을 constraints 배열로 한 번에 제출하세요. 반환 ids는 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 constraints를 생략하고 최상위 text/type을 전달하세요.\n"+
 			"작업 목표/설명에 【명시된】 제약만 등록하고 지어내지 마세요. 유형이 불확실하면 더 보수적인 deny를 사용하세요.",
 		obj(map[string]any{
-			"constraints": map[string]any{"type": "array", "description": "【우선 사용】추가할 제약 배열이며 순서대로 처리합니다. 각 요소: text(필수, 제약 하나)+type(allow|deny). 반환 ids는 길이·순서가 같습니다.", "items": map[string]any{"type": "object"}},
-			"text":        str("[단일] 작업 제약 하나의 내용"),
-			"type":        str("[단일] allow(허용) 또는 deny(금지). 생략하면 deny로 처리"),
+			"constraints": map[string]any{
+				"type":        "array",
+				"description": "【우선 사용】추가할 제약 배열이며 순서대로 처리합니다. 각 요소: text(필수, 제약 하나)+type(allow|deny). 반환 ids는 길이·순서가 같습니다.",
+				// Keep malformed batch fields in the handler's existing per-item path.
+				"items": obj(map[string]any{
+					"text": map[string]any{"description": "문자열. 작업 제약 하나의 내용(필수)"},
+					"type": map[string]any{"description": "문자열. allow(허용) 또는 deny(금지). 생략하면 deny로 처리"},
+				}),
+			},
+			"text": str("작업 제약 하나의 내용"),
+			"type": str("allow(허용) 또는 deny(금지). 생략하면 deny로 처리"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.ts == nil {
@@ -1662,12 +1670,12 @@ func (t *ToolSet) setConstraints() actool.CoreTool {
 func (t *ToolSet) addHint() actool.CoreTool {
 	return t.writeExpTool("add_hint", "사용자/메인 에이전트의 전략 힌트를 탐색 그래프에 추가합니다. 계획자가 다음에 의도를 생성할 때 읽습니다.\n"+
 		"★일괄 제출 우선: 여러 힌트를 hints 배열로 한 번에 제출하세요(개별 호출보다 왕복 횟수 절약). 반환 ids는 hints와 길이·순서가 같습니다(실패 항목 id=0, 상세는 errors). 단일 항목은 hints를 생략하고 최상위 text를 전달하세요.",
-		obj(map[string]any{
+		withBatchSchema(obj(map[string]any{
 			"hints":        map[string]any{"type": "array", "description": "【우선 사용】추가할 힌트 배열이며 순서대로 처리합니다. 각 요소는 아래 최상위 필드(text/asset_ids/traffic_refs)와 같으며 반환 ids는 길이·순서가 같습니다.", "items": obj(map[string]any{"text": str("힌트 내용"), "asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}}, "traffic_refs": HintTrafficSchema()})},
-			"text":         str("[단일] 힌트 내용(예: '인증 후 인터페이스를 집중 조사')"),
+			"text":         str("힌트 내용(예: '인증 후 인터페이스를 집중 조사')"),
 			"traffic_refs": HintTrafficSchema(),
 			"asset_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "연결할 자산 id(선택 사항, 0/1/여러 개)"},
-		}),
+		}), "hints"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Hints    []hintItem `json:"hints"`
@@ -1875,7 +1883,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			"일반적인 흐름: ①/②로 의심스러운 단계의 step_id를 찾고 ③으로 전체 출력을 조회하세요. thinking 단계는 제외합니다. 직접 연결된 작업의 과거 trace도 지원하며 결과는 source_task_id/inherited=true가 포함되고 읽기 전용입니다.",
 		obj(map[string]any{
 			"intent_id": idp("의도 id(= work 식별자)"),
-			"q":         str("키워드: 요약/전체 출력에 일치하는 단계만 반환(선택 사항, step_ids와 함께 사용할 수 없음)"),
+			"q":         str("키워드: 요약/전체 출력에 일치하는 단계만 반환(선택 사항). step_ids가 비어 있지 않으면 이 검색 조건은 적용하지 않습니다."),
 			"step_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "전체 내용을 조회할 step_id(①/②에서 반환된 값. 한 번에 최대 5개, 초과 시 앞 5개만 반환하고 나머지는 omitted_step_ids에 나열)"},
 			"limit":     intp("요약 흐름/검색의 반환 상한(선택 사항)"),
 		}, "intent_id"),
@@ -1924,6 +1932,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 					return actool.Errorf(err.Error()), nil
 				}
 				steps := make([]map[string]any, 0, len(acts))
+				returnedIDs := make([]int64, 0, len(acts))
 				for i := range acts {
 					if acts[i].NodeID == nil || *acts[i].NodeID != id || acts[i].Inherited != intentNode.Inherited ||
 						(acts[i].Inherited && acts[i].SourceTaskID != intentNode.SourceTaskID) {
@@ -1937,16 +1946,17 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 						inheritedMap(step, acts[i].SourceTaskID)
 					}
 					steps = append(steps, step)
+					returnedIDs = append(returnedIDs, acts[i].ID)
 				}
-				result := map[string]any{"intent_id": id, "steps": steps, "returned_step_ids": ids}
+				result := map[string]any{"intent_id": id, "steps": steps, "returned_step_ids": returnedIDs}
 				if len(omitted) > 0 {
 					// returned_step_ids/omitted_step_ids let the model decide programmatically
 					// whether another call is worth it; the notice states the same in prose.
 					result["omitted_step_ids"] = omitted
 					result["notice"] = fmt.Sprintf(
-						"한 번에 최대 %d개 단계의 전체 내용을 조회할 수 있습니다. 이번에는 앞 %d개(%v)를 반환했으며 나머지 %d개는 %v입니다."+
+						"한 번에 최대 %d개 단계의 전체 내용을 조회할 수 있습니다. 이번에는 %d개(%v)를 반환했습니다. 상한으로 조회하지 않은 %d개는 %v입니다."+
 							"이 내용으로 충분히 파악할 수 있으면 나머지 단계를 조회할 필요가 없습니다. 더 필요하면 해당 step_id로 다시 호출하세요.",
-						maxStepIDs, len(ids), ids, len(omitted), omitted)
+						maxStepIDs, len(returnedIDs), returnedIDs, len(omitted), omitted)
 				}
 				if intentNode.Inherited {
 					inheritedMap(result, intentNode.SourceTaskID)

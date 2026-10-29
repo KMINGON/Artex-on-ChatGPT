@@ -1,7 +1,7 @@
 ---
-
-## name: scopesentry-mcp
+name: scopesentry
 description: ScopeSentry MCP로 보안 스캔 플랫폼(프로젝트, 작업, 템플릿, 자산, 노드)을 관리합니다. 사용자가 ScopeSentry, MCP, API Key, 스캔 작업, 자산 조회를 언급할 때 사용합니다.
+---
 
 # ScopeSentry MCP 사용 안내
 
@@ -44,6 +44,8 @@ Cursor → Settings → MCP → 서버 추가:
 ---
 
 ## 2. 도구 목록
+
+아래 이름은 **ScopeSentry MCP 서버의 도구**입니다. `SearchExtraTools`로 현재 노출된 스키마를 확인하고 반환된 전체 이름(`mcp__<server>__<tool>`)으로 호출하세요. `<server>`는 실제 설정값을 따르며, ARTEX의 동명 내장 도구와 구분합니다.
 
 | 도구 | 용도 |
 |---|---|

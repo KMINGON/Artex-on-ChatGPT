@@ -369,6 +369,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		if err := s.refreshOriginalBehaviorDefaults(); err != nil {
 			log.Printf("[prompts] 원본 동작 기본값 갱신 실패(다음 시작 시 재시도): %v", err)
+		} else if err := s.refreshInstructionDefaults(); err != nil {
+			log.Printf("[prompts] 도구 계약 기본 지침 갱신 실패(다음 시작 시 재시도): %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
 		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
@@ -1919,7 +1921,7 @@ func (s *Server) seed(t *Task, text string) {
 // origin fact (RelDerivedFrom) so it still traces back to a fact node. Best-effort —
 // a failure just falls back to the normal planner-driven flow.
 func (s *Server) seedFirstIntent(t *Task) {
-	summary := fmt.Sprintf("작업 목표 달성: %s (작업: %s)", t.Goal, t.Description)
+	summary := fmt.Sprintf("작업 목표를 달성하세요: %s (작업: %s)", t.Goal, t.Description)
 	id, err := t.Store.AddIntentWithParents(context.Background(), map[string]any{"summary": summary}, 8, nil, nil, "seed")
 	if err != nil {
 		log.Printf("[seed] task %s: 초기 의도 생성 실패: %v", t.ID, err)

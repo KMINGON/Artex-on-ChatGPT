@@ -375,7 +375,7 @@ func (s *Server) getFindingTrafficBody(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) toolGetFindingTraffic() actool.CoreTool {
-	return roTool("get_finding_traffic", "캡처 설정과 관계없이 취약점에 연결된 실제 트래픽 증거를 읽습니다. finding_id는 report_finding JSON의 독립 취약점 기록 ID입니다(첫 줄의 탐색 노드 ID가 아님). 먼저 binding_id 없이 목록과 version을 읽으세요. 빈 목록도 정상이며 TCP 등 비 HTTP 취약점이나 미수집 상태에서는 텍스트/명령 증거로 보고서를 작성할 수 있고 연결은 필수가 아닙니다. 연결이 있으면 binding_id, side(request/response), offset으로 본문을 나눠 읽으세요. 보고서 저장 시 읽은 version을 update_finding_report의 evidence_version으로 전달하며 이 도구의 finding_id는 여전히 탐색 노드 ID입니다.",
+	return roTool("get_finding_traffic", "캡처 설정과 관계없이 취약점에 연결된 실제 트래픽 증거를 읽습니다. get_finding_traffic.finding_id는 report_finding JSON의 독립 취약점 기록 ID입니다(첫 줄의 탐색 노드 ID가 아님). 먼저 binding_id 없이 목록과 version을 읽으세요. 빈 목록도 정상이며 TCP 등 비 HTTP 취약점이나 미수집 상태에서는 텍스트/명령 증거로 보고서를 작성할 수 있고 연결은 필수가 아닙니다. 연결이 있으면 binding_id, side(request/response), offset으로 본문을 나눠 읽으세요. 보고서 저장 시 읽은 version은 update_finding_report.evidence_version으로, 취약점의 탐색 노드 ID(finding_node_id)는 update_finding_report.finding_id로 전달하세요.",
 		objSchema(map[string]any{"finding_id": strParam("독립 취약점 기록 ID"), "binding_id": strParam("목록의 연결 ID. 생략하면 목록을 반환합니다"), "side": strParam("request 또는 response, 기본 response"), "offset": map[string]any{"type": "integer"}, "length": map[string]any{"type": "integer"}}, "finding_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {

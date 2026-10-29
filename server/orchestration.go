@@ -373,7 +373,7 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 }
 
 func (s *Server) toolGetTaskGraph() actool.CoreTool {
-	return roTool("get_task_graph", "task_id로 지정한 작업의 탐색 그래프 개요를 읽습니다(graph_overview와 동일: 자산 수/frontier/발견/진행 범위 등).",
+	return roTool("get_task_graph", "task_id로 지정한 작업의 탐색 그래프 개요를 읽습니다(graph_overview와 동일: 탐색 의도 현황(frontier), 사실·취약점 발견, 선택적 자산 관찰률(coverage)·호스트 수 등). coverage는 등록 자산의 fact/finding 연결 비율이며 취약점 유형별 검증 완료율과 구분합니다.",
 		objSchema(map[string]any{"task_id": strParam("작업 id")}, "task_id"),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			return s.delegateToTask(ctx, in, (*agent.ToolSet).GraphOverviewTool)
@@ -450,9 +450,9 @@ func (s *Server) toolGetTaskNodeDetail() actool.CoreTool {
 // task-agnostic, so this host tool needs no task_id / exploration store.
 func (s *Server) toolUpdateFindingReport() actool.CoreTool {
 	return wrTool("update_finding_report",
-		"등록된 취약점의 상세 보고서를 작성/갱신합니다(Markdown 전문으로 기존 내용 전체 교체). finding_id는 report_finding의 id(\"finding recorded: <id>\"의 숫자)를 사용합니다. 취약점 개요, 영향·위험, 재현 단계, 증거/PoC, 수정 권고를 포함하세요.",
+		"등록된 취약점의 상세 보고서를 작성/갱신합니다(Markdown 전문으로 기존 내용 전체 교체). finding_id에는 취약점의 탐색 노드 ID(finding_node_id, \"finding recorded: <id>\"의 숫자)를 전달하세요. get_finding_traffic에서 사용하는 독립 취약점 기록 ID와 구분합니다. 보고서에는 취약점 개요, 영향·위험, 재현 단계, 증거/PoC, 수정 권고를 포함하는 것을 권장합니다.",
 		objSchema(map[string]any{
-			"finding_id":       map[string]any{"type": "integer", "description": "대상 취약점 id(report_finding 반환 id)"},
+			"finding_id":       map[string]any{"type": "integer", "description": "취약점의 탐색 노드 ID(finding_node_id, finding recorded의 숫자)"},
 			"report":           strParam("Markdown 형식의 상세 보고서 전문"),
 			"evidence_version": map[string]any{"type": "integer", "description": "get_finding_traffic이 반환한 증거 version. 새 증거 변경을 이전 보고서로 덮어쓰지 않도록 확인합니다"},
 		}, "finding_id", "report"),

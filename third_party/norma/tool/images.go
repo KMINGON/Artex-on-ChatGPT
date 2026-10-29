@@ -81,7 +81,7 @@ func DecodeMCPResult(raw json.RawMessage, tc *ToolContext) Result {
 			if b.Resource.Text != "" {
 				out.Content = append(out.Content, llm.TextBlock(Capture(tc, b.Resource.Text)))
 			} else {
-				appendError("텍스트가 없는 MCP 리소스는 직접 읽을 수 없습니다. 서버의 파일 읽기 도구를 사용하세요.")
+				appendError("이 MCP 리소스에는 직접 표시할 텍스트가 없습니다. 서버가 제공하는 해당 리소스나 파일의 조회 도구가 있다면 사용하세요.")
 			}
 		default:
 			appendError(fmt.Sprintf("지원하지 않는 MCP 콘텐츠 형식입니다: %s", b.Type))

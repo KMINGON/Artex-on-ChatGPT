@@ -89,8 +89,10 @@ playwright-cli run-code "async page => {
 
 ## Wait Strategies
 
+페이지 준비 여부는 필요한 요소나 앱 상태를 기다려 판단하세요. `networkidle`은 네트워크 정지 자체를 관찰해야 할 때만 사용하며, 상시 폴링 등으로 통신이 계속되는 페이지의 준비 판정이나 테스트 실패 복구에는 사용하지 마세요.
+
 ```bash
-# Wait for network idle
+# 네트워크 정지 자체를 관찰할 때만 사용
 playwright-cli run-code "async page => {
   await page.waitForLoadState('networkidle');
 }"

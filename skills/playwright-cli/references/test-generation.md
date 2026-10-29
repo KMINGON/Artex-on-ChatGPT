@@ -153,7 +153,7 @@ test -f playwright.config.ts || test -f playwright.config.js
 npx --no-install playwright --version
 ```
 
-If there is no Playwright install, bootstrap one and let the user pick the defaults:
+기존 프로젝트의 package.json/lockfile에 Playwright 버전이 지정돼 있으면 그 설치를 먼저 사용하거나 복원하세요. Playwright 설치와 설치 명세가 모두 없는 새 작업 공간에서만 초기화하고 사용자가 기본값을 고르게 합니다:
 
 ```bash
 npm init playwright@latest
@@ -290,7 +290,7 @@ Goal: take a spec file and produce Playwright test files. Optionally update the 
 
 ### 2.2 Generate one scenario
 
-For each target scenario, in sequence (never in parallel — scenarios share the seed session):
+같은 seed/CLI 세션을 공유하는 시나리오는 순서대로 실행합니다. 세션과 테스트 상태가 각각 독립적인 경우의 병렬 실행 조건은 2.3절을 따르세요:
 
 ```bash
 PLAYWRIGHT_HTML_OPEN=never npx playwright test <seed-file> --debug=cli   # background
@@ -349,7 +349,7 @@ Rules:
 
 ### 2.3 Generate multiple scenarios
 
-Loop 2.2 over the targeted scenarios one at a time, restarting the seed between each so every test starts from a clean page. This is safe to parallelise due to unique generated session names - just make sure each test run is stopped.
+각 시나리오마다 seed를 새로 시작해 깨끗한 페이지 상태에서 2.2절을 수행합니다. 같은 seed/CLI 세션이나 테스트 상태를 공유하면 순차 실행하세요. 세션 이름과 테스트 상태가 각각 독립적으로 분리된 실행만 병렬화할 수 있으며, 완료한 실행은 해당 세션과 백그라운드 테스트를 종료합니다.
 
 ### 2.4 Run generated tests
 
@@ -373,7 +373,7 @@ Goal: fix failing tests, and update the spec if the app's intended behaviour cha
 PLAYWRIGHT_HTML_OPEN=never npx playwright test
 ```
 
-Record the list of failing `<file>:<line>` entries and process them one at a time. Do not attempt parallel fixes — shared state and the single CLI session make that fragile.
+실패한 `<file>:<line>` 목록을 기록합니다. 상태나 하나의 CLI 세션을 공유하는 실패는 하나씩 수정하고, 세션과 테스트 상태가 독립적인 작업만 병렬로 처리하세요.
 
 ### 3.2 Debug one failure
 
@@ -402,7 +402,7 @@ Rehearse the corrected interaction with `playwright-cli` — the generated code 
 
 Edit the test file: update the locator, assertion, step order, or inputs to match the corrected behaviour. Stop the background debug run. Rerun the single test to confirm green.
 
-Never skip hooks or add sleeps as a fix. Never use `networkidle`.
+테스트 복구를 위해 hook을 건너뛰거나 고정 sleep을 추가하지 마세요. 준비 여부는 해당 요소·앱 상태로 판단하며 `networkidle`로 대신하지 마세요.
 
 ### 3.4 Reconcile with the spec
 

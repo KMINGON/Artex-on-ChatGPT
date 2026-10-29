@@ -5,7 +5,7 @@ description: 웹사이트의 API 인터페이스를 수집할 때 사용하는 �
 
 # API Recon(프런트엔드 인터페이스 조사)
 
-**승인된 범위**에서 다음을 최대한 빠짐없이 찾습니다. **백엔드 API**(경로, 메서드, 인자, 응답 본문), **프런트엔드 경로**, **UI 기능 실행 지점**(탭, 팝업, 테이블 작업 등).
+**승인된 범위**에서 다음을 최대한 빠짐없이 찾습니다. **백엔드 API**(URL 경로, 메서드, 인자, 응답 본문), **프런트엔드 라우트**, **UI 기능 실행 지점**(탭, 팝업, 테이블 작업 등).
 
 ---
 
@@ -17,18 +17,18 @@ description: 웹사이트의 API 인터페이스를 수집할 때 사용하는 �
 
 | 범위 | 허용 | 금지 |
 |---|---|---|
-| **목표** | path, method, 인자, 경로, UI 실행 지점 열거 | SQLi/XSS/권한 우회/무차별 대입/fuzz 취약점 탐색, 패킷 변조 공격, 파괴적 작업 |
+| **목표** | API URL 경로, method, 인자, 프런트엔드 라우트, UI 실행 지점 열거 | SQLi/XSS/권한 우회/무차별 대입/fuzz 취약점 탐색, 패킷 변조 공격, 파괴적 작업 |
 | **인증** | Hook + stub/mock으로 **클라이언트** 로그인 조건 우회 | 사용자에게 계정·비밀번호를 요구하거나 추측하기, 실제 로그인 폼 제출 시도 |
 | **런타임** | 자격 증명 없이 인터페이스를 hook하고 mock 응답으로 SPA의 로그인 후 화면 구조를 렌더링 | 실제 백엔드 세션이 있어야 진행 가능한 흐름 |
 
 ### 자격 증명 없는 동적 분석(Phase 3 기본)
 
 1. `preload.js` / `runtime_harvest.js`로 로그인·권한·메뉴 등 bootstrap 인터페이스를 **가로채고 stub 처리**합니다.
-2. 업무 조회 인터페이스에 **올바른 구조, 성공 상태 코드, 비어 있어도 되는 데이터**를 갖춘 mock body를 반환합니다.
+2. 업무 조회 인터페이스에 **올바른 구조, 응답 본문의 성공 업무 코드(code/response_code 등), 비어 있어도 되는 데이터**를 갖춘 mock body를 반환합니다.
 3. 백엔드가 없거나 401 응답이 와도 프런트엔드에서 로그인 후 화면을 렌더링하여 더 많은 XHR/fetch/WebSocket을 실행하게 합니다.
 4. **빈 데이터, 빈 테이블, 자리 표시 UI는 예상된 결과**입니다. 이를 이유로 실제 로그인이나 취약점 테스트로 전환하지 마세요.
 
-mock으로 프런트엔드 경로와 컴포넌트를 로드하고 **outbound 요청만 기록**합니다. 백엔드의 반환 내용보다 프런트엔드가 **추가로 어떤 인터페이스를 호출하는지** 확인하는 것이 목적입니다.
+mock으로 프런트엔드 라우트와 컴포넌트를 로드하고 **outbound 요청만 기록**합니다. 백엔드의 반환 내용보다 프런트엔드가 **추가로 어떤 인터페이스를 호출하는지** 확인하는 것이 목적입니다.
 
 ### 절차상 금지 사항
 
@@ -42,7 +42,7 @@ mock으로 프런트엔드 경로와 컴포넌트를 로드하고 **outbound 요
 | 실제 데이터를 얻겠다는 이유로 stub을 생략하고 권한 우회/주입 테스트 | outbound만 기록하며 조사 범위를 유지 |
 | 삭제, 민감 데이터 내보내기, 일괄 쓰기 등 되돌릴 수 없는 작업 | coverage에서 클릭할 때도 동일하게 금지 |
 | runtime + 동적 열거를 완료하지 않고 모든 페이지와 인터페이스를 확보했다고 주장 | 완료 기준 확인 또는 한계 명시 |
-| 인자 실행 행렬 + diff를 완료하지 않고 모든 인자를 파악했다고 주장 | Phase 3b 행렬 + Phase 5 diff 수행 |
+| UI 조작별 요청 파라미터 수집·비교표 + diff를 완료하지 않고 모든 인자를 파악했다고 주장 | Phase 3b 수집·비교표 + Phase 5 diff 수행 |
 | 단일 runtime 표본으로 필수/선택 여부 추론 | 여러 표본 diff 또는 검증 규칙/오류로 역추적 |
 
 ---
@@ -51,7 +51,7 @@ mock으로 프런트엔드 경로와 컴포넌트를 로드하고 **outbound 요
 
 | 계층 | 산출물 | 한계 |
 |---|---|---|
-| **정적**(JS bundle) | 전체 endpoint 경로, 경로 초안, 요청 구성 위치의 필드 후보 | HTTP 메서드 없음. 인자는 Phase 1b 필요. 런타임에 조합되는 URL 누락 |
+| **정적**(JS bundle) | 전체 endpoint URL 경로, 프런트엔드 라우트 초안, 요청 구성 위치의 필드 후보 | HTTP 메서드 없음. 인자는 Phase 1b 필요. 런타임에 조합되는 URL 누락 |
 | **런타임**(실행 중 세션) | 메서드 + body + 응답 + 동적 URL + WS/SSE. 여러 표본 diff로 인자 보완 | 페이지가 실제로 렌더링되어야 요청 발생. 단일 표본으로 필수/선택 여부 확정 불가 |
 
 | 실행 모드 | 엔진 | 용도 |
@@ -70,8 +70,8 @@ mock으로 프런트엔드 경로와 컴포넌트를 로드하고 **outbound 요
 
 - [ ] **정적**: Phase 1 harvest가 `api_static.txt`, `routes.txt`, `js/` 생성
 - [ ] **런타임**: depth 또는 coverage 중 하나 이상 수행. coverage/both는 **Hook 적용 + 동적 열거 반복** 필요
-- [ ] **화면 진입**: 업무 path 접근 시 `/login`이 아님(hash 경로 주의)
-- [ ] **인자**: coverage/both에서 인자 실행 행렬 + `param_samples.json` 완료. Phase 5에서 `params_merged.json` 병합
+- [ ] **화면 진입**: 업무 라우트 접근 시 `/login`이 아님(hash 라우트 주의)
+- [ ] **인자**: coverage/both에서 UI 조작별 요청 파라미터 수집·비교표 + `param_samples.json` 완료. Phase 5에서 `params_merged.json` 병합
 - [ ] **깊이**(모듈 페이지가 비어 있다면): Phase 4 권한 트리 복원 후 재실행하여 **모듈 수준 API** 확인(locale/bootstrap만으로는 부족)
 - [ ] **산출물**: Phase 5 산출물 구비(Phase 5 표 참조). `insert_assets`로 서비스와 엔드포인트 자산 저장
 
@@ -122,7 +122,7 @@ Phase 0 분류 + OUTDIR
   → 점검 A → Phase 1 harvest(★ 즉시 실행 ★)
   → Phase 1b 인자 역추적
   → Phase 2 인증의 세 가지 조건 → config.json
-  → 점검 B → Phase 3 런타임 + 인자 행렬
+  → 점검 B → Phase 3 런타임 + UI 조작별 요청 파라미터 수집·비교표
   → Phase 4 권한 트리(필요한 경우) → Phase 3 재실행
   → Phase 5 보고서 병합 + insert_assets로 발견한 모든 서비스·엔드포인트 API 자산 일괄 저장. 발견한 자산을 누락해서는 안 됨
 ```
@@ -134,7 +134,7 @@ Phase 0 분류 + OUTDIR
 3. [ ] **Phase 1b**: 기준점 주변 코드 확장 + 바인딩 계층 → `param_candidates.json` → [Phase 1b](#phase-1b--인자-역추적)
 4. [ ] **Phase 2**: 인증의 세 가지 조건 → `config.json` → [Phase 2](#phase-2--인증의-세-가지-조건)
 5. [ ] **점검 B**: runtime 스크립트 수정 → [Phase 3](#phase-3--런타임)
-6. [ ] **Phase 3**: depth / coverage / both. 화면 진입 확인. 인자 실행 행렬 → `param_samples.json`
+6. [ ] **Phase 3**: depth / coverage / both. 화면 진입 확인. UI 조작별 요청 파라미터 수집·비교표 → `param_samples.json`
 7. [ ] **Phase 4**(필요 시): 권한 트리 → stubs 수정 → Phase 3 재실행 → [Phase 4](#phase-4--권한-트리-복원)
 8. [ ] **Phase 5**: 산출물 병합 + 보고서 + `insert_assets` → [Phase 5](#phase-5--병합과-보고서)
 
@@ -187,7 +187,7 @@ path는 Phase 1에서 가져오며 인자 필드는 별도로 조사합니다. g
 | GraphQL | `variables` | gql 템플릿, `$page: Int` |
 | 일반 form | urlencoded | `<form>`, `FormData` |
 | 파일 업로드 | multipart | `FormData.append` |
-| 경로 인자 | `/user/:id` | 경로 테이블 + `useParams` / `$route.params` |
+| 경로 인자 | `/user/:id` | 프런트엔드 라우트 테이블 + `useParams` / `$route.params` |
 | 암호화/서명 | `sign`/`data` 내부 | 암호화 함수의 입력 인자 Hook(reference D절) |
 
 산출물: 각 인터페이스에 `transport: query|json|form|graphql|encrypted` 표시.
@@ -224,7 +224,7 @@ Form field → onFinish/handleSubmit → transform → API payload
 |---|---|
 | 폼 submit | submit → transform → API 추적 |
 | 테이블 검색 | `getFieldsValue()` → `params` |
-| 경로 | `:id` / `?tab=` |
+| 프런트엔드 라우트·URL | `:id` / `?tab=` |
 | 인터셉터 | 전역 `tenantId`, 페이지 나누기, sign |
 | 열거형 select | `options` → API 열거 값 |
 
@@ -242,7 +242,7 @@ DevTools call stack에서 `fetch`/`XHR.send`의 호출자를 따라 요청 구�
 
 #### 1b.4 — Phase 3과 연결
 
-후보 필드는 정적/바인딩 계층에서 찾습니다. **필수/선택/조건부 의존성**은 Phase 3 인자 행렬 + diff + Phase 5 오류 역추적으로 확인해야 합니다.
+후보 필드는 정적/바인딩 계층에서 찾습니다. **필수/선택/조건부 의존성**은 Phase 3 UI 조작별 요청 파라미터 수집·비교표 + diff + Phase 5 오류 역추적으로 확인해야 합니다.
 
 ---
 
@@ -290,10 +290,10 @@ coverage의 각 회차에서 `__API_RECON_LOG__`, `__API_RECON_DETAIL__`, `__API
 | L2 실패 응답 보정 | 모든 JSON 응답 | 로그인되지 않음 코드 → 성공 |
 | L3 보완 | L1에 매칭되지 않은 `/api` 등 | 빈 성공 본문으로 UI 렌더링 |
 
-- **depth**: fake auth + `forward`로 업무 코드 수정 + `stubs`. `routes` 순회(hash/history). `runtime_api.json` 생성
+- **depth**: fake auth + `forward`로 업무 코드 수정 + `stubs`. `routes`의 프런트엔드 라우트 순회(hash/history). `runtime_api.json` 생성
 - **coverage**: **document-start**에 `preload.js` 주입(CDP `addScriptToEvaluateOnNewDocument` 또는 Userscript)
 
-검증: `window.__API_RECON_PRELOAD__`가 존재하고 업무 path가 `/login`으로 돌아가지 않아야 합니다.
+검증: `window.__API_RECON_PRELOAD__`가 존재하고 업무 라우트가 `/login`으로 돌아가지 않아야 합니다.
 
 ```bash
 cd recon
@@ -311,10 +311,10 @@ node runtime_harvest.js config.json
 2. Tab — `role=tab`, `.ant-tabs-tab`
 3. 테이블 — 첫 행의 보기/편집/상세 정보
 4. 도구 모음 — 내보내기, 필터, 새로 만들기(**되돌릴 수 없는 삭제 금지**)
-5. 모듈에 진입할 때마다 API/경로 병합
-6. SPA — `routes.txt`에서 아직 확인하지 않은 path에 제한적으로 `pushState` 사용(MPA에서는 금지)
+5. 모듈에 진입할 때마다 API/프런트엔드 라우트 병합
+6. SPA — `routes.txt`에서 아직 확인하지 않은 라우트에 제한적으로 `pushState` 사용(MPA에서는 금지)
 
-**인자 실행 행렬**(필수): 각 모듈에서 작업 유형별로 한 번씩 기록하고 **여러 표본을 diff**합니다.
+**UI 조작별 요청 파라미터 수집·비교표**(필수): 각 모듈에서 작업 유형별로 한 번씩 기록하고 **여러 표본을 diff**합니다.
 
 | 작업 | 보통 추가되는 인자 |
 |---|---|
@@ -340,7 +340,7 @@ node runtime_harvest.js config.json
 |---|---|
 | 화면 구조 진입 성공 | 렌더링 조건 + 인터셉터 조건 통과 |
 | 사이드바 항목 누락/클릭 후 빈 화면 | stub 구조 또는 권한 코드 부족 |
-| 경로별 API가 동일하고 매우 적음 | `v-if permission` 조건 미통과 |
+| 프런트엔드 라우트별 API가 동일하고 매우 적음 | `v-if permission` 조건 미통과 |
 | `routes.txt`가 bundle보다 훨씬 적음 | auth 모듈에서 보완 필요 |
 
 ```bash
@@ -369,7 +369,7 @@ stub 확인: 바깥쪽 `response_code`가 인터셉터 조건과 일치해야 �
 
 | 파일 | 단계 | 내용 |
 |---|---|---|
-| `js/`, `api_static.txt`, `routes.txt`, `chunkmap.txt` | 1 | 정적 bundle과 path |
+| `js/`, `api_static.txt`, `routes.txt`, `chunkmap.txt` | 1 | 정적 bundle, API URL 경로와 프런트엔드 라우트 |
 | `param_candidates.json` | 1b | 정적 인자 필드 후보 |
 | `config.json` | 2 | 세 가지 조건 + runtime 설정 |
 | `runtime_api.json` | 3a | depth 상세 기록(WS/SSE 포함) |
@@ -377,12 +377,12 @@ stub 확인: 바깥쪽 `response_code`가 인터셉터 조건과 일치해야 �
 | `route_map.json` 등 | 4 | 권한 트리 중간 파일(실행한 경우) |
 | `params_merged.json` | 5 | 병합된 인자 필드 + 신뢰도 |
 | `api_merged.txt` | 5 | `METHOD /path [params] [static\|runtime\|both]` |
-| `site_map.json` | 5 | 경로, API, params, 기능 지점, 한계 |
+| `site_map.json` | 5 | 프런트엔드 라우트, API, params, 기능 지점, 한계 |
 | **insert_assets** | 5 | 모든 서비스·엔드포인트 자산을 자산 저장소에 기록 |
 
 ### 5b — 인자 병합
 
-`param_samples.json`을 diff합니다. **범용 병합 스크립트는 없습니다.** 신뢰도 규칙은 reference J7 참조(높음/중간/낮음/실행 대기).
+`param_samples.json`을 diff합니다. **범용 병합 스크립트는 없습니다.** 신뢰도 규칙은 reference J7 참조(높음/중간/낮음/미관측).
 
 ### 5c — 오류 역추적
 
@@ -419,7 +419,7 @@ stub 확인: 바깥쪽 `response_code`가 인터셉터 조건과 일치해야 �
 - **전송**: REST/JSON, GraphQL, WebSocket, SSE. gRPC-web은 범위 밖
 - **SSR**: 클라이언트 fetch는 기록 가능. RSC/Server Actions는 완전한 열거 불가
 - **사각지대**: JSVMP, WASM, HMAC/mTLS의 강한 검증 → 정적 분석 + 한계 명시
-- **인자 사각지대**: 조건부 연동, hidden params, WASM의 요청 구성 → 실행 대기/도달 불가로 표시
+- **인자 사각지대**: 조건부 연동, hidden params, WASM의 요청 구성 → 아직 유발하지 못함(미관측)/도달 불가로 표시
 - **정적 분석의 보완 역할**: runtime이 차단되어도 정적으로 endpoint 열거 가능
 
 ---

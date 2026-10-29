@@ -28,7 +28,7 @@ func Causef(code, short, format string, args ...any) *AbortCause {
 var (
 	// Task-level execution context.
 	AbortPausedByUser = cause("paused_by_user", "사용자가 작업을 일시 중지했습니다",
-		"사용자가 작업 제어 API(POST /api/tasks/{id}/control, action=pause)를 통해 작업을 일시 중지했습니다. 이번 Planner/Worker 실행은 취소되며, 실행 중인 의도는 frontier(open)로 돌아가 작업 재개 후 다시 할당되어 처음부터 실행됩니다")
+		"사용자가 작업 제어 API(POST /api/tasks/{id}/control, action=pause)를 통해 작업을 일시 중지했습니다. 이번 Planner/Worker 실행은 취소되며, 실행 중인 의도는 frontier(open)로 돌아가 재개 후 다시 할당됩니다. 선택된 세션의 저장 기록을 읽을 수 있으면 이전 맥락에서 이어가며, 기록이 없거나 연결 변경으로 새 세션을 선택하면 새 컨텍스트로 시작합니다. 연결 확인이나 기록 읽기 실패는 실행 오류로 처리합니다")
 	AbortPausedByOrchestrator = cause("paused_by_orchestrator", "오케스트레이션 에이전트가 작업을 일시 중지했습니다",
 		"오케스트레이션 에이전트가 pause_task 도구로 이 작업을 일시 중지했습니다. 이번 Planner/Worker 실행은 취소되며, 실행 중인 의도는 frontier(open)로 돌아가 재개 후 다시 실행됩니다")
 	AbortTaskDeleted = cause("task_deleted", "작업이 삭제되었습니다",
@@ -44,7 +44,7 @@ var (
 	AbortKilledByPlanner = cause("killed_by_planner", "계획자가 이 의도를 종료했습니다",
 		"계획자가 kill_work를 호출하여 이 의도를 종료했습니다. 보통 방향이 어긋났거나 계속할 가치가 없다는 뜻입니다. 의도는 stopped로 표시되며 자동으로 다시 할당되지 않습니다")
 	AbortWorkPausedByUser = cause("work_paused_by_user", "사용자가 이 Worker 의도를 일시 중지했습니다",
-		"사용자가 실행 중인 Worker를 일시 중지했습니다. 이번 호출은 취소되고 의도는 paused로 전환됩니다. 이미 등록한 의도, 사실, 취약점, 활동 기록은 모두 유지되며 재개 후 처음부터 다시 실행됩니다")
+		"사용자가 실행 중인 Worker를 일시 중지했습니다. 이번 호출은 취소되고 의도는 paused로 전환됩니다. 이미 등록한 의도, 사실, 취약점, 활동 기록은 모두 유지됩니다. 재개 시 선택된 세션의 저장 기록을 읽을 수 있으면 이전 맥락에서 이어가며, 기록이 없거나 연결 변경으로 새 세션을 선택하면 새 컨텍스트로 시작합니다. 연결 확인이나 기록 읽기 실패는 실행 오류로 처리합니다")
 	AbortWorkCancelledByUser = cause("work_cancelled_by_user", "사용자가 이 Worker 의도를 삭제했습니다",
 		"사용자가 실행 중인 Worker를 삭제했습니다. 이번 호출은 취소됩니다. Worker가 쓰기 구간을 벗어나면 서버가 사용자가 선택한 삭제 방식으로 처리합니다. 논리 삭제는 삭제됨으로 표시하고 모든 산출물을 보존하며, 영구 삭제는 해당 의도와 이 의도에만 근거한 하위 노드를 함께 제거합니다")
 	AbortWorkFinished = cause("work_finished", "Worker가 정상 종료되어 context를 해제했습니다",
