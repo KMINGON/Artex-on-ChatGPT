@@ -483,16 +483,25 @@ func (s *Server) deriveTaskStatus(t *Task) string {
 	return s.resolvedTaskStatus(t)
 }
 
-// orchestrationToolSeeds seeds the cross-task tools into the tools table so they
-// are bindable per-agent (default: bound to nobody — opt-in for orchestration
-// agents). First-insert only, like the traffic seeds.
+// Shared by initial seeding and the explicit tool-default reset.
+func orchestrationToolDefaultAgents(key string) []string {
+	switch key {
+	case "list_tasks", "get_task_graph", "get_task_node_detail", "list_task_findings",
+		"list_task_worker_traces", "get_task_worker_trace", "search_task_worker_traces":
+		return []string{"auto", "pentest"}
+	default:
+		return []string{"auto"}
+	}
+}
+
+// seedOrchestrationTools adds initial bindings without overwriting saved choices.
 func (s *Server) seedOrchestrationTools() {
 	// task-op + platform tools default-bind to the built-in Auto agent (它天生用来
 	// 操作平台)。SeedTool 首插入生效;老库已 seed 的行由 seedAutoDefaultBindings 补绑。
 	autoAgents, _ := json.Marshal([]string{"auto"})
 	for _, t := range s.orchestrationTools() {
 		schema, _ := json.Marshal(t.InputSchema())
-		bindings := autoAgents
+		bindings, _ := json.Marshal(orchestrationToolDefaultAgents(t.Name()))
 		if t.Name() == "bind_finding_traffic" {
 			bindings = json.RawMessage(`["reporter"]`)
 		}
