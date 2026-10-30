@@ -231,6 +231,10 @@ var builtinAgents = []builtinAgent{
 
 // seedBuiltins inserts the fixed built-in agents and their variable catalog (idempotent).
 func (d *DB) seedBuiltins() error {
+	var existingBuiltins bool
+	if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE builtin)`).Scan(&existingBuiltins); err != nil {
+		return err
+	}
 	for _, a := range builtinAgents {
 		var agentID int64
 		err := d.QueryRow(`
@@ -283,9 +287,9 @@ ON CONFLICT DO NOTHING`,
 		return fmt.Errorf("seed browser mcp: %w", err)
 	}
 	// NOTE: the placeholder ScopeSentry data-source MCP (empty URL + empty X-API-Key,
-	// disabled) is seeded directly in schema.sql §F so a raw `psql < schema.sql` init
-	// also gets it. schema.sql is Exec'd on every startup, so it stays idempotent.
-	if err := d.seedBuiltinSkillVisibility(); err != nil {
+	// disabled) is seeded once for new databases in schema.sql §F so a raw
+	// `psql < schema.sql` init also gets it. Later deletion is preserved.
+	if err := d.seedBuiltinSkillVisibility(existingBuiltins); err != nil {
 		return fmt.Errorf("seed skill visibility: %w", err)
 	}
 	if err := d.seedDefaultInterceptRules(); err != nil {
@@ -338,21 +342,45 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // builtinSkillVisibility maps a shipped skill's directory name → the built-in
 // agent keys that should see it by default. The skill FILES themselves live on the
 // filesystem (SkillDir, loaded by norma at runtime); DB only carries this visibility
-// binding. Skills omitted here (e.g. playwright-cli, scopesentry) ship invisible by
-// default — the user turns them on per-agent when needed. scopesentry additionally
-// declares `mcps: ScopeSentry`, which only takes effect once it's made visible and
-// that MCP is enabled/configured.
+// binding. Omitted skills (e.g. playwright-cli) remain opt-in. MCP-backed skills
+// do not enable their servers; deployment bootstrap or user settings do that.
 var builtinSkillVisibility = map[string][]string{
-	"api-recon": {"auto", "pentest", "worker"},
+	"api-recon":    {"auto", "pentest", "worker"},
+	"web-cli":      {"pentest", "worker"},
+	"ad-tools":     {"pentest", "worker"},
+	"poc-research": {"pentest", "worker"},
+	"scopesentry":  {"pentest", "worker"},
+	"metasploit":   {"pentest", "worker"},
 }
 
-// seedBuiltinSkillVisibility binds the shipped built-in skills to their default
-// agents. Insert-if-absent (ON CONFLICT DO NOTHING) so a user's later toggle-off is
-// never resurrected on restart — matches the browser-MCP / intercept-rule seed policy.
-func (d *DB) seedBuiltinSkillVisibility() error {
+// Visibility APIs delete unchecked bindings, so ON CONFLICT alone would restore
+// them on restart. A per-skill seed marker preserves those removals while allowing
+// newly shipped skills to receive their defaults once.
+func (d *DB) seedBuiltinSkillVisibility(existingBuiltins bool) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for skillName, agentKeys := range builtinSkillVisibility {
+		result, err := tx.Exec(`INSERT INTO settings(key,value) VALUES ($1,'done') ON CONFLICT(key) DO NOTHING`, "builtin_skill_visibility_"+skillName+"_v1")
+		if err != nil {
+			return err
+		}
+		added, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if added == 0 {
+			continue
+		}
+		// api-recon was already a default before seed markers existed. An absent
+		// binding on an existing installation may be a user's explicit uncheck.
+		if existingBuiltins && skillName == "api-recon" {
+			continue
+		}
 		for _, key := range agentKeys {
-			if _, err := d.Exec(`
+			if _, err := tx.Exec(`
 INSERT INTO agent_skill_visibility(agent_id, skill_name, enabled)
 SELECT id, $2, true FROM agents WHERE key=$1
 ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
@@ -360,7 +388,7 @@ ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
 			}
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 type interceptRuleDefault struct {

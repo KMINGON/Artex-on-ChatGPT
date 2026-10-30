@@ -1,0 +1,11 @@
+# RPC는 ERB를 평가하지 않으므로 비밀번호는 libpq의 PGPASSWORD로 전달한다.
+development: &database
+  adapter: postgresql
+  host: metasploit-db
+  port: 5432
+  database: metasploit
+  username: metasploit
+  pool: 5
+
+production:
+  <<: *database

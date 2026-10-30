@@ -1,0 +1,55 @@
+# 선택 실행: docker compose -f docker-compose.yml -f docker-compose.metasploit.yml up -d metasploit
+# ARTEX MCP: http://metasploit:3000/ · Authorization: Bearer <MSF_MCP_AUTH_TOKEN>
+services:
+  metasploit-db:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: metasploit
+      POSTGRES_PASSWORD: ${MSF_POSTGRES_PASSWORD:-metasploit-local-db}
+      POSTGRES_DB: metasploit
+    volumes:
+      - metasploit-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "metasploit", "-d", "metasploit"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  metasploit:
+    # 공식 이미지는 amd64로 배포된다. ARM 호스트에서는 Docker의 amd64 에뮬레이션이 필요하다.
+    image: metasploitframework/metasploit-framework@sha256:b1c4950615fec43bdbe915de7de4b144a24803b21765b86cf0df52799ab08776
+    platform: linux/amd64
+    init: true
+    # 빈 DB에도 MCP 조회가 사용하는 default workspace를 먼저 만든다.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["./msfconsole -q -x 'workspace -a default; exit -y' && exec ruby ./artex-mcp-server.rb --mcp-transport http"]
+    depends_on:
+      metasploit-db:
+        condition: service_healthy
+    environment:
+      MSF_MCP_HOST: 0.0.0.0
+      MSF_MCP_PORT: "3000"
+      MSF_MCP_AUTH_TOKEN: ${MSF_MCP_AUTH_TOKEN:?Metasploit MCP Bearer 토큰을 설정하세요}
+      # 실행·check·세션 쓰기가 필요하면 true로 설정한다. 공식 서버 기본값은 false다.
+      MSF_MCP_DANGEROUS_ACTIONS: ${MSF_MCP_DANGEROUS_ACTIONS:-false}
+      PGPASSWORD: ${MSF_POSTGRES_PASSWORD:-metasploit-local-db}
+    volumes:
+      - ./docker/metasploit/database.yml:/usr/src/metasploit-framework/config/database.yml:ro
+      - ./docker/metasploit/mcp-server.rb:/usr/src/metasploit-framework/artex-mcp-server.rb:ro
+      - metasploit-data:/root/.msf4
+    # MCP/RPC 포트는 호스트에 공개하지 않고 같은 Compose 네트워크에서 사용한다.
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "ruby", "-rsocket", "-e", "TCPSocket.new('127.0.0.1', 3000).close"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  metasploit-pgdata:
+  metasploit-data:

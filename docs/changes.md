@@ -8,7 +8,7 @@
 
 | 구분 | 원본 대비 현재 차이 |
 | --- | --- |
-| [연결·기능](changes/features.md) | OpenAI 전용 구성, ChatGPT 구독, 브라우저 실행·인증·이미지 전달, 간결한 기본 작업 템플릿 4종 |
+| [연결·기능](changes/features.md) | OpenAI 전용 구성, ChatGPT 구독, 브라우저 실행·인증·이미지 전달, 기본 작업 템플릿, 침투 테스트 CLI·스킬·MCP 기본 연결과 통합 Docker 구성 |
 | [작업 방식과 설정](changes/behavior.md) | 원본과 같은 탐색 흐름, 독립 침투 에이전트의 기본 작업 조회 도구 연결, 명시적 모델 선택·개별 자원 설정 |
 | [오류·상태 보존](changes/fixes.md) | 도구 인자·취약점 등록, 원자적 그래프 저장, Todo·실행 결과·대화 복구 |
 | [OpenAI 처리](changes/openai.md) | Responses 상태·완료 판정, API와 구독의 요청 차이, 계정·모델 선택 |

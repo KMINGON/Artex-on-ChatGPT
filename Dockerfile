@@ -24,12 +24,64 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -tags embedui -trimpath -ldflags="-s -w -X main.version=${ARTEX_BUILD_VERSION}" -o /out/artex ./cmd/artex
 
+FROM --platform=$BUILDPLATFORM golang:1.26.10-bookworm AS ffuf-build
+WORKDIR /src/ffuf
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go mod init artex-ffuf-build \
+    && go get github.com/ffuf/ffuf/v2@v2.3.0 \
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+       go build -trimpath \
+         -ldflags='-s -w -X github.com/ffuf/ffuf/v2/pkg/ffuf.VERSION=2.3.0 -X github.com/ffuf/ffuf/v2/pkg/ffuf.VERSION_APPENDIX=' \
+         -o /out/ffuf github.com/ffuf/ffuf/v2 \
+    && cp /go/pkg/mod/github.com/ffuf/ffuf/v2@v2.3.0/LICENSE /out/ffuf-LICENSE
+
+# Separate environments keep the AD tools' dependency versions independent.
+FROM python:3.12-slim-bookworm AS pentest-python
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git build-essential pkg-config libssl-dev libffi-dev cargo \
+    && rm -rf /var/lib/apt/lists/*
+RUN python -m venv /opt/artex-tools/sqlmap \
+    && /opt/artex-tools/sqlmap/bin/pip install --no-cache-dir sqlmap==1.10.10 \
+    && python -m venv /opt/artex-tools/impacket \
+    && /opt/artex-tools/impacket/bin/pip install --no-cache-dir impacket==0.13.1 \
+    && python -m venv /opt/artex-tools/certipy \
+    && /opt/artex-tools/certipy/bin/pip install --no-cache-dir certipy-ad==5.1.0 \
+    && python -m venv /opt/artex-tools/netexec \
+    && /opt/artex-tools/netexec/bin/pip install --no-cache-dir \
+      'netexec @ git+https://github.com/Pennyw0rth/NetExec@30cf146578a597d86b2701c633790665474a902b'
+
 FROM python:3.12-slim-bookworm AS runtime
 # Keep the existing local tool set available inside the container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates libnss3-tools ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
+      php-cli php-curl php-xml php-mbstring default-jdk-headless maven libkrb5-3 \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=ffuf-build /out/ffuf /usr/local/bin/ffuf
+COPY --from=ffuf-build /out/ffuf-LICENSE /usr/share/doc/ffuf/LICENSE
+COPY --from=pentest-python /opt/artex-tools/ /opt/artex-tools/
+RUN ln -s /opt/artex-tools/sqlmap/bin/sqlmap /usr/local/bin/sqlmap \
+    && ln -s /opt/artex-tools/netexec/bin/nxc /usr/local/bin/nxc \
+    && ln -s /opt/artex-tools/netexec/bin/netexec /usr/local/bin/netexec \
+    && ln -s /opt/artex-tools/netexec/bin/nxcdb /usr/local/bin/nxcdb \
+    && ln -s /opt/artex-tools/certipy/bin/certipy /usr/local/bin/certipy \
+    && for tool in /opt/artex-tools/impacket/bin/*.py; do \
+         ln -s "$tool" "/usr/local/bin/impacket-$(basename "$tool" .py)"; \
+       done
+# Ship a small, pinned selection; keep the upstream paths and license.
+RUN set -eu; \
+    for list in LICENSE Discovery/Web-Content/common.txt \
+      Discovery/Web-Content/raft-medium-directories.txt \
+      Discovery/Web-Content/burp-parameter-names.txt \
+      Discovery/Web-Content/common-api-endpoints-mazen160.txt \
+      Discovery/DNS/subdomains-top1million-5000.txt; do \
+      mkdir -p "/usr/share/seclists/$(dirname "$list")"; \
+      curl -fsSL --retry 3 \
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/145f1f45ba7bc5fd6b3966d3a79bf95654deb20e/$list" \
+        -o "/usr/share/seclists/$list"; \
+    done
 # Runtime Node must match the target architecture, unlike the frontend builder.
 COPY --from=node:24-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:24-bookworm-slim /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm

@@ -10,7 +10,7 @@ import (
 	"github.com/Autumn-27/norma/skill"
 )
 
-func TestScopeSentrySkillLoadsSetupInstructions(t *testing.T) {
+func TestScopeSentrySkillLoadsArtexInstructions(t *testing.T) {
 	registry, err := skill.LoadDir(filepath.Join("..", "skills"))
 	if err != nil {
 		t.Fatal(err)
@@ -22,7 +22,10 @@ func TestScopeSentrySkillLoadsSetupInstructions(t *testing.T) {
 	if strings.TrimSpace(loaded.Description) == "" {
 		t.Fatal("ScopeSentry 스킬의 검색 설명이 비어 있습니다")
 	}
-	for _, section := range []string{"# ScopeSentry MCP 사용 안내", "## 1. 준비", "MCP 엔드포인트"} {
+	if len(loaded.MCPs) != 1 || loaded.MCPs[0] != "ScopeSentry" {
+		t.Fatalf("스킬이 실제 MCP 등록 이름과 연결되지 않습니다: %v", loaded.MCPs)
+	}
+	for _, section := range []string{"SearchExtraTools", "ExecuteExtraTool", "서비스 주소와 인증"} {
 		if !strings.Contains(loaded.Instructions, section) {
 			t.Fatalf("스킬을 읽는 과정에서 준비 지침이 누락됐습니다: %s", section)
 		}

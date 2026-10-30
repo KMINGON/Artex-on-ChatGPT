@@ -24,7 +24,7 @@ API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. Chat
 
 원본의 의도 분할·우선순위·재검증 흐름을 유지하고, 한국어 지침의 자산·사실 기록과 목표 판단을 실제 도구 계약과 검증 근거에 맞춥니다.
 
-[전체 변경점](docs/changes.md) · [브라우저·설정](docs/browser-and-presets.md) · [트래픽 증거](docs/finding-traffic-evidence.md)
+[전체 변경점](docs/changes.md) · [브라우저·설정](docs/browser-and-presets.md) · [트래픽 증거](docs/finding-traffic-evidence.md) · [침투 테스트 도구·통합 배포](docs/pentest-tools.md)
 
 ## 빠른 시작
 
