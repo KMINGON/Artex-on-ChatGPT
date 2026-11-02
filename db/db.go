@@ -252,7 +252,7 @@ func (d *DB) seedBuiltins() error {
 	}
 	newSearchDefaults := added > 0 && !existingBuiltins
 	if newSearchDefaults {
-		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES ('web_search_enabled','true'),('web_search_backend','ddgs') ON CONFLICT(key) DO NOTHING`); err != nil {
+		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES ('web_search_enabled','false'),('web_search_backend','ddgs') ON CONFLICT(key) DO NOTHING`); err != nil {
 			return fmt.Errorf("seed web search defaults: %w", err)
 		}
 	}
@@ -278,7 +278,7 @@ ON CONFLICT (agent_id, var_name) DO NOTHING`,
 		}
 	}
 	// Keep agent defaults and the one-time decision atomic so an interrupted
-	// first startup can retry without leaving web search only partly enabled.
+	// first startup can retry without leaving partial web search defaults.
 	if err := tx.Commit(); err != nil {
 		return err
 	}

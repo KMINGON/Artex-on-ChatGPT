@@ -3191,7 +3191,7 @@
     },
     "webSearch": {
       "title": "Web Search",
-      "desc": "Configure the <b>global web search switch and provider</b>. Both the global switch and <b>web_search in each agent’s settings</b> must be on. New installations enable <b>DuckDuckGo (ddgs)</b> search for the Pentest and Worker agents. Existing saved settings are preserved.<br></br>Search returns titles, links and summaries; WebFetch reads page content. Choose <b>DuckDuckGo (ddgs)</b> (no API key), <b>Brave</b> or <b>Tavily</b> (a provider API key is required). Search uses its separate search proxy setting and is independent of Traffic Capture.",
+      "desc": "Configure the <b>global web search switch and provider</b>. Both the global switch and <b>web_search in each agent’s settings</b> must be on. Global web search is <b>off by default</b> on new installations. The default provider is <b>DuckDuckGo (ddgs)</b>; the Pentest and Worker agents are preselected and can search after the global switch is enabled. Existing saved settings are preserved.<br></br>Search returns titles, links and summaries; WebFetch reads page content. Choose <b>DuckDuckGo (ddgs)</b> (no API key), <b>Brave</b> or <b>Tavily</b> (a provider API key is required). Search uses its separate search proxy setting and is independent of Traffic Capture.",
       "on": "Master switch on · Can be enabled individually in each agent's settings",
       "off": "Off · Web search can't be enabled for any agent",
       "sourceLabel": "Search source",

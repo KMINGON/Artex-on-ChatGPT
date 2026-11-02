@@ -21,11 +21,11 @@ func assertWebSearchDefaults(t *testing.T, d *DB, settings map[string]string, en
 func TestBuiltinWebSearchDefaultsNewInstallAndRestart(t *testing.T) {
 	d, dsn := templateFixtureDB(t)
 	assertWebSearchDefaults(t, d, map[string]string{
-		"web_search_enabled": "true", "web_search_backend": "ddgs",
+		"web_search_enabled": "false", "web_search_backend": "ddgs",
 	}, map[string]bool{"worker": true, "pentest": true})
 	// Runtime/UI choices must survive opening the database again.
 	want := map[string]string{
-		"web_search_enabled": "false", "web_search_backend": "tavily",
+		"web_search_enabled": "true", "web_search_backend": "tavily",
 		"tavily_search_api_key": "fixture-key", "web_search_proxy": "http://fixture.invalid:8080",
 	}
 	for key, value := range want {
@@ -104,7 +104,7 @@ func TestBuiltinWebSearchDefaultsPreservePreconfiguredValues(t *testing.T) {
 	if _, err := d.Exec(`DELETE FROM agents WHERE key<>'pentest';
 UPDATE agents SET builtin=false,web_search=false WHERE key='pentest';
 DELETE FROM settings WHERE key='builtin_web_search_defaults_v1';
-UPDATE settings SET value='false' WHERE key='web_search_enabled';
+UPDATE settings SET value='true' WHERE key='web_search_enabled';
 UPDATE settings SET value='tavily' WHERE key='web_search_backend'`); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ UPDATE settings SET value='tavily' WHERE key='web_search_backend'`); err != nil 
 		t.Fatal(err)
 	}
 	assertWebSearchDefaults(t, d, map[string]string{
-		"web_search_enabled": "false", "web_search_backend": "tavily",
+		"web_search_enabled": "true", "web_search_backend": "tavily",
 	}, map[string]bool{"worker": true})
 }
 
@@ -147,6 +147,6 @@ FOR EACH ROW EXECUTE FUNCTION reject_search_agent_fixture()`); err != nil {
 		t.Fatal(err)
 	}
 	assertWebSearchDefaults(t, d, map[string]string{
-		"web_search_enabled": "true", "web_search_backend": "ddgs",
+		"web_search_enabled": "false", "web_search_backend": "ddgs",
 	}, map[string]bool{"worker": true, "pentest": true})
 }
