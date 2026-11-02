@@ -31,8 +31,8 @@ services:
       MSF_MCP_HOST: 0.0.0.0
       MSF_MCP_PORT: "3000"
       MSF_MCP_AUTH_TOKEN: ${MSF_MCP_AUTH_TOKEN:?Metasploit MCP Bearer 토큰을 설정하세요}
-      # 실습 배포는 실행·check·세션 쓰기를 허용한다. 조회 중심으로 제한하려면 false로 설정한다.
-      MSF_MCP_DANGEROUS_ACTIONS: ${MSF_MCP_DANGEROUS_ACTIONS:-true}
+      # 릴리스 기본값은 조회 전용이며 실행·check·세션 쓰기를 허용하지 않는다.
+      MSF_MCP_DANGEROUS_ACTIONS: ${MSF_MCP_DANGEROUS_ACTIONS:-false}
       PGPASSWORD: ${MSF_POSTGRES_PASSWORD:-metasploit-local-db}
     volumes:
       - ./docker/metasploit/database.yml:/usr/src/metasploit-framework/config/database.yml:ro
