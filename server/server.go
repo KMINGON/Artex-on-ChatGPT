@@ -3497,7 +3497,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"python_interpreter":        strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
 		"resource_preset":           s.m.resourcePresetID(),
 		"browser_concurrency_limit": s.m.browserLimit(),
-		"workers":                   s.m.Workers(), // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"workers":                   s.m.Workers(), // 새 작업에 저장하는 Worker 수(기본 5).
 		"task_concurrency_enabled":  concOn,        // 任务并发上限开关(默认关)
 		"task_concurrency_limit":    concLimit,     // 同时运行任务上限(开启后默认5)
 		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时

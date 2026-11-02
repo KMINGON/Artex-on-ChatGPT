@@ -233,7 +233,7 @@ type Manager struct {
 	mu          sync.RWMutex
 	tasks       map[string]*Task
 	active      string
-	trafficOn   bool // 流量捕获开关（默认关；settings.traffic_capture）
+	trafficOn   bool // 트래픽 캡처 기본 켜짐; settings.traffic_capture의 저장값 우선.
 	llmRecOn    bool // LLM 录制开关（默认关；settings.llm_record）
 	// 联网搜索开关与来源（默认关；settings.web_search_*）。brave-free 需要 braveKey；tavily 需要 tavilyKey。
 	// webSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关。
@@ -280,7 +280,7 @@ const (
 	// defaultWebSearchBackend is used when web search is on but no backend was picked.
 	defaultWebSearchBackend = "ddgs"
 	// defaultWorkers is the concurrent work-agent count when the setting is unset.
-	defaultWorkers = 3
+	defaultWorkers = 5
 	// defaultConcurrencyLimit is the simultaneous-running-task cap when the feature
 	// is enabled but no explicit limit was saved.
 	defaultConcurrencyLimit = 5
@@ -313,8 +313,8 @@ func (m *Manager) SetConcurrency(enabled bool, limit int) error {
 	return m.pg.SetSetting(settingConcurrencyOn, strconv.FormatBool(enabled))
 }
 
-// Workers returns the configured concurrent work-agent count (default 3). Read
-// per-task at engine.Run, so a change applies to tasks started afterwards.
+// Workers returns the configured concurrent work-agent count (default 5).
+// New tasks save this count; legacy tasks without a snapshot read it at engine.Run.
 func (m *Manager) Workers() int {
 	v, ok, err := m.pg.GetSetting(settingWorkers)
 	if err != nil || !ok {
@@ -419,7 +419,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	}
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording
 	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
-	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
+	m.trafficOn = pg.GetBool(settingTrafficCapture, true)
 	// LLM 录制开关（默认关）。录制器每次调用时读取此标志。
 	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
 	// Load persisted web-search config (default: off, ddgs).
@@ -456,7 +456,7 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	return m, nil
 }
 
-// TrafficEnabled reports whether traffic capture is on (default off). When off,
+// TrafficEnabled reports whether traffic capture is on (default on). When off,
 // no proxy/traffic tools/prompt are injected into agents (nothing is recorded).
 func (m *Manager) TrafficEnabled() bool {
 	m.mu.RLock()

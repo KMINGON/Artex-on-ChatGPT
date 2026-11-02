@@ -3165,7 +3165,7 @@
     },
     "trafficCapture": {
       "title": "Traffic Capture",
-      "desc": "When on, all agents' HTTP traffic passes through the recording proxy and is fully saved, and the traffic_search / traffic_get tools and proxy settings are injected into the agents (the prompt includes a proxy description).<br></br>When off (default), no traffic is recorded. Agents <b>do not receive</b> the proxy settings or traffic tools, and the prompt <b>does not include</b> any proxy-related content. Toggling regenerates the agents immediately to apply the change.",
+      "desc": "On by default; existing saved settings are preserved. When on, <b>HTTP requests and responses routed through the recording proxy</b> are saved, and agents can use the capture proxy and traffic_search / traffic_get features.<br></br>When off, capture proxy settings and traffic lookup tools are not injected. A separately configured global egress proxy is preserved. Toggling refreshes the agent configuration to apply the change.",
       "on": "On · Recording traffic and injecting the proxy",
       "off": "Off · No recording or proxy injection"
     },
@@ -3224,7 +3224,7 @@
     },
     "workers": {
       "title": "Task parallelism · Worker agent count",
-      "desc": "The worker count saved with each new task (default 3). A higher value explores more concurrently and consumes more. Changes <b>apply to tasks created afterward</b>; existing tasks keep their saved count."
+      "desc": "The worker count saved with each new task (default 5). A higher value explores more concurrently and consumes more. Changes <b>apply to tasks created afterward</b>; existing tasks keep their saved count."
     },
     "sendKey": {
       "title": "Session input box send key",

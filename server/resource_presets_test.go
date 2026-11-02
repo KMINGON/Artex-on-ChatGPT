@@ -119,8 +119,8 @@ func TestResourcePresetCatalogAndDefaults(t *testing.T) {
 		t.Fatal("invalid preset accepted")
 	}
 	got := (&Manager{}).currentResourceProfile()
-	if got.ID != "custom" || got.Workers != 3 || got.BrowserLimit != 4 {
-		t.Fatalf("legacy defaults=%+v", got)
+	if got.ID != "custom" || got.Workers != 5 || got.BrowserLimit != 4 {
+		t.Fatalf("runtime defaults=%+v", got)
 	}
 }
 

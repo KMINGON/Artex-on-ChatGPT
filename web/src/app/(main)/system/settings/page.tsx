@@ -30,7 +30,7 @@ export default function SystemSettingsPage() {
     br: () => <br />,
     code: (chunks: React.ReactNode) => <span className="font-mono">{chunks}</span>,
   };
-  const [trafficCapture, setTrafficCapture] = React.useState(false);
+  const [trafficCapture, setTrafficCapture] = React.useState(true);
   const [agentTrafficBinding, setAgentTrafficBinding] = React.useState(false);
   const [webSearch, setWebSearch] = React.useState(false);
   const [backend, setBackend] = React.useState("ddgs");
@@ -48,7 +48,7 @@ export default function SystemSettingsPage() {
   const [saving, setSaving] = React.useState(false);
   const [savingKey, setSavingKey] = React.useState(false);
   const [pyInterp, setPyInterp] = React.useState("");
-  const [workers, setWorkers] = React.useState("3");
+  const [workers, setWorkers] = React.useState("5");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   // 操作约束注入范围(默认都开)。
   const [injectPlanner, setInjectPlanner] = React.useState(true);
@@ -62,7 +62,7 @@ export default function SystemSettingsPage() {
   const settingsBusy = saving || savingWorkers || savingKey || savingTavilyKey || savingProxy || savingGlobalProxy;
   const apply = React.useCallback((s: Settings) => {
     setBrowserLimit(String(s.browser_concurrency_limit ?? 4));
-    setWorkers(String(s.workers ?? 3));
+    setWorkers(String(s.workers ?? 5));
     setTrafficCapture(!!s.traffic_capture);
     setAgentTrafficBinding(!!s.agent_traffic_binding);
     setWebSearch(!!s.web_search_enabled);
