@@ -1,6 +1,6 @@
 ---
 name: scopesentry
-description: ScopeSentry의 기존 자산·취약점·스캔 결과를 조회하거나 노드와 템플릿을 선택해 후속 스캔을 실행할 때 사용합니다.
+description: ScopeSentry MCP에서 기존 자산·스캔 이력을 재사용하거나 노드·템플릿으로 후속 스캔을 만들고 상태·결과를 조회할 때 사용합니다.
 mcps: ScopeSentry
 ---
 
@@ -13,6 +13,15 @@ ARTEX에 등록된 `ScopeSentry` MCP를 사용합니다. 서비스 주소와 인
 1. `SearchExtraTools`로 필요한 ScopeSentry 도구의 설명과 입력 스키마를 확인합니다.
 2. 반환된 전체 이름(`mcp__<server>__<tool>`)과 스키마에 맞는 `params`로 `ExecuteExtraTool`을 호출합니다. 전체 이름은 검색 결과에서 가져옵니다.
 3. ScopeSentry의 `list_tasks`와 ARTEX의 작업 조회 도구를 구분합니다. 두 시스템의 프로젝트·작업·자산 ID는 서로 다른 값입니다.
+
+예를 들어 `SearchExtraTools`에 `{"query":"ScopeSentry list_assets"}`를 전달합니다. 결과가 `mcp__ScopeSentry__list_assets`를 반환하면 `ExecuteExtraTool`에는 아래처럼 전달합니다. `params` 내부의 상세 조회 예시는 다음 절과 같습니다.
+
+```json
+{
+  "tool_name": "mcp__ScopeSentry__list_assets",
+  "params": {"asset_type":"asset", "pageIndex":1, "pageSize":20}
+}
+```
 
 ## 기존 결과 조회
 
@@ -47,6 +56,29 @@ ARTEX에 등록된 `ScopeSentry` MCP를 사용합니다. 서비스 주소와 인
 4. 반환된 작업 식별자로 `get_task`를 조회하고 관련 자산·취약점 결과를 읽습니다. 생성 응답은 실행 완료를 뜻하지 않습니다. 대기 중에는 다른 독립적인 조사를 진행할 수 있습니다.
 5. 템플릿 조정이 필요하면 `list_plugin_modules` → `list_plugins`로 플러그인의 **hash**와 인자를 확인한 뒤 `create_scan_template`을 사용합니다.
 
+직접 입력 대상의 스캔 생성 예시는 다음과 같습니다. 아래 JSON은 `create_scan_task`의 `params`이며 노드 이름·템플릿 ID는 앞선 조회의 실제 값으로 바꿉니다. 스캔 동작은 선택한 템플릿의 모듈·플러그인에 따릅니다.
+
+```json
+{
+  "name": "<이번 스캔의 고유 이름>",
+  "node": ["<온라인 노드 이름>"],
+  "template": "<템플릿 ObjectID>",
+  "targetSource": "general",
+  "target": "<현재 작업 대상>"
+}
+```
+
+생성 응답 `{"success":true,"id":"<작업 ObjectID>"}`의 ID로 `get_task`에 `{"id":"<작업 ObjectID>"}`를 전달합니다. 반환된 `name`, `status`, `progress`, `endTime`, `taskNum`과 결과를 함께 봅니다. 결과 자산은 `list_assets`의 `filter.task: ["<반환된 작업 이름>"]`로 조회합니다. 생성 ID를 이 필터에 넣지 않습니다. 진행 중에 얻은 자산은 부분 결과이며 `total`과 읽은 페이지를 구분합니다.
+
+| 상황 | 확인할 부분 |
+| --- | --- |
+| 같은 이름으로 생성 실패 | 기존 `list_tasks`에서 이미 접수된 작업인지 확인. 재시도로 중복 실행하지 않음 |
+| 작업은 있으나 대기하거나 결과 없음 | 온라인 노드·템플릿·대상 조건·실제 작업 상태. 생성 성공만으로 스캔 성공 판정 금지 |
+| 자산 조회가 비어 있음 | asset_type·project ObjectID·task 이름·페이지·작업 진행 상태 |
+| 일부 플러그인 실패 또는 부분 결과 | 처리한 대상과 실패한 모듈을 구분. 취약점이 없다는 결론으로 바꾸지 않음 |
+
 반환 결과에서 근거가 되는 대상, URL·포트, 스캔 작업 식별자, 요청·응답을 읽고 필요한 검증에 연결합니다. ARTEX 작업 안에서는 현재 제공된 자산·사실·발견 기록 도구로 정보를 전달하고, 독립 대화에서는 결과와 파일 경로를 대화에 남깁니다. ScopeSentry 등록만으로 ARTEX 그래프가 자동 동기화되지는 않습니다. 스캔 취소나 상세 진행 조회는 실제 서버가 제공한 도구가 있을 때만 호출합니다.
 
-서버 계약 확인: [ScopeSentry MCP 구현](https://github.com/Autumn-27/ScopeSentry/tree/main/internal/mcp).
+후속 작업에는 `프로젝트 ID / 스캔 작업 ID / 작업 이름 / 관찰 시점·상태 / 읽은 자산 유형·페이지 / 자산 ID·URL / 원문 경로` 중 실제 확보한 값을 전달합니다. 다른 서버의 과거 ID를 현재 ARTEX ID로 바꾸어 쓰지 않습니다.
+
+서버 계약 확인: [ScopeSentry v1.9.4 MCP 구현](https://github.com/Autumn-27/ScopeSentry/blob/v1.9.4/internal/mcp/tools.go).

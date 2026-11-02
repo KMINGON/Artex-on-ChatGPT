@@ -1,29 +1,26 @@
 ---
 name: web-cli
-description: Nmap으로 서비스 정보를 확인하거나 ffuf·sqlmap과 SecLists로 웹 경로·인자·SQL 삽입 후보를 조사할 때 사용합니다.
+description: 포트·서비스는 Nmap, 웹 후보 비교는 ffuf·SecLists, 확보한 요청의 SQL 삽입 조사는 sqlmap을 사용합니다. Bash 예시와 결과 해석을 제공합니다.
 ---
 
 # 웹·서비스 CLI 활용
 
 CLI는 현재 에이전트의 `Bash`에서 실행합니다. 도구 목록의 `shell` 항목은 설치 환경을 알려주는 설명입니다. ARTEX Docker 이미지에 포함된 도구도 다른 설치 환경에서는 없을 수 있으므로 명령을 찾을 수 없으면 설치·경로 문제로 구분합니다.
 
-| 도구 | 사용할 때 | 기본 확인 |
+| 도구 | 현재 입력과 목적 | 기본 확인 |
 |---|---|---|
-| `nmap` | 포트·서비스·버전과 스크립트 기반 정보를 확인할 때 | `nmap --help` |
-| `ffuf` | 웹 경로·가상 호스트·인자 후보를 비교할 때 | `ffuf -h` |
-| `sqlmap` | 실제 HTTP 요청의 SQL 삽입 후보를 조사할 때 | `sqlmap -hh` |
+| `nmap` | 호스트/IP를 알고 포트·서비스·버전이 필요할 때 | `nmap --help` |
+| `ffuf` | 기준 URL/HTTP 요청이 있고 경로·가상 호스트·인자 후보의 응답을 비교할 때 | `ffuf -h` |
+| `sqlmap` | 재현 가능한 HTTP 요청과 조사할 인자를 확보했을 때 | `sqlmap -hh` |
 | SecLists | 목적에 맞는 경로·DNS·인자 사전이 필요할 때 | `/usr/share/seclists`의 설치된 파일 확인 |
+
+ScopeSentry에 이미 수집한 결과는 `scopesentry` 스킬로 조회할 수 있습니다. 브라우저의 로그인·JavaScript 동작이 필요하면 현재 제공된 브라우저 도구를 사용하고, 확보한 HTTP 요청을 CLI 조사에 연결합니다.
 
 설치된 사전은 `Discovery/Web-Content/`의 `common.txt`, `raft-medium-directories.txt`, `burp-parameter-names.txt`, `common-api-endpoints-mazen160.txt`와 `Discovery/DNS/subdomains-top1million-5000.txt`입니다. 대상과 가설에 맞는 목록을 고릅니다.
 
-## 작업에 연결하기
+## 빠른 사용 예시
 
-1. 현재 작업 정보, ScopeSentry 결과, 브라우저 또는 API 조사 결과에서 대상과 확인할 가설을 가져옵니다. 이전 결과가 있다면 그 조건과 시점을 함께 봅니다.
-2. 실제 요청의 URL·메서드·인자·인증 문맥에 맞게 도구를 고릅니다. 필요한 옵션은 설치된 버전의 도움말로 확인합니다.
-3. 현재 작업 디렉터리에 원본 결과를 저장합니다. Worker에게 `intent_dir`가 지정되어 있으면 그 위치를 사용합니다. Nmap은 `-oA`/`-oX`, ffuf는 `-of json -o`, sqlmap은 `--output-dir`로 산출물을 남길 수 있습니다.
-4. 응답 내용과 기준 요청을 비교해 후보를 해석하고 다음 탐색에 연결합니다. 일괄 실행의 종료 코드나 HTTP 200만으로 취약점 성공을 판단하지 않습니다.
-
-예시 명령의 대상과 경로는 실제 작업 값으로 바꿉니다.
+예시의 대상·인자는 실제 작업 값으로 바꿉니다. 현재 작업 디렉터리 또는 Worker에게 지정된 `intent_dir`에서 실행합니다.
 
 ```bash
 nmap -sV -oA ./service-scan '<대상>'
@@ -31,10 +28,12 @@ ffuf -u 'https://<대상>/FUZZ' -w /usr/share/seclists/Discovery/Web-Content/com
 sqlmap -r ./request.txt -p '<확인할 인자>' --batch --output-dir=./sqlmap-output
 ```
 
-ffuf는 같은 응답을 반환하는 경로, 로그인 리다이렉트, 가상 호스트에 따른 차이를 보고 필터를 조정합니다. sqlmap에는 재현할 요청을 전달하고 요청의 만료된 쿠키·CSRF 토큰·프록시 조건을 확인합니다. 옵션으로 바꾸는 테스트 강도와 실행 범위는 현재 작업 지침을 따릅니다.
+Nmap은 `.xml`의 포트·서비스·버전과 호스트 상태를, ffuf는 JSON의 후보 URL·상태·길이와 기준 응답을, sqlmap은 출력 디렉터리의 로그·세션과 실제 요청 조건을 읽습니다. 종료 코드나 HTTP 200만으로 취약점 성공을 판단하지 않습니다. 필터링된 결과가 비어 있는 경우와 요청 자체가 실패한 경우도 구분합니다.
+
+인증 요청 재사용, ffuf 필터 조정, 프록시 옵션이 필요하면 `Read`로 `${SKILL_DIR}/references/requests-and-results.md`를 읽습니다. [요청·필터·결과 예시](references/requests-and-results.md)
 
 Bash의 기존 프록시 환경과 도구 자체의 프록시 지원은 구분합니다. 프록시가 필요한 도구에는 도움말에 맞는 옵션을 사용하고 트래픽 기록 여부를 실제 기록으로 확인합니다. 모든 CLI 트래픽이 자동으로 ARTEX에 수집되는 것은 아닙니다.
 
-후속 에이전트에는 실행 조건, 관찰 내용, 원본 결과의 **절대 경로**를 전달합니다. 작업 내 기록 도구가 있다면 기존 자산·사실·발견 흐름을 사용합니다.
+후속 에이전트에는 대상·실행 조건, 관찰 내용, 실패/부분 결과, 원본 결과의 **절대 경로**를 전달합니다. 예: `443/tcp에서 HTTPS 확인; ffuf 후보 3개 중 2개는 로그인 리다이렉트; 원문 /<현재 작업 경로>/paths.json`. 작업 내 기록 도구가 있으면 새 자산은 `insert_assets`, 관찰·판단은 `record_fact`, 재현한 취약점은 `report_finding`의 기존 계약을 따릅니다. 독립 대화에는 사용할 수 있는 기록 도구와 파일 경로를 사용합니다.
 
 사용법: [Nmap](https://nmap.org/book/man.html), [ffuf](https://github.com/ffuf/ffuf), [sqlmap](https://github.com/sqlmapproject/sqlmap/wiki/Usage), [SecLists](https://github.com/danielmiessler/SecLists).

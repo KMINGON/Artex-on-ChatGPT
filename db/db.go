@@ -231,22 +231,44 @@ var builtinAgents = []builtinAgent{
 
 // seedBuiltins inserts the fixed built-in agents and their variable catalog (idempotent).
 func (d *DB) seedBuiltins() error {
-	var existingBuiltins bool
-	if err := d.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE builtin)`).Scan(&existingBuiltins); err != nil {
+	tx, err := d.Begin()
+	if err != nil {
 		return err
+	}
+	defer tx.Rollback()
+	var existingBuiltins bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM agents WHERE builtin)`).Scan(&existingBuiltins); err != nil {
+		return err
+	}
+	// Record the decision for existing installations too: deleting agents or
+	// search settings later must not make the next startup a fresh installation.
+	result, err := tx.Exec(`INSERT INTO settings(key,value) VALUES ('builtin_web_search_defaults_v1','done') ON CONFLICT(key) DO NOTHING`)
+	if err != nil {
+		return err
+	}
+	added, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	newSearchDefaults := added > 0 && !existingBuiltins
+	if newSearchDefaults {
+		if _, err := tx.Exec(`INSERT INTO settings(key,value) VALUES ('web_search_enabled','true'),('web_search_backend','ddgs') ON CONFLICT(key) DO NOTHING`); err != nil {
+			return fmt.Errorf("seed web search defaults: %w", err)
+		}
 	}
 	for _, a := range builtinAgents {
 		var agentID int64
-		err := d.QueryRow(`
-INSERT INTO agents(key, name, description, role, builtin, enabled, interactive_shell, run_seconds)
-VALUES ($1, $2, NULLIF($3,''), $4, true, true, $5, COALESCE($6, 1200))
+		err := tx.QueryRow(`
+INSERT INTO agents(key, name, description, role, builtin, enabled, interactive_shell, run_seconds, web_search)
+VALUES ($1, $2, NULLIF($3,''), $4, true, true, $5, COALESCE($6, 1200), $7)
 ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
-RETURNING id`, a.key, a.name, a.desc, a.role, a.interactiveShell, a.runSeconds).Scan(&agentID)
+RETURNING id`, a.key, a.name, a.desc, a.role, a.interactiveShell, a.runSeconds,
+			newSearchDefaults && (a.key == "pentest" || a.key == "worker")).Scan(&agentID)
 		if err != nil {
 			return fmt.Errorf("agent %s: %w", a.key, err)
 		}
 		for _, v := range a.vars {
-			if _, err := d.Exec(`
+			if _, err := tx.Exec(`
 INSERT INTO agent_prompt_vars(agent_id, var_name, description, example, source)
 VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (agent_id, var_name) DO NOTHING`,
@@ -254,6 +276,11 @@ ON CONFLICT (agent_id, var_name) DO NOTHING`,
 				return fmt.Errorf("agent %s var %s: %w", a.key, v.name, err)
 			}
 		}
+	}
+	// Keep agent defaults and the one-time decision atomic so an interrupted
+	// first startup can retry without leaving web search only partly enabled.
+	if err := tx.Commit(); err != nil {
+		return err
 	}
 	// Drop catalog entries for variables that were renamed, so the white-list no
 	// longer advertises a name templates can't resolve (EngagementTitle→Description).
