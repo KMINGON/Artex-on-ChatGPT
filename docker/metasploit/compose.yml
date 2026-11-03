@@ -1,5 +1,7 @@
-# 선택 실행: docker compose -f docker-compose.yml -f docker-compose.metasploit.yml up -d metasploit
+# 독립 실행: docker compose --env-file .local/mcp/metasploit/.env -f docker/metasploit/compose.yml up -d
 # ARTEX MCP: http://metasploit:3000/ · Authorization: Bearer <MSF_MCP_AUTH_TOKEN>
+name: artex-metasploit
+
 services:
   metasploit-db:
     image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
@@ -35,10 +37,15 @@ services:
       MSF_MCP_DANGEROUS_ACTIONS: ${MSF_MCP_DANGEROUS_ACTIONS:-false}
       PGPASSWORD: ${MSF_POSTGRES_PASSWORD:-metasploit-local-db}
     volumes:
-      - ./docker/metasploit/database.yml:/usr/src/metasploit-framework/config/database.yml:ro
-      - ./docker/metasploit/mcp-server.rb:/usr/src/metasploit-framework/artex-mcp-server.rb:ro
+      - ./database.yml:/usr/src/metasploit-framework/config/database.yml:ro
+      - ./mcp-server.rb:/usr/src/metasploit-framework/artex-mcp-server.rb:ro
       - metasploit-data:/root/.msf4
-    # MCP/RPC 포트는 호스트에 공개하지 않고 같은 Compose 네트워크에서 사용한다.
+    # MCP 포트는 ARTEX 공유 네트워크에서만 접근하며 DB는 이 프로젝트 네트워크에 남긴다.
+    networks:
+      default:
+      artex:
+        aliases:
+          - metasploit
     expose:
       - "3000"
     healthcheck:
@@ -53,3 +60,9 @@ services:
 volumes:
   metasploit-pgdata:
   metasploit-data:
+
+networks:
+  default:
+  artex:
+    external: true
+    name: ${ARTEX_NETWORK:?ARTEX Docker 네트워크 이름을 설정하세요}

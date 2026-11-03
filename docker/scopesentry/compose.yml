@@ -1,18 +1,8 @@
-# docker-compose.yml + docker-compose.metasploit.yml과 함께 적용한다.
-# 먼저 scripts/prepare-pentest.py init/connect로 비공개 설정과 API 키를 준비한다.
-services:
-  artex:
-    environment:
-      ARTEX_SCOPESENTRY_MCP_URL: http://scopesentry:8082/mcp
-      ARTEX_SCOPESENTRY_API_KEY: ${ARTEX_SCOPESENTRY_API_KEY:-}
-      ARTEX_METASPLOIT_MCP_URL: http://metasploit:3000/
-      ARTEX_METASPLOIT_MCP_TOKEN: ${MSF_MCP_AUTH_TOKEN:?Metasploit MCP 토큰을 준비하세요}
-    depends_on:
-      scopesentry:
-        condition: service_healthy
-      metasploit:
-        condition: service_healthy
+# 독립 실행: docker compose --env-file .local/mcp/scopesentry/.env -f docker/scopesentry/compose.yml up -d
+# 초기 설정과 상태 파일은 scripts/prepare-mcp.py로 준비한다.
+name: artex-scopesentry
 
+services:
   scopesentry-mongodb:
     image: mongo:7.0.28@sha256:4510cf3d7050003e958745adb25d2deb3fb907430716162d9cc1a92eda2a6047
     platform: linux/amd64
@@ -50,6 +40,12 @@ services:
     platform: linux/amd64
     ports:
       - "${SCOPESENTRY_BIND_IP:-127.0.0.1}:${SCOPESENTRY_PORT:-18083}:8082"
+    # 서버만 ARTEX 네트워크에 연결하고 DB와 Scanner는 프로젝트 네트워크에 남긴다.
+    networks:
+      default:
+      artex:
+        aliases:
+          - scopesentry
     environment:
       TIMEZONE: Asia/Seoul
       MONGODB_IP: scopesentry-mongodb
@@ -65,17 +61,17 @@ services:
       - scopesentry-images:/opt/ScopeSentry/images
       - scopesentry-uploads:/opt/ScopeSentry/uploads
       - type: bind
-        source: ${ARTEX_PENTEST_STATE_DIR:?통합 배포 설정을 먼저 준비하세요}/server-config.yaml
+        source: ${SCOPESENTRY_STATE_DIR:?ScopeSentry 상태 파일을 먼저 준비하세요}/server-config.yaml
         target: /opt/ScopeSentry/config.yaml
         bind:
           create_host_path: false
       - type: bind
-        source: ${ARTEX_PENTEST_STATE_DIR:?통합 배포 설정을 먼저 준비하세요}/server-plugin-key
+        source: ${SCOPESENTRY_STATE_DIR:?ScopeSentry 상태 파일을 먼저 준비하세요}/server-plugin-key
         target: /opt/ScopeSentry/PLUGINKEY
         bind:
           create_host_path: false
       - type: bind
-        source: ${ARTEX_PENTEST_STATE_DIR:?통합 배포 설정을 먼저 준비하세요}/server-password
+        source: ${SCOPESENTRY_STATE_DIR:?ScopeSentry 상태 파일을 먼저 준비하세요}/server-password
         target: /opt/ScopeSentry/PASSWORD
         bind:
           create_host_path: false
@@ -102,7 +98,7 @@ services:
         soft: 0
         hard: 0
     environment:
-      NodeName: ${SCOPESENTRY_NODE_NAME:-artex-pentest-node}
+      NodeName: ${SCOPESENTRY_NODE_NAME:-artex-scopesentry-node}
       TimeZoneName: Asia/Seoul
       MONGODB_IP: scopesentry-mongodb
       MONGODB_PORT: "27017"
@@ -135,3 +131,9 @@ volumes:
   scopesentry-dictionaries:
   scopesentry-poc:
   scopesentry-plugins:
+
+networks:
+  default:
+  artex:
+    external: true
+    name: ${ARTEX_NETWORK:?ARTEX Docker 네트워크 이름을 설정하세요}

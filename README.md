@@ -24,20 +24,20 @@ API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. Chat
 
 원본의 의도 분할·우선순위·재검증 흐름을 유지하고, 한국어 지침의 자산·사실 기록과 목표 판단을 실제 도구 계약과 검증 근거에 맞춥니다.
 
-[전체 변경점](docs/changes.md) · [브라우저·설정](docs/browser-and-presets.md) · [트래픽 증거](docs/finding-traffic-evidence.md) · [침투 테스트 도구·통합 배포](docs/pentest-tools.md)
+[전체 변경점](docs/changes.md) · [브라우저·설정](docs/browser-and-presets.md) · [트래픽 증거](docs/finding-traffic-evidence.md) · [침투 테스트 도구](docs/pentest-tools.md)
 
 ## 빠른 시작
 
-현재 소스 릴리스는 **v0.2.0**입니다. Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
+현재 소스 릴리스는 **v0.2.1**입니다. Git과 Docker Compose를 준비하세요. Go·Node.js·PostgreSQL은 이미지 빌드와 컨테이너에서 준비합니다.
 
 ```sh
 git clone https://github.com/KMINGON/Artex-on-ChatGPT.git
 cd Artex-on-ChatGPT
-git switch --detach v0.2.0
-ARTEX_BUILD_VERSION=0.2.0 docker compose up -d --build
+git switch --detach v0.2.1
+ARTEX_BUILD_VERSION=0.2.1 docker compose up -d --build
 ```
 
-선택한 소스로 로컬 이미지를 빌드하며 앱에는 `0.2.0`이 표시됩니다. GitHub Release는 소스 압축파일을 제공하며, 사전 빌드 바이너리·레지스트리 이미지는 배포하지 않습니다. `docker compose logs -f artex`로 진행 상태를 확인하고 [http://127.0.0.1:8787](http://127.0.0.1:8787)을 엽니다.
+선택한 소스로 로컬 이미지를 빌드하며 앱에는 `0.2.1`이 표시됩니다. GitHub Release는 소스 압축파일을 제공하며, 사전 빌드 바이너리·레지스트리 이미지는 배포하지 않습니다. `docker compose logs -f artex`로 진행 상태를 확인하고 [http://127.0.0.1:8787](http://127.0.0.1:8787)을 엽니다.
 
 | 항목 | 기본값 |
 | --- | --- |
@@ -60,32 +60,25 @@ ARTEX_BUILD_VERSION=0.2.0 docker compose up -d --build
 | ARTEX에서 Docker 호스트의 대상 접속 | `http://host.docker.internal:포트` |
 | 내부망·외부 대상 | 대상의 실제 IP·도메인과 포트 |
 
-ARTEX에 전달하는 `127.0.0.1`은 ARTEX 컨테이너 자신입니다. 예를 들어 Juice Shop을 같은 네트워크에 실행할 수 있습니다.
+ARTEX에 전달하는 `127.0.0.1`은 ARTEX 컨테이너 자신입니다. 호스트 서버는 컨테이너에서 도달할 수 있는 주소에서 수신해야 합니다. Linux의 `127.0.0.1` 전용 서버나 WSL 밖의 Windows 서버에는 별도의 수신 주소·호스트 IP 설정이 필요할 수 있습니다.
 
-```sh
-docker run -d --name juice-shop \
-  --network artex-on-chatgpt_default \
-  -p 127.0.0.1:3000:3000 \
-  bkimminich/juice-shop:latest
-```
+## MCP 연결
 
-PC 브라우저는 `http://127.0.0.1:3000`, ARTEX 작업의 대상 주소는 **`http://juice-shop:3000`**입니다. Compose 프로젝트 이름을 바꿨다면 네트워크 이름도 `<프로젝트명>_default`로 맞추세요.
-
-호스트 서버는 컨테이너에서 도달할 수 있는 주소에서 수신해야 합니다. Linux의 `127.0.0.1` 전용 서버나 WSL 밖의 Windows 서버에는 별도의 수신 주소·호스트 IP 설정이 필요할 수 있습니다.
+ScopeSentry·Metasploit이 필요하면 [MCP 서버 실행·연결](docs/mcp-servers.md)을 따라 별도로 준비하세요. 기본 Compose는 ARTEX와 PostgreSQL만 실행합니다.
 
 ## 중지·업데이트·데이터
 
 ```sh
 docker compose stop
-ARTEX_BUILD_VERSION=0.2.0 docker compose up -d
+ARTEX_BUILD_VERSION=0.2.1 docker compose up -d
 ```
 
-업데이트할 때는 DB·앱 파일·인증 볼륨을 함께 백업한 뒤 원하는 릴리스 태그의 소스와 이미지를 갱신합니다. 아래는 `v0.2.0`을 선택하는 예시이며, 다음 버전에는 태그와 빌드 버전을 함께 바꾸세요.
+업데이트할 때는 DB·앱 파일·인증 볼륨을 함께 백업한 뒤 원하는 릴리스 태그의 소스와 이미지를 갱신합니다. 아래는 `v0.2.1`을 선택하는 예시이며, 다음 버전에는 태그와 빌드 버전을 함께 바꾸세요.
 
 ```sh
 git fetch origin --tags
-git switch --detach v0.2.0
-ARTEX_BUILD_VERSION=0.2.0 docker compose up -d --build
+git switch --detach v0.2.1
+ARTEX_BUILD_VERSION=0.2.1 docker compose up -d --build
 ```
 
 | 볼륨 | 내용 |

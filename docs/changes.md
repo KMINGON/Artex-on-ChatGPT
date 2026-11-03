@@ -8,11 +8,11 @@
 
 | 구분 | 원본 대비 현재 차이 |
 | --- | --- |
-| [연결·기능](changes/features.md) | OpenAI 전용 구성, ChatGPT 구독, 브라우저 실행·인증·이미지 전달, 기본 작업 템플릿, 침투 테스트 CLI·스킬·MCP 연결, 웹 검색 기본 OFF와 Metasploit 조회 중심의 통합 Docker 구성 |
+| [연결·기능](changes/features.md) | OpenAI 전용 구성, ChatGPT 구독, 브라우저 실행·인증·이미지 전달, 기본 작업 템플릿, 침투 테스트 CLI·스킬·MCP 연결, 기본 OFF인 웹 검색·외부 MCP 설정과 MCP 서버별 한 명령 준비와 독립 Docker 구성 |
 | [작업 방식과 설정](changes/behavior.md) | 원본과 같은 탐색 흐름, 독립 침투 에이전트의 기본 작업 조회 도구 연결, 명시적 모델 선택, Worker 5·브라우저 4·트래픽 캡처 ON 기본값 |
 | [오류·상태 보존](changes/fixes.md) | 도구 인자·취약점 등록, 원자적 그래프 저장, Todo·실행 결과·대화 복구 |
 | [OpenAI 처리](changes/openai.md) | Responses 상태·완료 판정, API와 구독의 요청 차이, 계정·모델 선택 |
-| [설치·운영](changes/operations.md) | v0.2.0 소스 릴리스와 태그 고정 Compose 빌드, Go·의존성 보안 수정, 로컬 Norma, 기존 데이터와 기본값 이관 |
+| [설치·운영](changes/operations.md) | v0.2.1 소스 릴리스와 태그 고정 Compose 빌드, Go·의존성 보안 수정, 로컬 Norma, 기존 데이터와 기본값 이관, [개발 실습 환경 준비·정리](pentest-tools.md#로컬-개발-실습-환경) |
 | [검증과 한계](changes/validation.md) | 회귀 검사 범위와 실제 진단 성능의 미확인 부분 |
 
 원본에도 브라우저 MCP, 트래픽 증거 연결, 자동 보고서, 가로채기, 대화 압축과 탐색 그래프 요약이 있었습니다. 이 기능 자체를 포크의 신규 기능으로 설명하지 않습니다. [브라우저·설정](browser-and-presets.md), [트래픽 증거](finding-traffic-evidence.md)에서 현재 사용 조건을 확인할 수 있습니다.
