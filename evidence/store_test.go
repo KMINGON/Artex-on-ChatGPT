@@ -138,6 +138,14 @@ func TestEvidenceBindingLifecycle(t *testing.T) {
 	if f.Report != "report" || f.EvidenceVersion == f.ReportEvidenceVersion || f.TrafficCount != 3 {
 		t.Fatalf("finding versions: %+v", f)
 	}
+	// The per-task view states the same evidence: three bindings, two of them proving.
+	meta, err := s.DB.FindingMetaByNodeID(in.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := meta[r.NodeID]; m.TrafficCount != 3 || m.ProofCount != 2 || !m.ReportStale() || !f.ReportStale() {
+		t.Fatalf("task view evidence state: %+v", m)
+	}
 	if err = s.DB.EditFindingTraffic(ctx, r.FindingID, again.Bindings[0].ID, v, nil, nil, true, nil); !errors.Is(err, db.ErrEvidenceConflict) {
 		t.Fatalf("stale delete: %v", err)
 	}

@@ -4124,9 +4124,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	// The findings rows carry what the nodes lack: id, triage state, evidence state.
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	meta, err := s.m.pg.FindingMetaByNodeID(taskID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: findings,
+		AssetCounts: counts, Findings: findings, Meta: meta,
 	})
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)

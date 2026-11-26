@@ -425,6 +425,7 @@ func findingDTOsForOwner(taskID, description string, in []*db.Node, meta map[int
 			d.FindingID = i64s(m.ID)
 			d.Status = m.Status
 			d.TrafficCount = m.TrafficCount
+			d.EvidenceVersion, d.ReportEvidenceVersion, d.ReportStale = m.EvidenceVersion, m.ReportEvidenceVersion, m.ReportStale()
 			d.Assets = findingAssetDTOs(m.AssetIDs, assets)
 		}
 		out = append(out, d)
@@ -455,7 +456,7 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		ID:           i64s(f.ID),
 		FindingID:    i64s(f.ID),
 		TrafficCount: f.TrafficCount, EvidenceVersion: f.EvidenceVersion, ReportEvidenceVersion: f.ReportEvidenceVersion,
-		ReportStale: f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion, TrafficBindings: f.TrafficBindings,
+		ReportStale: f.ReportStale(), TrafficBindings: f.TrafficBindings,
 		VulnClass: f.VulnClass,
 		Name:      f.Name,
 		Severity:  f.Severity,

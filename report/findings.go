@@ -178,7 +178,7 @@ func findingTrafficIDs(f *db.DBFinding) string {
 }
 
 func findingTrafficMarkdown(f *db.DBFinding, attachments bool) string {
-	stale := f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion
+	stale := f.ReportStale()
 	if len(f.TrafficBindings) == 0 && !stale {
 		return ""
 	}

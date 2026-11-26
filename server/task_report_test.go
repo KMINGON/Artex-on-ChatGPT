@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http/httptest"
 	"os"
@@ -86,6 +87,71 @@ func TestTaskReportCoversOwnTaskAndSurfacesQueryFailure(t *testing.T) {
 		}
 		if !strings.Contains(body, "- 자산: 없음\n") {
 			t.Fatalf("empty task asset summary:\n%s", body)
+		}
+	})
+
+	t.Run("triage and evidence state reach the report", func(t *testing.T) {
+		id, _ := strconv.ParseInt(second.ID, 10, 64)
+		record := func(name string) *db.RecordedFinding {
+			t.Helper()
+			rec, err := second.Store.RecordFinding(t.Context(), db.RecordFindingInput{TaskID: id, VulnClass: "idor", Name: name, Severity: "high", Summary: "s", Evidence: "e", Worker: "worker"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return rec
+		}
+		kept, rejected := record("kept-finding"), record("rejected-finding")
+		// The detailed report is written first; the evidence changes afterwards.
+		if _, err := m.pg.SetFindingReportVersionByNodeID(t.Context(), kept.NodeID, "detailed report", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.pg.Exec(`UPDATE findings SET evidence_version=evidence_version+1 WHERE id=$1`, kept.FindingID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.pg.SetFindingStatus(rejected.FindingID, db.FindingFalsePositive); err != nil {
+			t.Fatal(err)
+		}
+
+		code, body := taskReport(s, second.ID)
+		if code != 200 {
+			t.Fatalf("HTTP %d %s", code, body)
+		}
+		for _, want := range []string{
+			"- 확인된 취약점: **1**건\n",
+			"- 분류로 제외한 발견: 1건 (오탐 1, 중복 0, 무시 0)\n",
+			fmt.Sprintf("- **취약점 ID**: [%d](/function/findings/detail?id=%d)\n- **상태**: pending\n", kept.FindingID, kept.FindingID),
+			"- **연결된 트래픽 증거**: 0건(증명·검증 0건), 증거 버전 1\n- 증거가 변경되어 상세 보고서를 갱신해야 합니다.\n",
+			fmt.Sprintf("- [HIGH] rejected-finding — 상태 false_positive, 취약점 ID [%d](/function/findings/detail?id=%d)\n", rejected.FindingID, rejected.FindingID),
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("report lacks %q\n%s", want, body)
+			}
+		}
+		if strings.Contains(strings.SplitN(body, "## 분류로 제외한 발견", 2)[0], "rejected-finding") {
+			t.Fatalf("dismissed finding listed as confirmed\n%s", body)
+		}
+
+		// The task's finding list and the global list state the same evidence change.
+		rec := httptest.NewRecorder()
+		s.findings(rec, httptest.NewRequest("GET", "/api/exploration/findings?task="+second.ID, nil))
+		var listed []FindingDTO
+		if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+			t.Fatalf("%v: %s", err, rec.Body.String())
+		}
+		stale := map[string]bool{}
+		for _, f := range listed {
+			stale[f.Name] = f.ReportStale && f.EvidenceVersion == 1
+		}
+		if !stale["kept-finding"] || stale["rejected-finding"] {
+			t.Fatalf("task finding list evidence state=%v", stale)
+		}
+		rec = httptest.NewRecorder()
+		s.findings(rec, httptest.NewRequest("GET", "/api/exploration/findings?page=1&limit=20&q=kept-finding&task_id="+second.ID, nil))
+		var page struct {
+			Items []FindingDTO `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page.Items) != 1 || !page.Items[0].ReportStale {
+			t.Fatalf("global finding list evidence state: %s err=%v", rec.Body.String(), err)
 		}
 	})
 
