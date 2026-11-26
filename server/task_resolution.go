@@ -56,7 +56,13 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 	if mode == "" {
 		mode = "api_key"
 	}
-	if err := chatgptllm.ValidateOptions(p.Model, mode, p.ReasoningEffort, p.AccessProgramCyber); err != nil {
+	validate := func() error {
+		return chatgptllm.ValidateOptions(p.Model, mode, p.ReasoningEffort, p.AccessProgramCyber)
+	}
+	if db.RestoredProvider(mode) {
+		validate = func() error { return validateProviderOptions(mode, p.ReasoningEffort, p.AccessProgramCyber) }
+	}
+	if err := validate(); err != nil {
 		result.Reason = err.Error()
 		return result
 	}
@@ -75,7 +81,8 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 			return result
 		}
 	}
-	if p.AuthMode != "chatgpt_plan" && strings.TrimSpace(p.APIKey) == "" {
+	// A local OpenAI-compatible server may take no key.
+	if p.AuthMode != "chatgpt_plan" && p.AuthMode != db.AuthOpenAICompatible && strings.TrimSpace(p.APIKey) == "" {
 		result.Reason = reasonLLMProfileNoAPIKey
 		return result
 	}

@@ -28,6 +28,10 @@ func (c Config) ConnectionIdentity() string {
 	if c.AccessProgramCyber != "" {
 		identity = append(identity, c.AccessProgramCyber)
 	}
+	// Two keyless local servers serving the same model are different connections.
+	if c.BaseURL != "" {
+		identity = append(identity, c.BaseURL)
+	}
 	raw, _ := json.Marshal(identity)
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:])

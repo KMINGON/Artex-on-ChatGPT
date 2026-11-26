@@ -5,13 +5,18 @@ package server
 // from the Korean source + translations; do not edit by hand. "ko" is the key
 // itself and is not stored. See errmsg_i18n.go (trMsg) for lookup.
 var errCatalog = map[string]map[string]string{
-	"작업 기록 저장 실패: %s":         {"en": "Failed to save task record: %s"},
-	fallbackStatusFailed:      {"en": "Failed to read task status: %s"},
-	errTaskTemplateNoFields:   {"en": "Provide at least one task template setting to update"},
-	errLegacyTaskPreset:       {"en": "The previous task preset format is no longer supported. Refresh the page and select a task template"},
-	errTemplateTimeoutRange:   {"en": "Task timeout must be between 0 and 2147483647 seconds"},
-	errTemplateHeartbeatRange: {"en": "Planning interval must be between 0 and 2147483647 seconds"},
-	updateErrDockerSource:     {"en": "For Docker installations, rebuild the image from a release tag to update or roll back"},
+	"작업 기록 저장 실패: %s":    {"en": "Failed to save task record: %s"},
+	fallbackStatusFailed: {"en": "Failed to read task status: %s"},
+	"이름과 모델 ID를 입력해 주세요": {"en": "Enter a name and a model ID"},
+	"새 Anthropic API 키를 입력해 주세요. 다른 연결이나 주소의 키는 재사용하지 않습니다": {"en": "Enter a new Anthropic API key. A key from another connection or address is not reused"},
+	"Anthropic API 키를 입력해 주세요":   {"en": "Enter an Anthropic API key"},
+	"이 연결은 모델 ID를 직접 입력해 주세요":    {"en": "Enter the model ID for this connection"},
+	"이 연결은 LLM 프로필 설정에서 수정해 주세요": {"en": "Edit this connection in the LLM profile settings"},
+	errTaskTemplateNoFields:      {"en": "Provide at least one task template setting to update"},
+	errLegacyTaskPreset:          {"en": "The previous task preset format is no longer supported. Refresh the page and select a task template"},
+	errTemplateTimeoutRange:      {"en": "Task timeout must be between 0 and 2147483647 seconds"},
+	errTemplateHeartbeatRange:    {"en": "Planning interval must be between 0 and 2147483647 seconds"},
+	updateErrDockerSource:        {"en": "For Docker installations, rebuild the image from a release tag to update or roll back"},
 
 	"브라우저 인증 세션 정리 실패: %w":                                   {"en": "Browser authentication session cleanup failed: %w"},
 	"브라우저 세션을 사용할 수 없습니다":                                    {"en": "Browser sessions are unavailable"},

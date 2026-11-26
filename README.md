@@ -1,20 +1,20 @@
 <div align="center">
   <img src="web/public/logo.png" width="180" alt="ARTEX 로고" />
   <h1>Artex-on-ChatGPT</h1>
-  <p><strong>ChatGPT 구독과 OpenAI API를 사용하는 한국어 ARTEX</strong></p>
+  <p><strong>ChatGPT 구독·OpenAI API·Anthropic API·로컬 모델을 사용하는 한국어 ARTEX</strong></p>
 </div>
 
 ## 프로젝트 소개
 
-[artex-global `fdfb7a1`](https://github.com/jiwoochris/artex-global/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)을 기반으로 한 OpenAI 전용 포크입니다. 원본의 **Goals → Planner → Worker → 결과 공유·후속 계획** 흐름을 사용하며, 실행 오류·정보 유실·연결 처리와 브라우저 실행 환경을 보완합니다.
+[artex-global `fdfb7a1`](https://github.com/jiwoochris/artex-global/commit/fdfb7a17b7da5e2de716c0e98475ec77a41c64c6)을 기반으로 한 포크입니다. 원본의 **Goals → Planner → Worker → 결과 공유·후속 계획** 흐름을 사용하며, 실행 오류·정보 유실·연결 처리와 브라우저 실행 환경을 보완합니다.
 
-API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. ChatGPT 연결에는 Codex 설치가 필요하지 않습니다. 앱의 관리자 로그인과 ChatGPT 계정 연결은 별개입니다.
+OpenAI API 키와 ChatGPT 구독이 같은 Responses 어댑터를 사용합니다. ChatGPT 연결에는 Codex 설치가 필요하지 않습니다. 앱의 관리자 로그인과 ChatGPT 계정 연결은 별개입니다. Anthropic API와 OpenAI 호환 로컬 모델 서버도 프로필로 연결할 수 있습니다.
 
 ## 원본 대비 변경점
 
 | 영역 | 현재 차이 |
 | --- | --- |
-| 모델 연결 | OpenAI Responses로 통합, ChatGPT 구독 연결·토큰 갱신·계정별 모델 조회 추가 |
+| 모델 연결 | OpenAI 연결은 Responses로 통합하고 ChatGPT 구독 연결·토큰 갱신·계정별 모델 조회 추가, Anthropic API·OpenAI 호환 Local LLM은 프로필의 연결 방식으로 제공 |
 | 응답 처리 | 추론 상태·응답 단계·도구 항목 순서 보존, 완료·미완료·오류 구분 |
 | 실행·저장 | 취소된 도구 실행 방지, 부분 저장·대화 재개·Todo·Worker 결과 유실 보완 |
 | 그래프·도구 | 사실·자산·근거 연결의 원자적 저장, 취약점 등록 인자 처리와 최신 결과 조회 보완 |
@@ -48,7 +48,7 @@ ARTEX_BUILD_VERSION=0.2.1 docker compose up -d --build
 
 처음 사용하는 DB에만 초기 비밀번호를 설정합니다. 기존 비밀번호는 유지되며 화면에서 변경할 수 있습니다. 웹은 기본적으로 모든 IPv4 주소에 열립니다. 이 PC에서만 사용하려면 `.env`에 `ARTEX_BIND_IP=127.0.0.1`을 지정하세요. 다른 선택값은 [.env.example](.env.example)을 참고하세요.
 
-**시스템 → LLM**에서 ChatGPT 구독 계정 또는 OpenAI API 키를 연결하고, 모델 조회·선택·연결 확인 후 프로필을 저장합니다. 기존 기본 모델이 없으면 첫 사용 가능한 프로필을 기본으로 지정합니다. ChatGPT 로그인·재로그인은 Docker를 실행한 PC의 `http://127.0.0.1:8787`에서 진행합니다.
+**시스템 → LLM**에서 ChatGPT 구독 계정, OpenAI API 키, Anthropic API 키 또는 OpenAI 호환 로컬 서버 주소를 연결하고, 모델 선택·연결 확인 후 프로필을 저장합니다. [Anthropic·로컬 모델 연결](docs/changes/providers.md) 기존 기본 모델이 없으면 첫 사용 가능한 프로필을 기본으로 지정합니다. ChatGPT 로그인·재로그인은 Docker를 실행한 PC의 `http://127.0.0.1:8787`에서 진행합니다.
 
 ## 접속 주소
 

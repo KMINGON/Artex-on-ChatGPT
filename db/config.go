@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -98,9 +99,71 @@ func scanProfile(sc interface{ Scan(...any) error }, into *string, p *LLMProfile
 	return err
 }
 
+// Connection kinds stored in llm_profiles.auth_mode next to "api_key" (OpenAI
+// API) and "chatgpt_plan". Rows from before the OpenAI-only release kept
+// auth_mode "api_key" with their old format and address, so a restored provider
+// is recognised only by these values: an old row never starts sending its key.
+const (
+	AuthAnthropic        = "anthropic"
+	AuthOpenAICompatible = "openai_compatible"
+)
+
+// RestoredProvider reports a connection with its own wire format and address.
+func RestoredProvider(authMode string) bool {
+	return authMode == AuthAnthropic || authMode == AuthOpenAICompatible
+}
+
+// providerFormat is the wire format stored for a restored provider.
+func providerFormat(authMode string) string {
+	if authMode == AuthAnthropic {
+		return "anthropic"
+	}
+	return "openai"
+}
+
+// NormalizeProviderBaseURL validates the address a restored provider sends its
+// key to. A pasted endpoint path is reduced to the base the adapter extends.
+// Anthropic may be left empty for the official endpoint; an OpenAI-compatible
+// server must name one. Credentials, queries and fragments are rejected so the
+// stored address never carries a secret.
+func NormalizeProviderBaseURL(authMode, raw string) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if authMode == AuthAnthropic {
+		base = strings.TrimSuffix(strings.TrimSuffix(base, "/v1/messages"), "/v1")
+		if base == "" {
+			return "", nil
+		}
+	} else {
+		base = strings.TrimSuffix(base, "/chat/completions")
+		if base == "" {
+			return "", errors.New("OpenAI 호환 서버의 Base URL을 입력해 주세요. 예: http://127.0.0.1:11434/v1")
+		}
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("Base URL은 http:// 또는 https://로 시작하는 주소여야 합니다")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.HasSuffix(base, "?") {
+		return "", errors.New("Base URL에는 사용자 정보·쿼리·조각을 넣을 수 없습니다. 키는 API 키 칸에 입력해 주세요")
+	}
+	return base, nil
+}
+
 // UnsupportedReason keeps legacy rows visible without sending their credentials
 // to a different provider. Explicitly saving a replacement preserves the row ID.
 func (p *LLMProfile) UnsupportedReason() string {
+	if RestoredProvider(p.AuthMode) {
+		if p.AccessProgramCyber != "" {
+			return "액세스 프로그램은 OpenAI 연결에서만 지정할 수 있습니다"
+		}
+		if p.Format != providerFormat(p.AuthMode) {
+			return "저장된 연결 형식이 올바르지 않습니다. 연결을 다시 설정해 주세요"
+		}
+		if _, err := NormalizeProviderBaseURL(p.AuthMode, p.BaseURL); err != nil {
+			return err.Error()
+		}
+		return ""
+	}
 	if p.AuthMode == "chatgpt_plan" && p.AccessProgramCyber != "" && p.AccessProgramCyber != "standard" {
 		return "ChatGPT 구독의 Daybreak 명시 요청은 실제 적용값과 일치하지 않을 수 있습니다. 자동 선택 또는 Standard를 사용해 주세요"
 	}
@@ -111,7 +174,7 @@ func (p *LLMProfile) UnsupportedReason() string {
 	}
 
 	if p.AuthMode != "" && p.AuthMode != "api_key" && p.AuthMode != "chatgpt_plan" {
-		return "지원하지 않는 인증 방식입니다. OpenAI API 또는 ChatGPT 계정을 다시 선택해 주세요"
+		return "지원하지 않는 연결 방식입니다. 연결 방식을 다시 선택해 주세요"
 	}
 	if p.Format != "" && p.Format != "openai" && p.Format != "openai-responses" {
 		return "이전 제공자 설정은 지원하지 않습니다. OpenAI 모델과 인증을 다시 선택해 주세요"
@@ -191,8 +254,22 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	if p.AuthMode == "" {
 		p.AuthMode = "api_key"
 	}
+	if RestoredProvider(p.AuthMode) {
+		base, err := NormalizeProviderBaseURL(p.AuthMode, p.BaseURL)
+		if err != nil {
+			return 0, err
+		}
+		// Restored providers stay out of the OpenAI failover chain.
+		p.Format, p.BaseURL, p.ChatGPTAccountID = providerFormat(p.AuthMode), base, ""
+		p.PoolExclude, p.Priority = true, 0
+	}
+	// OpenAI connections are validated as submitted, so a custom address is
+	// rejected rather than silently dropped, and only then fixed to Responses.
 	if reason := p.UnsupportedReason(); reason != "" {
 		return 0, errors.New(reason)
+	}
+	if !RestoredProvider(p.AuthMode) {
+		p.Format, p.BaseURL = "openai-responses", ""
 	}
 	if p.AuthMode == "chatgpt_plan" {
 		if p.ChatGPTAccountID == "" {
@@ -203,7 +280,6 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	} else {
 		p.ChatGPTAccountID = ""
 	}
-	p.Format, p.BaseURL = "openai-responses", ""
 	hint := p.APIKeyHint
 	if len(p.APIKey) >= 4 {
 		hint = "…" + p.APIKey[len(p.APIKey)-4:]
@@ -215,19 +291,22 @@ func (d *DB) SaveProfile(p *LLMProfile) (int64, error) {
 	}
 	if p.ID == 0 {
 		var id int64
-		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,max_tokens,retry_connect_attempts,retry_connect_interval_ms,auth_mode,chatgpt_account_id,access_program_cyber,connection_check)
-VALUES ($1,'openai-responses',NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
-			p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.AccessProgramCyber, connectionCheck).Scan(&id)
+		err := d.QueryRow(`INSERT INTO llm_profiles(name,format,proxy,model,api_key,api_key_hint,rate_per_second,rate_per_minute,context_window_k,reasoning_effort,priority,pool_exclude,max_tokens,retry_connect_attempts,retry_connect_interval_ms,auth_mode,chatgpt_account_id,access_program_cyber,connection_check,base_url)
+VALUES ($1,$19,NULLIF($2,''),$3,NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NULLIF($20,'')) RETURNING id`,
+			p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.AccessProgramCyber, connectionCheck, p.Format, p.BaseURL).Scan(&id)
 		return id, err
 	}
 	// Retired option columns are intentionally untouched. The user explicitly
 	// replaces the connection, while historical values remain available for rollback.
-	_, err = d.Exec(`UPDATE llm_profiles SET name=$1,format='openai-responses',base_url=NULL,proxy=NULLIF($2,''),model=$3,
- api_key=CASE WHEN $4='' AND $15='api_key' THEN api_key ELSE NULLIF($4,'') END,
- api_key_hint=CASE WHEN $4='' AND $15='api_key' THEN api_key_hint ELSE NULLIF($5,'') END,
+	// A blank key keeps the stored one only for the same connection kind and
+	// address (SET expressions read the row's previous values), so a key is never
+	// carried to another provider or a new address.
+	_, err = d.Exec(`UPDATE llm_profiles SET name=$1,format=$20,base_url=NULLIF($21,''),proxy=NULLIF($2,''),model=$3,
+ api_key=CASE WHEN $4='' AND $15<>'chatgpt_plan' AND auth_mode=$15 AND COALESCE(base_url,'')=$21 THEN api_key ELSE NULLIF($4,'') END,
+ api_key_hint=CASE WHEN $4='' AND $15<>'chatgpt_plan' AND auth_mode=$15 AND COALESCE(base_url,'')=$21 THEN api_key_hint ELSE NULLIF($5,'') END,
  rate_per_second=$6,rate_per_minute=$7,context_window_k=$8,reasoning_effort=$9,priority=$10,pool_exclude=$11,max_tokens=$12,
  retry_connect_attempts=$13,retry_connect_interval_ms=$14,auth_mode=$15,chatgpt_account_id=$16,access_program_cyber=$18,connection_check=$19 WHERE id=$17`,
-		p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.ID, p.AccessProgramCyber, connectionCheck)
+		p.Name, p.Proxy, p.Model, p.APIKey, hint, p.RatePerSecond, p.RatePerMinute, p.ContextWindowK, p.ReasoningEffort, p.Priority, p.PoolExclude, p.MaxTokens, r.Connect.Attempts, r.Connect.IntervalMS, p.AuthMode, p.ChatGPTAccountID, p.ID, p.AccessProgramCyber, connectionCheck, p.Format, p.BaseURL)
 	return p.ID, err
 }
 

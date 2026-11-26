@@ -1,6 +1,26 @@
 package llm
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func collect(t *testing.T, p Provider, req CompletionRequest) Message {
+	t.Helper()
+	acc := NewAccumulator()
+	for ev, err := range p.Stream(context.Background(), req) {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		acc.Add(ev)
+	}
+	return acc.Message()
+}
 
 func TestAccumulator(t *testing.T) {
 	acc := NewAccumulator()
@@ -21,5 +41,239 @@ func TestAccumulator(t *testing.T) {
 	uses := msg.ToolUses()
 	if len(uses) != 1 || uses[0].Name != "Bash" || string(uses[0].Input) != `{"command":"ls"}` {
 		t.Fatalf("tooluse=%+v", uses)
+	}
+}
+
+func sse(lines ...string) string {
+	var b strings.Builder
+	for _, l := range lines {
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func TestAnthropicAdapter(t *testing.T) {
+	body := sse(
+		`event: content_block_start`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		``,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi "}}`,
+		``,
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"Read"}}`,
+		``,
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"a\"}"}}`,
+		``,
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}`,
+		``,
+		`data: {"type":"message_stop"}`,
+		``,
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	p, _ := NewProvider(Config{Format: FormatAnthropic, BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	msg := collect(t, p, CompletionRequest{Messages: []Message{UserText("go")}})
+	if msg.Text() != "Hi " {
+		t.Fatalf("text=%q", msg.Text())
+	}
+	if u := msg.ToolUses(); len(u) != 1 || u[0].Name != "Read" || string(u[0].Input) != `{"file_path":"a"}` {
+		t.Fatalf("tooluse=%+v", u)
+	}
+}
+
+// captureBody runs one request against a stub server and returns the raw request
+// body the provider sent, so we can assert request-shaping (thinking/effort).
+func captureBody(t *testing.T, cfg Config, stubSSE string) map[string]any {
+	t.Helper()
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.Write([]byte(stubSSE))
+	}))
+	defer srv.Close()
+	cfg.BaseURL, cfg.APIKey, cfg.Model = srv.URL, "k", "m"
+	p, err := NewProvider(cfg)
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	collect(t, p, CompletionRequest{Messages: []Message{UserText("go")}})
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal request body: %v\n%s", err, raw)
+	}
+	return m
+}
+
+func TestThinkingParamsAnthropic(t *testing.T) {
+	stub := sse(`data: {"type":"message_stop"}`, ``)
+	// Current Claude models reject a forced thinking mode: only effort is sent,
+	// and neither sampling parameter goes out.
+	m := captureBody(t, Config{Format: FormatAnthropic, ThinkingType: "enabled", ReasoningEffort: "high"}, stub)
+	if _, ok := m["thinking"]; ok {
+		t.Fatalf("thinking must never be sent: %v", m["thinking"])
+	}
+	if oc, _ := m["output_config"].(map[string]any); oc["effort"] != "high" {
+		t.Fatalf("output_config=%v", m["output_config"])
+	}
+	// unset → effort omitted
+	m = captureBody(t, Config{Format: FormatAnthropic}, stub)
+	if _, ok := m["output_config"]; ok {
+		t.Fatalf("output_config should be omitted: %v", m["output_config"])
+	}
+	if m["max_tokens"] != float64(anthropicStreamMaxTokens) {
+		t.Fatalf("streaming default max_tokens=%v", m["max_tokens"])
+	}
+}
+
+func TestThinkingParamsOpenAI(t *testing.T) {
+	// Non-empty stub so the empty-response retry doesn't fire (this test only
+	// inspects the request body).
+	stub := sse(`data: {"choices":[{"index":0,"delta":{"content":"ok"}}]}`, ``, `data: [DONE]`, ``)
+	// set → fields present
+	m := captureBody(t, Config{Format: FormatOpenAI, ThinkingType: "disabled", ReasoningEffort: "max"}, stub)
+	if th, _ := m["thinking"].(map[string]any); th["type"] != "disabled" {
+		t.Fatalf("thinking=%v", m["thinking"])
+	}
+	if m["reasoning_effort"] != "max" {
+		t.Fatalf("reasoning_effort=%v", m["reasoning_effort"])
+	}
+	// unset → both omitted
+	m = captureBody(t, Config{Format: FormatOpenAI}, stub)
+	if _, ok := m["thinking"]; ok {
+		t.Fatalf("thinking should be omitted: %v", m["thinking"])
+	}
+	if _, ok := m["reasoning_effort"]; ok {
+		t.Fatalf("reasoning_effort should be omitted: %v", m["reasoning_effort"])
+	}
+}
+
+func TestOpenAIAdapter(t *testing.T) {
+	body := sse(
+		`data: {"choices":[{"delta":{"content":"Hi "},"finish_reason":null}]}`,
+		``,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"Read","arguments":""}}]}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"file_path\":\"a\"}"}}]}}]}`,
+		``,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+		``,
+		`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":7}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	p, _ := NewProvider(Config{Format: FormatOpenAI, BaseURL: srv.URL, APIKey: "k", Model: "m"})
+	msg := collect(t, p, CompletionRequest{Messages: []Message{UserText("go")}})
+	if msg.Text() != "Hi " {
+		t.Fatalf("text=%q", msg.Text())
+	}
+	if u := msg.ToolUses(); len(u) != 1 || u[0].Name != "Read" || string(u[0].Input) != `{"file_path":"a"}` {
+		t.Fatalf("tooluse=%+v", u)
+	}
+}
+
+func TestToOpenAIMessagesThreadsToolResults(t *testing.T) {
+	msgs := []Message{
+		UserText("hi"),
+		{Role: RoleAssistant, Content: []ContentBlock{
+			{Type: BlockText, Text: "calling"},
+			{Type: BlockToolUse, ID: "c1", Name: "Bash", Input: []byte(`{"command":"ls"}`)},
+		}},
+		{Role: RoleUser, Content: []ContentBlock{ToolResultText("c1", "file.txt", false)}},
+	}
+	oa := toOpenAIMessages("sys", msgs)
+	if len(oa) != 4 || oa[0].Role != "system" || oa[2].Role != "assistant" || oa[3].Role != "tool" {
+		t.Fatalf("roles=%+v", oa)
+	}
+	if oa[2].ToolCalls[0].ID != "c1" || oa[3].ToolCallID != "c1" {
+		t.Fatalf("pairing wrong: %+v", oa)
+	}
+}
+
+// A thinking-only assistant turn is kept (not dropped) with a placeholder
+// content and its reasoning_content passed back: DeepSeek-style thinking mode
+// requires the reasoning to be echoed, and keeping the turn preserves
+// user/assistant alternation for gateways that enforce it. A bare
+// {"role":"assistant"} would 400 with "content or tool_calls must be set".
+func TestToOpenAIMessagesKeepsThinkingOnlyAssistant(t *testing.T) {
+	msgs := []Message{
+		UserText("hi"),
+		{Role: RoleAssistant, Content: []ContentBlock{
+			{Type: BlockThinking, Thinking: "pondering, no answer emitted"},
+		}},
+		UserText("still there?"),
+	}
+	oa := toOpenAIMessages("", msgs)
+	// All three turns survive (the assistant is kept, not dropped).
+	if len(oa) != 3 || oa[1].Role != "assistant" {
+		t.Fatalf("want 3 messages with assistant kept, got %d: %+v", len(oa), oa)
+	}
+	if oa[1].Content == "" && len(oa[1].ToolCalls) == 0 {
+		t.Fatalf("assistant must carry content or tool_calls: %+v", oa[1])
+	}
+	// The reasoning must be passed back verbatim (from b.Thinking, not b.Text).
+	if oa[1].ReasoningContent != "pondering, no answer emitted" {
+		t.Fatalf("reasoning_content not passed back: %+v", oa[1])
+	}
+}
+
+// A multi-turn assistant turn with BOTH text and thinking must serialize the
+// text as content and the thinking as reasoning_content (the DeepSeek-thinking
+// multi-turn 400 this fixes).
+func TestToOpenAIMessagesPassesReasoningWithText(t *testing.T) {
+	msgs := []Message{
+		UserText("q"),
+		{Role: RoleAssistant, Content: []ContentBlock{
+			{Type: BlockThinking, Thinking: "reasoning trace"},
+			{Type: BlockText, Text: "the answer"},
+		}},
+		UserText("next"),
+	}
+	oa := toOpenAIMessages("", msgs)
+	if oa[1].Role != "assistant" || oa[1].Content != "the answer" {
+		t.Fatalf("content wrong: %+v", oa[1])
+	}
+	if oa[1].ReasoningContent != "reasoning trace" {
+		t.Fatalf("reasoning_content wrong: %+v", oa[1])
+	}
+}
+
+// Thinking blocks are never replayed, an emptied turn is dropped, and the
+// neighbours it leaves adjacent are merged so roles still alternate.
+func TestToAnthropicMessagesDropsThinkingAndKeepsAlternation(t *testing.T) {
+	history := []Message{
+		UserText("hi"),
+		{Role: RoleAssistant, Content: []ContentBlock{{Type: BlockThinking, Thinking: "only thinking", Signature: "sig"}}},
+		{Role: RoleAssistant, Content: []ContentBlock{
+			{Type: BlockThinking, Thinking: "plan", Signature: "sig"},
+			{Type: BlockText, Text: "calling"},
+			{Type: BlockToolUse, ID: "c1", Name: "Bash", Input: []byte(`{"command":"ls"}`)},
+		}},
+		{Role: RoleUser, Content: []ContentBlock{ToolResultText("c1", "file.txt", false)}},
+		{Role: RoleAssistant, Content: []ContentBlock{}}, // empty/truncated turn → dropped
+		UserText("continue where you left off"),          // resume nudge
+	}
+	got := toAnthropicMessages(history)
+	raw, _ := json.Marshal(got)
+	if strings.Contains(string(raw), "thinking") || strings.Contains(string(raw), "signature") {
+		t.Fatalf("thinking replayed: %s", raw)
+	}
+	if len(got) != 3 || got[0].Role != RoleUser || got[1].Role != RoleAssistant || got[2].Role != RoleUser {
+		t.Fatalf("roles do not alternate: %s", raw)
+	}
+	if len(got[2].Content) != 2 || got[2].Content[0]["type"] != "tool_result" || got[2].Content[1]["text"] != "continue where you left off" {
+		t.Fatalf("user turns not coalesced: %s", raw)
 	}
 }

@@ -2,7 +2,7 @@
 
 [변경점 전체 목록](../changes.md) · 비교 기준: ARTEX/global `fdfb7a1`
 
-원본의 여러 공급자 연결을 OpenAI Responses로 통합하고 ChatGPT 구독 인증을 추가했습니다. API 키와 구독은 같은 응답 어댑터를 사용하지만 모델 목록·요청 옵션·계정 상태는 구분합니다. 아래 내용은 현재 ARTEX 코드의 동작이며 특정 계정의 권한이나 서비스 정책을 보장하지 않습니다.
+OpenAI 연결을 Responses로 통합하고 ChatGPT 구독 인증을 추가했습니다. Anthropic API와 OpenAI 호환 Local LLM은 [별도 연결 방식](providers.md)입니다. API 키와 구독은 같은 응답 어댑터를 사용하지만 모델 목록·요청 옵션·계정 상태는 구분합니다. 아래 내용은 현재 ARTEX 코드의 동작이며 특정 계정의 권한이나 서비스 정책을 보장하지 않습니다.
 
 ## 응답 상태와 완료 판정
 

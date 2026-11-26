@@ -1076,7 +1076,8 @@ export interface NotificationDelivery {
 }
 
 // ---- LLM config ----
-export type LLMAuthMode = "api_key" | "chatgpt_plan";
+// anthropic and openai_compatible profiles name their own base_url.
+export type LLMAuthMode = "api_key" | "chatgpt_plan" | "anthropic" | "openai_compatible";
 
 export interface ChatGPTAccount {
   id: string;
@@ -1124,6 +1125,7 @@ export interface LLMProfile {
   model: string;
   api_key_hint?: string;
   auth_mode?: LLMAuthMode;
+  base_url?: string;
   chatgpt_account_id?: string;
   connected?: boolean;
   plan_blocked?: boolean;

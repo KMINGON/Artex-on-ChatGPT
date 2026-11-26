@@ -52,6 +52,11 @@ const PROGRAM_LABELS: Record<string, string> = {
   daybreak_red: "Daybreak Red",
 };
 const fromStore = (v?: string) => (v ? v : NONE);
+// Reasoning efforts the restored providers accept (the server checks the same lists).
+const RESTORED_EFFORTS: Partial<Record<LLMAuthMode, string[]>> = {
+  anthropic: ["low", "medium", "high", "xhigh", "max"],
+  openai_compatible: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+};
 const toStore = (v: string) => (v === NONE ? "" : v);
 
 function programLabel(program: string | undefined, tf: ReturnType<typeof useTranslations>) {
@@ -292,6 +297,7 @@ function ProfileSheet({
   const [accountId, setAccountId] = React.useState("");
   const [model, setModel] = React.useState("");
   const [proxy, setProxy] = React.useState("");
+  const [baseURL, setBaseURL] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [keyHint, setKeyHint] = React.useState("");
   const [rps, setRps] = React.useState("0");
@@ -320,6 +326,8 @@ function ProfileSheet({
   } | null>(null);
   const modelRequest = React.useRef(0);
   const isChatGPT = authMode === "chatgpt_plan";
+  const isLocal = authMode === "openai_compatible";
+  const isRestored = isLocal || authMode === "anthropic";
   const selectedAccount = accounts.find((account) => account.id === accountId);
   const accountReady = Boolean(selectedAccount?.connected && selectedAccount.plan_enabled);
 
@@ -327,6 +335,7 @@ function ProfileSheet({
     profile?.auth_mode === authMode &&
     !apiKey &&
     (profile.proxy ?? "") === proxy &&
+    (profile.base_url ?? "") === baseURL.trim() &&
     (!isChatGPT || profile.chatgpt_account_id === accountId);
   const capabilities =
     models.find((item) => item.id === model)?.capabilities ??
@@ -334,9 +343,11 @@ function ProfileSheet({
   const reasoningKnown = capabilities?.reasoning_efforts_known ?? capabilities?.known ?? false;
   const programsKnown = capabilities?.access_programs_known ?? (!isChatGPT && capabilities?.known) ?? false;
   const accountProgramsKnown = isChatGPT && programsKnown && capabilities?.source === "account_catalog";
-  const efforts = reasoningKnown
-    ? (capabilities?.reasoning_efforts ?? [])
-    : ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+  const efforts = isRestored
+    ? (RESTORED_EFFORTS[authMode] ?? [])
+    : reasoningKnown
+      ? (capabilities?.reasoning_efforts ?? [])
+      : ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
   const accountCapabilities = capabilities?.source === "account_catalog";
   const effortUnsupported = accountCapabilities && reasoningKnown && effort !== NONE && !efforts.includes(effort);
   const effortChoices = [...new Set([...efforts, ...(effort !== NONE ? [effort] : [])])];
@@ -353,7 +364,11 @@ function ProfileSheet({
   const accessUnsupported = isChatGPT
     ? (accessProgram !== NONE && accessProgram !== "standard") ||
       (accountProgramsKnown && accessProgram === "standard" && !supportsStandard)
-    : accountCapabilities && programsKnown && accessProgram !== NONE && !accessPrograms.includes(accessProgram);
+    : !isRestored &&
+      accountCapabilities &&
+      programsKnown &&
+      accessProgram !== NONE &&
+      !accessPrograms.includes(accessProgram);
   const accessChoices = [
     ...new Set([
       ...(programsKnown ? accessPrograms : ["standard", "daybreak_blue", "daybreak_red"]),
@@ -368,6 +383,7 @@ function ProfileSheet({
     model,
     apiKey,
     proxy,
+    baseURL,
     effort,
     accessProgram,
     outputLimit,
@@ -377,13 +393,22 @@ function ProfileSheet({
   const visibleTest = testResult?.fingerprint === fingerprint ? testResult : null;
   const actualProgram = visibleTest?.result.actual_access_program_cyber ?? "";
   const connected = Boolean(visibleTest?.result.ok);
-  const connectionLabel = connected
-    ? tf("connectedModel", {
-        model: visibleTest?.result.actual_model || visibleTest?.result.model || model,
-        program: programLabel(actualProgram, tf),
-      })
-    : tf("testConnection");
-  const credentialsReady = isChatGPT ? accountReady : Boolean(apiKey.trim() || keyHint);
+  const connectedModel = visibleTest?.result.actual_model || visibleTest?.result.model || model;
+  const connectionLabel = !connected
+    ? tf("testConnection")
+    : isRestored
+      ? tf("connectedModelOnly", { model: connectedModel })
+      : tf("connectedModel", { model: connectedModel, program: programLabel(actualProgram, tf) });
+  // A saved key is reused only for the same connection kind and address.
+  const savedKeyUsable =
+    Boolean(keyHint) &&
+    profile?.auth_mode === authMode &&
+    (!isRestored || (profile?.base_url ?? "") === baseURL.trim());
+  const credentialsReady = isChatGPT
+    ? accountReady
+    : isLocal
+      ? Boolean(baseURL.trim())
+      : Boolean(apiKey.trim() || savedKeyUsable);
   const profileId = profile ? Number(profile.id) : undefined;
   const catalogIdentity = JSON.stringify([authMode, accountId, apiKey, proxy, profileId]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: 인증 정보가 바뀌면 이전 조회와 진행 중인 응답을 폐기한다.
@@ -412,6 +437,7 @@ function ProfileSheet({
     nameEdited.current = Boolean(profile);
     setModel(profile?.configuration_error ? "" : (profile?.model ?? ""));
     setProxy(profile?.proxy ?? "");
+    setBaseURL(profile?.base_url ?? "");
     setRps(String(profile?.rate_per_second ?? 0));
     setRpm(String(profile?.rate_per_minute ?? 0));
     setCw(String(profile?.context_window_k ?? 0));
@@ -471,7 +497,8 @@ function ProfileSheet({
     setModel(id);
     const selected = models.find((item) => item.id === id);
     const c = selected?.capabilities;
-    if (!nameEdited.current) setName(`${selected?.name || id} · ${isChatGPT ? "ChatGPT" : "API"}`);
+    const kind = isChatGPT ? "ChatGPT" : isLocal ? "Local" : isRestored ? "Anthropic" : "API";
+    if (!nameEdited.current) setName(`${selected?.name || id} · ${kind}`);
     setCw(selected?.context_window ? String(Math.floor(selected.context_window / 1000)) : "0");
     if (isChatGPT && !keepSavedStandard)
       setAccessProgram(
@@ -496,9 +523,10 @@ function ProfileSheet({
         api_key: isChatGPT ? "" : apiKey,
         proxy,
         reasoning_effort: toStore(effort),
-        access_program_cyber: toStore(accessProgram),
+        access_program_cyber: isRestored ? "" : toStore(accessProgram),
         profile_id: profileId,
         auth_mode: authMode,
+        ...(isRestored ? { base_url: baseURL.trim() } : {}),
         chatgpt_account_id: isChatGPT ? accountId : undefined,
         max_tokens: outputLimit,
       });
@@ -533,6 +561,7 @@ function ProfileSheet({
         ...(profile ? { id: Number(profile.id) } : {}),
         name: name.trim(),
         auth_mode: authMode,
+        ...(isRestored ? { base_url: baseURL.trim() } : {}),
         chatgpt_account_id: isChatGPT ? accountId : "",
         model: model.trim(),
         proxy: proxy.trim(),
@@ -541,14 +570,15 @@ function ProfileSheet({
         rate_per_minute: Number(rpm) || 0,
         context_window_k: Number(cw) || 0,
         reasoning_effort: toStore(effort),
-        access_program_cyber: toStore(accessProgram),
+        access_program_cyber: isRestored ? "" : toStore(accessProgram),
         connection_check: {
           model: visibleTest?.result.actual_model || visibleTest?.result.model || model.trim(),
           access_program_cyber: actualProgram,
           checked_at: visibleTest.checkedAt,
         },
-        priority: isChatGPT ? 0 : Number(priority) || 0,
-        pool_exclude: isChatGPT || poolExclude,
+        // Subscription and restored connections never join the OpenAI failover chain.
+        priority: isChatGPT || isRestored ? 0 : Number(priority) || 0,
+        pool_exclude: isChatGPT || isRestored || poolExclude,
         max_tokens: outputLimit,
         // 字段名开关只对 openai(Chat Completions) 有意义，其它格式一律回落到默认；
         // 后端也会再做一次同样的归一化，这里只是别让 UI 送出自相矛盾的值。
@@ -607,6 +637,9 @@ function ProfileSheet({
               onValueChange={(value) => {
                 setAuthMode(value as LLMAuthMode);
                 setAccessProgram(NONE);
+                // A key or address typed for one provider is never sent to another.
+                setApiKey("");
+                setBaseURL("");
                 if (value === "chatgpt_plan") {
                   const ready = accounts.filter((account) => account.connected && account.plan_enabled);
                   setAccountId(ready.length === 1 ? ready[0].id : "");
@@ -624,6 +657,8 @@ function ProfileSheet({
               <SelectContent>
                 <SelectItem value="api_key">{tf("openAIAPIKey")}</SelectItem>
                 <SelectItem value="chatgpt_plan">{tf("chatGPTSubscription")}</SelectItem>
+                <SelectItem value="anthropic">{tf("anthropicAPI")}</SelectItem>
+                <SelectItem value="openai_compatible">{tf("openAICompatibleLocalLLM")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -666,6 +701,21 @@ function ProfileSheet({
               <p className="text-muted-foreground text-xs">{tf("localTimeAndResponsesizeLimitsForSummaries")}</p>
             </div>
           )}
+          {isRestored && (
+            <div className="grid gap-2">
+              <Label htmlFor="p-base-url">{tf("baseURL")}</Label>
+              <Input
+                id="p-base-url"
+                className="font-mono"
+                placeholder={isLocal ? "http://127.0.0.1:11434/v1" : "https://api.anthropic.com"}
+                value={baseURL}
+                onChange={(e) => setBaseURL(e.target.value)}
+              />
+              <p className="text-muted-foreground text-xs">
+                {isLocal ? tf("localBaseURLHint") : tf("anthropicBaseURLHint")}
+              </p>
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="grid gap-2">
               <Label htmlFor="p-name">{t("profile.name.label")}</Label>
@@ -687,10 +737,19 @@ function ProfileSheet({
               <Input
                 id="p-api-key"
                 type="password"
-                placeholder={keyHint ? t("profile.apiKey.placeholderSet", { hint: keyHint }) : "sk-…"}
+                placeholder={
+                  savedKeyUsable
+                    ? t("profile.apiKey.placeholderSet", { hint: keyHint })
+                    : isLocal
+                      ? tf("optionalAPIKey")
+                      : isRestored
+                        ? "sk-ant-…"
+                        : "sk-…"
+                }
                 value={apiKey}
                 onChange={(e) => {
                   setApiKey(e.target.value);
+                  if (isRestored) return; // the model ID is typed, not loaded with this key
                   setModel("");
                   setAccessProgram(NONE);
                 }}
@@ -700,7 +759,20 @@ function ProfileSheet({
 
           <div className="grid gap-2">
             <Label htmlFor="p-model">{tf("model")}</Label>
-            {model || modelsLoaded ? (
+            {isRestored ? (
+              <>
+                <Input
+                  id="p-model"
+                  className="font-mono"
+                  placeholder={isLocal ? "qwen3:32b" : "claude-opus-5-5"}
+                  value={model}
+                  onChange={(e) => selectModel(e.target.value)}
+                />
+                <p className="text-muted-foreground text-xs">
+                  {isLocal ? tf("localModelHint") : tf("anthropicModelHint")}
+                </p>
+              </>
+            ) : model || modelsLoaded ? (
               <div className="flex gap-2">
                 <Select value={model || NONE} onValueChange={(value) => selectModel(toStore(value))}>
                   <SelectTrigger id="p-model" className="min-w-0 flex-1" aria-label={tf("model")}>
@@ -755,10 +827,10 @@ function ProfileSheet({
                 {modelError}
               </p>
             )}
-            {!isChatGPT && !credentialsReady && (
+            {!isChatGPT && !isRestored && !credentialsReady && (
               <p className="text-muted-foreground text-xs">{tf("enterAnAPIKeyThenLoadModels")}</p>
             )}
-            {!isChatGPT && model && (
+            {!isChatGPT && !isRestored && model && (
               <div className="grid gap-2">
                 <Button
                   type="button"
@@ -810,11 +882,15 @@ function ProfileSheet({
           </div>
 
           <p className="text-muted-foreground text-xs">
-            {capabilities?.source === "account_catalog"
-              ? tf("capabilitiesComeFromTheSelectedAccountsModel")
-              : capabilities?.source === "documentation" || capabilities?.known
-                ? tf("modelCapabilitiesComeFromOfficialDocumentationTest")
-                : tf("modelCapabilitiesAreUnverifiedNoSupportInformation")}
+            {isRestored
+              ? isLocal
+                ? tf("localProviderNote")
+                : tf("anthropicProviderNote")
+              : capabilities?.source === "account_catalog"
+                ? tf("capabilitiesComeFromTheSelectedAccountsModel")
+                : capabilities?.source === "documentation" || capabilities?.known
+                  ? tf("modelCapabilitiesComeFromOfficialDocumentationTest")
+                  : tf("modelCapabilitiesAreUnverifiedNoSupportInformation")}
           </p>
           {effortUnsupported && (
             <p role="alert" className="text-destructive text-xs">
@@ -915,7 +991,7 @@ function ProfileSheet({
               </div>
               <p className="-mt-2 text-muted-foreground text-xs">{t("profile.rateHint")}</p>
 
-              {!isChatGPT && (
+              {!isChatGPT && !isRestored && (
                 <div className="grid gap-3 rounded-lg border p-3">
                   <div className="flex items-center justify-between gap-4">
                     <div className="grid gap-0.5">
@@ -968,7 +1044,7 @@ function ProfileSheet({
                 </div>
               )}
 
-              {!isChatGPT && (
+              {!isChatGPT && !isRestored && (
                 <>
                   <div className="grid gap-2">
                     <Label htmlFor="p-model-manual">{tf("enterModelIDManually")}</Label>
@@ -1240,7 +1316,13 @@ export default function LLMPage() {
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate font-medium text-sm">{p.name}</span>
                           <Badge variant="outline" className="uppercase">
-                            {p.auth_mode === "chatgpt_plan" ? tf("chatGPTSubscriptionLabel") : "OpenAI API"}
+                            {p.auth_mode === "chatgpt_plan"
+                              ? tf("chatGPTSubscriptionLabel")
+                              : p.auth_mode === "anthropic"
+                                ? tf("anthropicAPI")
+                                : p.auth_mode === "openai_compatible"
+                                  ? tf("localLLMLabel")
+                                  : "OpenAI API"}
                           </Badge>
                           <Badge variant="outline" className={cn("ml-auto", h.cls)} title={h.hint}>
                             {h.label}
@@ -1248,19 +1330,24 @@ export default function LLMPage() {
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
                           <code className="truncate font-mono text-muted-foreground text-xs">{p.model}</code>
-                          <Badge
-                            variant="outline"
-                            title={
-                              p.connection_check
-                                ? tf("connectionCheckAt", {
-                                    model: p.connection_check.model,
-                                    time: new Date(p.connection_check.checked_at).toLocaleString(getDateLocale()),
-                                  })
-                                : tf("testTheConnectionToDisplayTheActual")
-                            }
-                          >
-                            {programLabel(p.connection_check?.access_program_cyber, tf)}
-                          </Badge>
+                          {p.base_url && (
+                            <code className="truncate font-mono text-muted-foreground text-xs">{p.base_url}</code>
+                          )}
+                          {(p.auth_mode === "api_key" || p.auth_mode === "chatgpt_plan" || !p.auth_mode) && (
+                            <Badge
+                              variant="outline"
+                              title={
+                                p.connection_check
+                                  ? tf("connectionCheckAt", {
+                                      model: p.connection_check.model,
+                                      time: new Date(p.connection_check.checked_at).toLocaleString(getDateLocale()),
+                                    })
+                                  : tf("testTheConnectionToDisplayTheActual")
+                              }
+                            >
+                              {programLabel(p.connection_check?.access_program_cyber, tf)}
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     </div>

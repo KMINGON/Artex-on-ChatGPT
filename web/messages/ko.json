@@ -3949,7 +3949,19 @@
     "updateConfigurationLabel": " · 설정 재선택 필요",
     "agent": "에이전트",
     "thePreviousSearchProviderIsNoLonger": "이전 검색 제공자는 지원하지 않습니다. DDGS, Brave 또는 Tavily를 선택해 주세요.",
-    "applySavedInterceptRulesToAllMCP": "브라우저를 포함한 모든 MCP 도구에 저장된 가로채기 규칙 적용"
+    "applySavedInterceptRulesToAllMCP": "브라우저를 포함한 모든 MCP 도구에 저장된 가로채기 규칙 적용",
+    "anthropicAPI": "Anthropic API",
+    "openAICompatibleLocalLLM": "OpenAI 호환 Local LLM",
+    "localLLMLabel": "Local LLM",
+    "baseURL": "Base URL",
+    "anthropicBaseURLHint": "비워 두면 https://api.anthropic.com을 사용합니다. 키는 이 주소로만 전송됩니다.",
+    "localBaseURLHint": "Chat Completions를 제공하는 주소입니다. 예: Ollama http://127.0.0.1:11434/v1. Docker로 실행한 ARTEX에서 호스트의 서버는 http://host.docker.internal:11434/v1을 사용합니다.",
+    "optionalAPIKey": "선택 사항 · 서버가 요구할 때만 입력",
+    "anthropicModelHint": "Anthropic 문서의 모델 ID를 입력합니다. 예: claude-opus-5-5",
+    "localModelHint": "서버에 로드한 모델 이름을 입력합니다. 예: qwen3:32b",
+    "connectedModelOnly": "{model} · 연결됨",
+    "anthropicProviderNote": "Messages API로 연결합니다. 도구 호출·이미지 입력을 전달하며, 이전 회차의 사고 블록은 다시 보내지 않습니다.",
+    "localProviderNote": "OpenAI 호환 Chat Completions로 연결합니다. 도구 호출은 서버가 tools 형식을 지원해야 하며, 이미지는 설명 문구로만 전달됩니다."
   },
   "presets": {
     "general": "일반",

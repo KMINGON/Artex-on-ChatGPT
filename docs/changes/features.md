@@ -8,9 +8,9 @@
 
 | 원본 | 현재 |
 | --- | --- |
-| 여러 공급자의 API 연결 | OpenAI Responses 전용. API 키와 ChatGPT 구독을 선택 |
+| 환경 변수·프로필의 여러 공급자 형식과 임의 주소 | 프로필의 연결 방식으로 OpenAI API 키·ChatGPT 구독(Responses), Anthropic API, OpenAI 호환 Local LLM을 선택. 키는 같은 프로필의 주소로만 전송. [Anthropic·로컬 모델 연결](providers.md) |
 | API 키 중심 인증 | ChatGPT 로그인·갱신·연결 해제와 한도 재확인 |
-| 모델 ID 조회·입력 | 선택한 인증의 모델 목록, 계정이 제공하는 프로그램·추론 옵션 표시 |
+| 모델 ID 조회·입력 | OpenAI 연결은 선택한 인증의 모델 목록과 계정이 제공하는 프로그램·추론 옵션 표시. Anthropic·Local LLM은 모델 ID 직접 입력 |
 | 연결 확인 결과 | 실제 응답 모델·프로그램·시각을 저장하고 입력 변경과 이전 결과를 구분 |
 
 ChatGPT 계정 연결은 ARTEX 관리자 로그인과 별개입니다. 구독 한도를 API 키로 자동 우회하지 않습니다. 요청 옵션과 계정별 조회 정보의 차이는 [OpenAI 처리](openai.md)에 설명합니다.

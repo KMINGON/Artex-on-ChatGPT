@@ -393,6 +393,56 @@ describe("OpenAI model profiles", () => {
       expect(body).not.toHaveProperty(key);
   });
 
+  it("sends a local server's address with its test and save, never an OpenAI program or a typed key from another kind", async () => {
+    vi.mocked(api.chatgptStatus).mockResolvedValue({ accounts: [], pending: false });
+    vi.mocked(api.testLLM).mockResolvedValue({ ok: true, model: "qwen3:32b", latency_ms: 300, reply: "OK" });
+    const dialog = await openNewProfile();
+    fireEvent.change(dialog.getByLabelText("API Key"), { target: { value: "openai-key-typed-first" } });
+    await choose(dialog.getByRole("combobox", { name: "모델 연결 방식" }), "OpenAI 호환 Local LLM");
+    expect(dialog.getByLabelText("API Key")).toHaveValue("");
+    expect(dialog.queryByRole("button", { name: "API 모델 조회" })).not.toBeInTheDocument();
+    fireEvent.change(dialog.getByLabelText("Base URL"), { target: { value: "http://127.0.0.1:11434/v1" } });
+    fireEvent.change(dialog.getByLabelText("모델"), { target: { value: "qwen3:32b" } });
+    const result = await checkConnection(dialog);
+    expect(result).toHaveTextContent("qwen3:32b · 연결됨");
+    expect(api.testLLM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        auth_mode: "openai_compatible",
+        base_url: "http://127.0.0.1:11434/v1",
+        api_key: "",
+        access_program_cyber: "",
+        model: "qwen3:32b",
+      }),
+    );
+    fireEvent.click(dialog.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(api.saveLLMProfile).toHaveBeenCalled());
+    expect(vi.mocked(api.saveLLMProfile).mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        auth_mode: "openai_compatible",
+        base_url: "http://127.0.0.1:11434/v1",
+        api_key: "",
+        access_program_cyber: "",
+        pool_exclude: true,
+        priority: 0,
+      }),
+    );
+  });
+
+  it("requires a new Anthropic key once the saved address changes", async () => {
+    vi.mocked(api.llmProfiles).mockResolvedValue([
+      savedProfile({ auth_mode: "anthropic", model: "claude-opus-5-5", api_key_hint: "…saved", base_url: "" }),
+    ]);
+    await showPage();
+    fireEvent.click(screen.getByRole("button", { name: /저장된 연결/ }));
+    const dialog = within(await screen.findByRole("dialog"));
+    const test = dialog.getByRole("button", { name: "연결 확인" });
+    expect(test).toBeEnabled();
+    fireEvent.change(dialog.getByLabelText("Base URL"), { target: { value: "https://gateway.example.test" } });
+    expect(test).toBeDisabled();
+    fireEvent.change(dialog.getByLabelText("API Key"), { target: { value: "new-anthropic-key" } });
+    expect(test).toBeEnabled();
+  });
+
   it("uses a saved API credential for catalog lookup without asking for the key again", async () => {
     vi.mocked(api.llmProfiles).mockResolvedValue([savedProfile()]);
     await showPage();

@@ -13,10 +13,10 @@
 
 | 구분 | 현재 동작 |
 | --- | --- |
-| 공급자 연결 | Norma의 Anthropic·Chat Completions·기존 Responses 어댑터를 제거하고 ARTEX가 `llm.Provider`를 주입합니다. API 키·ChatGPT 구독의 HTTP·인증·응답 해석은 [`chatgptllm`](../../chatgptllm/)과 [`chatgptauth`](../../chatgptauth/)에서 처리합니다. |
+| 공급자 연결 | OpenAI API 키·ChatGPT 구독은 ARTEX가 `llm.Provider`를 주입하며 HTTP·인증·응답 해석을 [`chatgptllm`](../../chatgptllm/)과 [`chatgptauth`](../../chatgptauth/)에서 처리합니다. 원본의 Responses 어댑터는 제거했습니다. Anthropic Messages와 OpenAI 호환 Chat Completions 어댑터는 다시 포함하되, 키·주소를 환경 변수에서 읽지 않고, 샘플링 값과 Anthropic 사고 모드 지정을 보내지 않으며, 사고 블록을 다시 보내지 않습니다. 완료 신호 없이 끊긴 스트림·스트림 안 오류·Anthropic 거부는 오류로 반환합니다. |
 | 메시지 상태 | `llm.Message.ProviderData`로 공급자 재전송 상태를 대화 기록과 함께 보존합니다. 표시용 본문과 구분하고, 내용을 수정하는 압축·투영에서는 해당 상태를 제거합니다. |
 | 스트림 완료 | `SEMessageFinal`로 완성된 메시지를 전달합니다. accumulator는 복사본을 소유하며 사용량·종료 이유를 함께 누적합니다. 도구 실행은 기존 도구 이벤트를 사용합니다. |
-| 제외 구성 | 사용하지 않는 독립 CLI·예제·Noa 압축 엔진과 어댑터를 제거했습니다. DeepSeek 전용 검색은 제외하고 DDGS·Brave·Tavily는 유지합니다. |
+| 제외 구성 | 사용하지 않는 독립 CLI·예제·Noa 압축 엔진과 Responses 어댑터를 제거했습니다. DeepSeek 전용 검색은 제외하고 DDGS·Brave·Tavily는 유지합니다. |
 
 관련 구현: [`llm/types.go`](llm/types.go), [`llm/provider.go`](llm/provider.go), [`llm/accumulate.go`](llm/accumulate.go), [`llm/boundary.go`](llm/boundary.go).
 

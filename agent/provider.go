@@ -1,4 +1,5 @@
-// Package agent connects ARTEX agents to OpenAI Responses through API keys or ChatGPT subscriptions.
+// Package agent connects ARTEX agents to OpenAI Responses (API keys or ChatGPT
+// subscriptions), the Anthropic API and OpenAI-compatible model servers.
 package agent
 
 import (
@@ -15,6 +16,7 @@ import (
 
 	"github.com/Autumn-27/artex/chatgptauth"
 	"github.com/Autumn-27/artex/chatgptllm"
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
@@ -27,6 +29,9 @@ type Config struct {
 	ChatGPTAuth      *chatgptauth.Manager
 	APIKey           string
 	Model            string
+	// BaseURL is the address of a restored provider (db.AuthAnthropic,
+	// db.AuthOpenAICompatible). OpenAI connections use the fixed official endpoint.
+	BaseURL string
 	// Proxy routes all LLM requests through the given proxy URL (http/https/socks5,
 	// optionally with user:pass@ credentials). Empty means direct — it does NOT
 	// fall back to the standard *_PROXY environment variables.
@@ -138,7 +143,41 @@ func ConfigFrom(provider, model, baseURL, apiKey, proxy string) Config {
 	return c
 }
 
-func (c Config) Provider() string { return "openai-responses" }
+// ProviderConfig builds a restored provider's config from a profile or a
+// settings request. The key goes only to the address in the same request.
+func ProviderConfig(authMode, model, baseURL, apiKey, proxy string) Config {
+	c := Config{AuthMode: authMode, Model: strings.TrimSpace(model), APIKey: strings.TrimSpace(apiKey), Proxy: strings.TrimSpace(proxy)}
+	var err error
+	if c.BaseURL, err = db.NormalizeProviderBaseURL(authMode, baseURL); err != nil {
+		c.configErr = err
+	}
+	switch {
+	case !db.RestoredProvider(authMode):
+		c.configErr = errors.New("지원하지 않는 연결 방식입니다")
+	case c.Model == "":
+		c.configErr = errors.New("모델 ID를 입력해 주세요")
+	case authMode == db.AuthAnthropic && c.APIKey == "":
+		c.configErr = errors.New("Anthropic API 키를 입력해 주세요")
+	}
+	return c
+}
+
+// Unavailable keeps a selected connection that cannot run: requests fail with
+// reason instead of falling back to another connection.
+func (c Config) Unavailable(reason string) Config {
+	c.configErr = errors.New(reason)
+	return c
+}
+
+func (c Config) Provider() string {
+	switch c.AuthMode {
+	case db.AuthAnthropic:
+		return "anthropic"
+	case db.AuthOpenAICompatible:
+		return "openai-compatible"
+	}
+	return "openai-responses"
+}
 
 // APIKeyForReuse rejects legacy connection credentials before a settings request
 // can silently adopt them for the official OpenAI endpoint.
@@ -164,6 +203,9 @@ func (c Config) NewProvider() (llm.Provider, error) {
 		if err != nil {
 			return unavailableProvider{err: errors.New("LLM 프록시 설정을 확인해 주세요")}, nil
 		}
+	}
+	if db.RestoredProvider(c.AuthMode) {
+		return c.newRestoredProvider(client)
 	}
 	cfg := chatgptllm.Config{Model: c.Model, HTTPClient: client, ReasoningEffort: c.ReasoningEffort, AccessProgramCyber: c.AccessProgramCyber,
 		MaxRetries: c.Retry.ConnectAttempts, RetryInterval: c.Retry.ConnectInterval}
@@ -193,6 +235,24 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	}
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		p = llm.RateLimited(p, llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute})
+	}
+	return p, nil
+}
+
+// newRestoredProvider builds the Norma adapter for a restored provider. Its own
+// establishment retries follow the profile's connect budget.
+func (c Config) newRestoredProvider(client *http.Client) (llm.Provider, error) {
+	lc := llm.Config{Format: llm.FormatOpenAI, BaseURL: c.BaseURL, APIKey: c.APIKey, Model: c.Model, HTTPClient: client,
+		ReasoningEffort: c.ReasoningEffort, MaxRetries: c.Retry.ConnectAttempts, RetryInterval: c.Retry.ConnectInterval}
+	if c.AuthMode == db.AuthAnthropic {
+		lc.Format = llm.FormatAnthropic
+	}
+	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
+		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
+	}
+	p, err := llm.NewProvider(lc)
+	if err != nil {
+		return unavailableProvider{err: err}, nil
 	}
 	return p, nil
 }

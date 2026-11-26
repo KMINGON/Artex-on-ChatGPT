@@ -3949,7 +3949,19 @@
     "updateConfigurationLabel": " · Update configuration",
     "agent": "Agent",
     "thePreviousSearchProviderIsNoLonger": "The previous search provider is no longer supported. Choose DDGS, Brave or Tavily.",
-    "applySavedInterceptRulesToAllMCP": "Apply saved intercept rules to all MCP tools, including browser tools"
+    "applySavedInterceptRulesToAllMCP": "Apply saved intercept rules to all MCP tools, including browser tools",
+    "anthropicAPI": "Anthropic API",
+    "openAICompatibleLocalLLM": "OpenAI-compatible local LLM",
+    "localLLMLabel": "Local LLM",
+    "baseURL": "Base URL",
+    "anthropicBaseURLHint": "Leave empty to use https://api.anthropic.com. The key is sent only to this address.",
+    "localBaseURLHint": "The address that serves Chat Completions, e.g. Ollama http://127.0.0.1:11434/v1. When ARTEX runs in Docker, reach a server on the host at http://host.docker.internal:11434/v1.",
+    "optionalAPIKey": "Optional · enter only if the server requires one",
+    "anthropicModelHint": "Enter a model ID from the Anthropic documentation, e.g. claude-opus-5-5",
+    "localModelHint": "Enter the name of the model loaded on the server, e.g. qwen3:32b",
+    "connectedModelOnly": "{model} · Connected",
+    "anthropicProviderNote": "Connects through the Messages API. Tool calls and image input are delivered; thinking blocks from earlier turns are not sent again.",
+    "localProviderNote": "Connects through OpenAI-compatible Chat Completions. Tool calls require a server that supports the tools format; images are delivered only as a text description."
   },
   "presets": {
     "general": "General",

@@ -1003,6 +1003,7 @@ export const api = {
     reasoning_effort?: string;
     profile_id?: number;
     auth_mode?: LLMAuthMode;
+    base_url?: string;
     chatgpt_account_id?: string;
     max_tokens?: number;
   }) =>
@@ -1023,8 +1024,9 @@ export const api = {
     name: string;
     model: string;
     proxy?: string;
-    api_key?: string; // blank on update keeps the existing key
+    api_key?: string; // blank on update keeps the existing key for the same connection and address
     auth_mode?: LLMAuthMode;
+    base_url?: string;
     chatgpt_account_id?: string;
     rate_per_second?: number;
     rate_per_minute?: number;

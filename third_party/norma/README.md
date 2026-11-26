@@ -2,7 +2,7 @@
 
 [Norma](https://github.com/Autumn-27/norma)의 에이전트 실행 엔진을 ARTEX에서 사용하기 위한 사본입니다. 원본 모듈 식별자와 소스의 저작권 표기를 유지합니다. 기반인 v0.4.3 배포물에는 별도 라이선스 파일이 없었으며, 출처와 수정 내역은 [ARTEX_PATCHES.md](ARTEX_PATCHES.md)에 기록합니다.
 
-이 포크에서는 LLM 연결을 루트의 [`chatgptllm`](../../chatgptllm/) 패키지로 통합했습니다. Norma 내부의 Anthropic·Chat Completions·기존 Responses 어댑터와 해당 어댑터에 의존하는 독립 CLI·예제는 제거했습니다. 호스트가 `llm.Provider`를 주입하며, OpenAI API 키와 ChatGPT 구독 모두 같은 도구 실행 루프를 사용합니다.
+이 포크에서는 OpenAI 연결을 루트의 [`chatgptllm`](../../chatgptllm/) 패키지로 통합하고 Norma 내부의 기존 Responses 어댑터와 독립 CLI·예제를 제거했습니다. Anthropic Messages와 OpenAI 호환 Chat Completions 어댑터는 `llm.NewProvider`로 제공하며 키·주소를 환경 변수에서 읽지 않습니다. 호스트가 `llm.Provider`를 주입하며, 모든 연결이 같은 도구 실행 루프를 사용합니다.
 
 | 구성 | 역할 |
 | --- | --- |

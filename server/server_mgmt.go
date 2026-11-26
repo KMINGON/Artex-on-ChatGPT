@@ -1875,7 +1875,8 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		db.LLMProfile
-		APIKey string `json:"api_key"`
+		APIKey  string `json:"api_key"`
+		BaseURL string `json:"base_url"`
 	}
 	if err := decodeOpenAISettings(r, &body); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1885,10 +1886,6 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	defer s.profileUpdateMu.Unlock()
 	p := body.LLMProfile
 	p.Format = "openai-responses"
-	if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.Model) == "" {
-		writeErr(w, 400, "이름과 OpenAI 모델을 입력해 주세요")
-		return
-	}
 	if p.ID != 0 && p.AuthMode == "" {
 		if previous, err := pg.ProfileByID(p.ID); err == nil && previous != nil {
 			p.AuthMode, p.ChatGPTAccountID = previous.AuthMode, previous.ChatGPTAccountID
@@ -1897,8 +1894,32 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	if p.AuthMode == "" {
 		p.AuthMode = "api_key"
 	}
+	restored := db.RestoredProvider(p.AuthMode)
+	if strings.TrimSpace(p.Name) == "" || strings.TrimSpace(p.Model) == "" {
+		if restored {
+			writeErr(w, 400, "이름과 모델 ID를 입력해 주세요")
+		} else {
+			writeErr(w, 400, "이름과 OpenAI 모델을 입력해 주세요")
+		}
+		return
+	}
 	p.Model = strings.TrimSpace(p.Model)
-	if err := chatgptllm.ValidateOptions(p.Model, p.AuthMode, p.ReasoningEffort, p.AccessProgramCyber); err != nil {
+	if restored {
+		if err := validateProviderOptions(p.AuthMode, p.ReasoningEffort, p.AccessProgramCyber); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		base, err := db.NormalizeProviderBaseURL(p.AuthMode, body.BaseURL)
+		if err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		p.BaseURL = base
+		if _, err := agent.ChatGPTHTTPClient(p.Proxy); err != nil {
+			writeErr(w, 400, "프록시 주소가 올바르지 않습니다")
+			return
+		}
+	} else if err := chatgptllm.ValidateOptions(p.Model, p.AuthMode, p.ReasoningEffort, p.AccessProgramCyber); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
@@ -1928,7 +1949,7 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "프록시 주소가 올바르지 않습니다")
 			return
 		}
-	} else if p.AuthMode != "" && p.AuthMode != "api_key" {
+	} else if !restored && p.AuthMode != "api_key" {
 		writeErr(w, 400, "지원하지 않는 인증 방식입니다")
 		return
 	}
@@ -1942,10 +1963,17 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 404, "프로필을 찾을 수 없습니다")
 			return
 		}
-		if p.AuthMode != "chatgpt_plan" && strings.TrimSpace(body.APIKey) == "" && (previous.UnsupportedReason() != "" || previous.AuthMode == "chatgpt_plan") {
+		if p.AuthMode == "api_key" && strings.TrimSpace(body.APIKey) == "" && (previous.UnsupportedReason() != "" || previous.AuthMode != "api_key") {
 			writeErr(w, 400, "새 OpenAI API 키를 입력해 주세요. 이전 연결의 키는 다른 인증에 재사용하지 않습니다")
 			return
 		}
+		if p.AuthMode == db.AuthAnthropic && strings.TrimSpace(body.APIKey) == "" && !sameProviderConnection(previous, p.AuthMode, p.BaseURL) {
+			writeErr(w, 400, "새 Anthropic API 키를 입력해 주세요. 다른 연결이나 주소의 키는 재사용하지 않습니다")
+			return
+		}
+	} else if p.AuthMode == db.AuthAnthropic && strings.TrimSpace(body.APIKey) == "" {
+		writeErr(w, 400, "Anthropic API 키를 입력해 주세요")
+		return
 	}
 	p.APIKey = strings.TrimSpace(body.APIKey)
 	if p.MaxTokens < 0 {
@@ -2189,6 +2217,10 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "ChatGPT 계정의 모델 목록을 사용해 주세요")
 		return
 	}
+	if db.RestoredProvider(req.AuthMode) {
+		writeErr(w, 400, "이 연결은 모델 ID를 직접 입력해 주세요")
+		return
+	}
 	key := strings.TrimSpace(req.APIKey)
 	if key == "" && req.ProfileID != nil && s.m != nil && s.m.pg != nil {
 		p, err := s.m.pg.ProfileByID(*req.ProfileID)
@@ -2206,6 +2238,10 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.AuthMode == "chatgpt_plan" {
 			writeErr(w, 400, "ChatGPT 계정의 모델 목록을 사용해 주세요")
+			return
+		}
+		if p.AuthMode != "" && p.AuthMode != "api_key" {
+			writeErr(w, 400, "OpenAI API 키를 직접 입력해 주세요")
 			return
 		}
 		key = p.APIKey

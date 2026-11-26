@@ -608,6 +608,7 @@ type LLMProfileDTO struct {
 	Proxy              string                       `json:"proxy,omitempty"`
 	Model              string                       `json:"model"`
 	APIKeyHint         string                       `json:"api_key_hint,omitempty"`
+	BaseURL            string                       `json:"base_url,omitempty"` // restored providers only
 	RatePerSecond      float64                      `json:"rate_per_second"`
 	RatePerMinute      float64                      `json:"rate_per_minute"`
 	ContextWindowK     int                          `json:"context_window_k"`
@@ -622,12 +623,21 @@ type LLMProfileDTO struct {
 }
 
 func llmProfileDTO(p *db.LLMProfile) LLMProfileDTO {
+	connected := p.APIKeySet || p.APIKeyHint != "" || p.APIKey != ""
+	var baseURL string
+	if db.RestoredProvider(p.AuthMode) {
+		baseURL = p.BaseURL
+		if p.AuthMode == db.AuthOpenAICompatible {
+			connected = p.UnsupportedReason() == "" // the key is optional
+		}
+	}
 	return LLMProfileDTO{
+		BaseURL:            baseURL,
 		ConfigurationError: p.UnsupportedReason(),
 		AccessProgramCyber: p.AccessProgramCyber,
 		ConnectionCheck:    p.ConnectionCheck,
 		Capabilities:       chatgptllm.Capabilities(p.Model, p.AuthMode),
-		AuthMode:           p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: p.APIKeySet || p.APIKeyHint != "" || p.APIKey != "",
+		AuthMode:           p.AuthMode, ChatGPTAccountID: p.ChatGPTAccountID, Connected: connected,
 		ID:              i64s(p.ID),
 		Name:            p.Name,
 		Proxy:           p.Proxy,

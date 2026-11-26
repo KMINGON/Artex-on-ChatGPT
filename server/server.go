@@ -679,6 +679,12 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 // configForProfile keeps all fields from one profile read, including its account.
 func (s *Server) configForProfile(p *db.LLMProfile) agent.Config {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+	if db.RestoredProvider(p.AuthMode) {
+		cfg = agent.ProviderConfig(p.AuthMode, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+		if reason := p.UnsupportedReason(); reason != "" {
+			cfg = cfg.Unavailable(reason)
+		}
+	}
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
 	cfg.ReasoningEffort = p.ReasoningEffort
@@ -1515,8 +1521,8 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	s.profileUpdateMu.Lock()
 	defer s.profileUpdateMu.Unlock()
-	if req.AuthMode == "chatgpt_plan" {
-		writeErr(w, 400, "ChatGPT 연결은 LLM 프로필 설정에서 수정해 주세요")
+	if req.AuthMode == "chatgpt_plan" || db.RestoredProvider(req.AuthMode) {
+		writeErr(w, 400, "이 연결은 LLM 프로필 설정에서 수정해 주세요")
 		return
 	}
 	if req.Provider == "" {
@@ -1579,9 +1585,26 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		AccessProgramCyber string `json:"access_program_cyber"`
 		ProfileID          *int64 `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
 		MaxTokens          int    `json:"max_tokens"`
+		BaseURL            string `json:"base_url"`
 	}
 	if err := decodeOpenAISettings(r, &req); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	var saved *db.LLMProfile
+	if req.ProfileID != nil {
+		p, err := s.m.pg.ProfileByID(*req.ProfileID)
+		if err != nil || p == nil {
+			writeErr(w, 400, "선택한 모델 연결을 찾을 수 없습니다")
+			return
+		}
+		saved = p
+		if req.AuthMode == "" {
+			req.AuthMode = p.AuthMode
+		}
+	}
+	if db.RestoredProvider(req.AuthMode) {
+		s.testProviderConnection(w, r, req.AuthMode, req.Model, req.BaseURL, req.APIKey, req.Proxy, req.ReasoningEffort, req.AccessProgramCyber, req.MaxTokens, saved)
 		return
 	}
 	if req.Provider == "" {
@@ -1604,10 +1627,11 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, 400, p.UnsupportedReason())
 				return
 			}
-			if req.AuthMode == "" {
-				req.AuthMode, req.ChatGPTAccountID = p.AuthMode, p.ChatGPTAccountID
+			if req.ChatGPTAccountID == "" && req.AuthMode == p.AuthMode {
+				req.ChatGPTAccountID = p.ChatGPTAccountID
 			}
-			if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" {
+			// Only an OpenAI API profile lends its key to an OpenAI API test.
+			if req.AuthMode != "chatgpt_plan" && cfg.APIKey == "" && (p.AuthMode == "" || p.AuthMode == "api_key") {
 				cfg.APIKey = p.APIKey
 			}
 		}
@@ -1647,6 +1671,29 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		"actual_model": observed.Model, "actual_access_program_cyber": observed.AccessProgramCyber,
 		"access_programs_present": observed.AccessProgramsPresent,
 		"checked_at":              time.Now().UTC(),
+	})
+}
+
+// testProviderConnection checks a restored provider with one minimal request. A
+// saved key is used only for the same connection kind and address.
+func (s *Server) testProviderConnection(w http.ResponseWriter, r *http.Request, mode, model, baseURL, apiKey, proxy, effort, program string, maxTokens int, saved *db.LLMProfile) {
+	if err := validateProviderOptions(mode, effort, program); err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(apiKey) == "" && sameProviderConnection(saved, mode, baseURL) {
+		apiKey = saved.APIKey
+	}
+	cfg := agent.ProviderConfig(mode, model, baseURL, apiKey, proxy)
+	cfg.ReasoningEffort, cfg.MaxTokens = effort, max(0, maxTokens)
+	lat, reply, err := agent.TestConnection(r.Context(), cfg)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "latency_ms": lat.Milliseconds(), "model": cfg.Model, "reply": truncateReply(reply),
+		"checked_at": time.Now().UTC(),
 	})
 }
 
