@@ -430,21 +430,22 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
+	const findingListCap = 10
+	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, findingListCap)                  // newest window; the count below is exact
 	factNodes, analysisFacts, observationFacts, _ := t.ts.AnalysisFactOverview(1000) // newest analysis facts first
-	out["findings_total"] = len(vulnNodes)                                           // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
+	findingsTotal := len(vulnNodes)
+	if kinds, err := t.ts.Stats(); err == nil {
+		findingsTotal = kinds[db.KindFinding]
+	}
+	out["findings_total"] = findingsTotal // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
 	out["facts"] = analysisFacts
 	out["http_observation_facts"] = observationFacts
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
 	// evidence/assets/vulnclass/severity/state 等仍可用 list_findings / node_detail(id) 取。
-	const findingListCap = 10
 	findingList := make([]map[string]any, 0, findingListCap)
 	for _, n := range vulnNodes {
-		if len(findingList) >= findingListCap {
-			break
-		}
 		var fp map[string]any
 		_ = json.Unmarshal(n.Payload, &fp)
 		m := map[string]any{"id": n.ID, "summary": fp["summary"]}
