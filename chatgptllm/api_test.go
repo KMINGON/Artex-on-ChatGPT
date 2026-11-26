@@ -220,6 +220,7 @@ func TestErrorEnvelopesAndSafeShape(t *testing.T) {
 		{`{"type":"error","code":"server_error"}`, "server_error", "", "known_code"},
 		{`{"type":"error"}`, "", "", "missing_code"},
 		{`{"error":{"code":"future_failure"}}`, "future_failure", "", "unknown_code"},
+		{`{"type":"error","code":"cyber_policy","message":"private upstream text"}`, "cyber_policy", "", "known_code"},
 		{`{"error":`, "", "", "malformed_error"},
 		{`{"error":{"code":"unsafe secret\nvalue","param":"sk-secret"}}`, "", "", "missing_code"},
 	} {

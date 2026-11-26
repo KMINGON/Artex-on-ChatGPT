@@ -221,6 +221,9 @@ func responseFailure(body []byte) *Error {
 		e.Message = "API 키의 조직 승인과 프로젝트 Daybreak 접근 설정을 확인해 주세요"
 	case "invalid_api_key":
 		e.Message = "OpenAI API 키를 확인해 주세요"
+	case "cyber_policy":
+		// A safety check, not a transient failure: replaying it adds to the organization's flags.
+		e.Message = "OpenAI 사이버 보안 안전 검사로 요청이 중단되었습니다. 같은 요청을 반복하지 마세요. 반복되면 조직의 모델 접근이 일시 제한될 수 있으니 Daybreak 승인과 조직 접근 상태를 확인해 주세요"
 	}
 	if e.Message != "OpenAI가 요청을 완료하지 못했습니다" || knownTransient(e.Code) {
 		e.ErrorClass = "known_code"
