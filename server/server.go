@@ -107,6 +107,7 @@ const (
 	fallbackIntentInjected = "우선순위 높은 의도를 하나 주입했습니다: "
 	fallbackHintRecorded   = "힌트를 기록했습니다. 플래너가 다음에 읽습니다: "
 	fallbackChatStatus     = "(규칙 모드, LLM 미설정) 현재 현황: 자산 %d개, 대기 의도 %d개, 확인된 취약점 %d개.\n사용 가능한 명령: \"의도 ...\"로 의도를 주입하고, \"힌트 ...\"로 플래너에게 힌트를 전달합니다."
+	fallbackStatusFailed   = "작업 현황 조회 실패: %s"
 )
 
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
@@ -4059,14 +4060,50 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 		}
 		return trMsg(fallbackHintRecorded) + text
 	default:
-		assetCounts, _ := s.m.Assets().CountsByType()
+		// A failed read is reported as a failure, not as an empty task.
+		assetCounts, err := s.taskAssetCounts(t)
+		if err != nil {
+			return fmt.Sprintf(trMsg(fallbackStatusFailed), err)
+		}
 		assets := 0
 		for _, c := range assetCounts {
 			assets += c
 		}
-		fnd, _ := t.Store.ListByKind(db.KindFinding, 1000)
-		fr, _ := t.Store.Frontier(1000)
-		return fmt.Sprintf(trMsg(fallbackChatStatus), assets, len(fr), len(fnd))
+		kinds, err := t.Store.Stats()
+		if err != nil {
+			return fmt.Sprintf(trMsg(fallbackStatusFailed), err)
+		}
+		fr, err := t.Store.Frontier(1000)
+		if err != nil {
+			return fmt.Sprintf(trMsg(fallbackStatusFailed), err)
+		}
+		return fmt.Sprintf(trMsg(fallbackChatStatus), assets, len(fr), kinds[db.KindFinding])
+	}
+}
+
+// taskAssetCounts counts the assets attached to this task, per type.
+func (s *Server) taskAssetCounts(t *Task) (map[string]int, error) {
+	id, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+	return s.m.Assets().CountsByTypeForTask(id)
+}
+
+// allNodesByKind pages through every node of a kind, newest first, so older
+// nodes are not dropped by a fixed cap.
+func allNodesByKind(store *db.ExplorationStore, kind string) ([]*db.Node, error) {
+	var out []*db.Node
+	for cursor := int64(0); ; {
+		page, more, err := store.ListByKindPage(kind, cursor, 1000)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if !more || len(page) == 0 {
+			return out, nil
+		}
+		cursor = page[len(page)-1].ID
 	}
 }
 
@@ -4076,13 +4113,16 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
-	counts := map[string]int{}
-	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
-		if len(ns) > 0 {
-			counts[ty] = len(ns)
-		}
+	// A failed query fails the report: an empty report must mean an empty task.
+	findings, err := allNodesByKind(t.Store, db.KindFinding) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	counts, err := s.taskAssetCounts(t)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
 	}
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),

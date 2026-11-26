@@ -61,6 +61,9 @@ func Markdown(in Input) string {
 		types = append(types, t)
 	}
 	sort.Strings(types)
+	if len(types) == 0 {
+		b.WriteString("없음")
+	}
 	for i, t := range types {
 		if i > 0 {
 			b.WriteString(", ")

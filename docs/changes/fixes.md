@@ -40,6 +40,19 @@ IP 주소로 접근한 URL의 범위와 관찰률 계산을 맞추고, 시작점
 
 관련 구현: [`db/graph_mutations.go`](../../db/graph_mutations.go), [`db/asset_observations.go`](../../db/asset_observations.go), [`db/planner_state.go`](../../db/planner_state.go), [`db/worker_result.go`](../../db/worker_result.go), [`agent/tools.go`](../../agent/tools.go).
 
+## 작업 보고서
+
+작업 상세의 보고서 탭과 `GET /api/report`가 해당 작업의 저장 결과를 그대로 반영하도록 집계와 오류 처리를 보완합니다.
+
+| 영역 | 원본 대비 변경 |
+| --- | --- |
+| 발견 | 작업의 발견을 페이지 단위로 끝까지 읽어 1,000건을 넘는 발견도 보고서에 포함 |
+| 자산 집계 | 해당 작업에 연결된 자산만 유형별로 집계. 연결된 자산이 없으면 `없음`으로 표시 |
+| 조회 실패 | 발견·자산 조회가 실패하면 오류를 반환하고 보고서 탭이 재시도를 안내. 빈 보고서는 실제로 비어 있는 작업을 뜻함 |
+| 규칙 모드 현황 | LLM 미설정 대화의 현황 요약도 해당 작업의 자산과 전체 발견 수를 사용하고 조회 실패를 알림 |
+
+관련 구현: [`server/server.go`](../../server/server.go), [`report/report.go`](../../report/report.go).
+
 ## 대화·요약·재개
 
 - 대화 압축에서 도구 호출·결과 쌍과 저장 파일 참조를 보존합니다. 요약 전에 오래된 결과 본문을 지우지 않습니다.
